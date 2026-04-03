@@ -25,7 +25,7 @@ brain.log("Deployed v2.0")
 }
 ```
 
-12 tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_create`, `entity_get`, `entity_search`, `entity_observe`, `entity_relate`, `decision_add`, `search`, `stats`
+16 tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_create`, `entity_get`, `entity_search`, `entity_observe`, `entity_relate`, `decision_add`, `search`, `stats`, `affect_classify`, `affect_log`, `affect_check`, `affect_monitor`
 
 ## Install
 
@@ -34,6 +34,17 @@ pip install brainctl              # core
 pip install brainctl[mcp]         # with MCP server
 pip install brainctl[vec]         # with vector search (sqlite-vec)
 pip install brainctl[all]         # everything
+```
+
+## Quick Start
+
+```bash
+pip install brainctl
+brainctl init              # create brain.db
+brainctl memory add 'my first memory' -c lesson
+brainctl search 'memory'
+brainctl affect classify 'deployment failed, team is panicking'
+brainctl stats
 ```
 
 ## CLI
@@ -82,6 +93,7 @@ brainctl stats
 | Write gate (surprise scoring) | ✓ | ✗ | ✗ | ✗ |
 | Multi-agent support | ✓ | ✗ | ✓ | ✗ |
 | No LLM calls for memory ops | ✓ | ✗ | ✓ | ✗ |
+| Affect tracking | ✓ | ✗ | ✗ | ✗ |
 
 ## Architecture
 
@@ -139,6 +151,60 @@ brainctl -a agent-beta entity observe "Alice" "Now leads the team"
 ```
 
 Agents share one brain.db. Each write is attributed. Search sees everything.
+
+## Affect Tracking
+
+Functional affect states grounded in the Anthropic 2026 paper on emotion-analogues
+in AI systems. This is not sentiment analysis — it tracks internal operational
+states (frustration, urgency, satisfaction, confusion, confidence, curiosity) that
+influence memory formation and retrieval.
+
+### CLI
+
+```bash
+brainctl affect classify 'the deploy failed and rollback is stuck'
+# → {"state": "frustration", "valence": -0.7, "arousal": 0.8, ...}
+
+brainctl affect log 'finally resolved the outage after 4 hours'
+# logs the affect state with timestamp to brain.db
+
+brainctl affect check
+# show current affect state and recent trajectory
+
+brainctl affect monitor --watch
+# live-stream affect state changes
+```
+
+### Python API
+
+```python
+from brainctl import Brain
+
+brain = Brain()
+state = brain.affect("deployment failed, team is panicking")
+# → AffectState(state='frustration', valence=-0.7, arousal=0.8)
+
+brain.affect_log("resolved the outage")
+# logs affect + text to the affect_log table
+```
+
+### Safety Patterns
+
+Six built-in safety patterns prevent affect states from causing harmful behavior:
+
+1. **Cooldown gating** — high-arousal states trigger a write cooldown
+2. **Valence-aware retrieval** — negative states bias toward safety-relevant memories
+3. **Escalation detection** — sustained negative trajectories flag for review
+4. **Affect decay** — states decay toward neutral over time
+5. **Override mechanism** — explicit flags bypass affect-based gating
+6. **Audit trail** — all affect state changes are logged immutably
+
+### Integration
+
+Affect states feed into the write gate and consolidation engine:
+- **Write gate**: high-arousal states increase the surprise threshold (harder to write impulsively)
+- **Consolidation**: affect-tagged memories get priority during dream synthesis
+- **Retrieval**: current affect biases search ranking toward state-relevant memories
 
 ## Token Cost Optimization
 

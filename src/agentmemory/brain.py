@@ -12,6 +12,7 @@ Quick start:
     brain.entity("Chief", "person",          # create entity
         observations=["Founder", "Builder"])
     brain.log("Deployed v2.0")               # log an event
+    brain.affect("I'm excited about this!")  # classify affect
     brain.stats()                            # database stats
 """
 
@@ -19,7 +20,11 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from agentmemory.affect import classify_affect
 
 _INIT_SQL_PATH = Path(__file__).parent.parent.parent / "db" / "init_schema.sql"
 
@@ -27,7 +32,7 @@ _INIT_SQL_PATH = Path(__file__).parent.parent.parent / "db" / "init_schema.sql"
 class Brain:
     """Simple interface to brainctl's memory system."""
     
-    def __init__(self, db_path=None, agent_id="default"):
+    def __init__(self, db_path: Optional[str] = None, agent_id: str = "default") -> None:
         if db_path is None:
             db_path = os.environ.get("BRAIN_DB", str(Path.home() / "brainctl" / "brain.db"))
         self.db_path = Path(db_path)
@@ -36,7 +41,7 @@ class Brain:
         if not self.db_path.exists():
             self._init_db()
     
-    def _init_db(self):
+    def _init_db(self) -> None:
         """Create a fresh brain.db with core schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path))
@@ -107,16 +112,33 @@ class Brain:
                 expires_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS affect_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                valence REAL NOT NULL DEFAULT 0.0,
+                arousal REAL NOT NULL DEFAULT 0.0,
+                dominance REAL NOT NULL DEFAULT 0.0,
+                affect_label TEXT,
+                cluster TEXT,
+                functional_state TEXT,
+                safety_flag TEXT,
+                trigger TEXT,
+                source TEXT DEFAULT 'observation',
+                metadata TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_affect_agent_time ON affect_log(agent_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_affect_safety ON affect_log(safety_flag) WHERE safety_flag IS NOT NULL;
         """)
         conn.close()
     
-    def _db(self):
+    def _db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
     
-    def remember(self, content, category="general", tags=None, confidence=1.0):
+    def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:
         """Add a memory. Returns memory ID."""
         db = self._db()
         tags_json = json.dumps(tags.split(",")) if isinstance(tags, str) else (json.dumps(tags) if tags else None)
@@ -129,7 +151,7 @@ class Brain:
         db.close()
         return mid
     
-    def search(self, query, limit=10):
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search memories by content. Returns list of dicts."""
         db = self._db()
         # Simple LIKE search (works without FTS5)
@@ -142,14 +164,14 @@ class Brain:
         db.close()
         return results
     
-    def forget(self, memory_id):
+    def forget(self, memory_id: int) -> None:
         """Soft-delete a memory."""
         db = self._db()
         db.execute("UPDATE memories SET retired_at = datetime('now') WHERE id = ?", (memory_id,))
         db.commit()
         db.close()
     
-    def log(self, summary, event_type="observation", project=None, importance=0.5):
+    def log(self, summary: str, event_type: str = "observation", project: Optional[str] = None, importance: float = 0.5) -> int:
         """Log an event. Returns event ID."""
         db = self._db()
         cur = db.execute(
@@ -161,7 +183,7 @@ class Brain:
         db.close()
         return eid
     
-    def entity(self, name, entity_type, properties=None, observations=None):
+    def entity(self, name: str, entity_type: str, properties: Optional[Dict[str, Any]] = None, observations: Optional[List[str]] = None) -> int:
         """Create or get an entity. Returns entity ID."""
         db = self._db()
         existing = db.execute(
@@ -182,7 +204,7 @@ class Brain:
         db.close()
         return eid
     
-    def relate(self, from_entity, relation, to_entity):
+    def relate(self, from_entity: str, relation: str, to_entity: str) -> None:
         """Create a relation between two entities by name."""
         db = self._db()
         from_row = db.execute("SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (from_entity,)).fetchone()
@@ -198,7 +220,7 @@ class Brain:
         db.commit()
         db.close()
     
-    def decide(self, title, rationale, project=None):
+    def decide(self, title: str, rationale: str, project: Optional[str] = None) -> int:
         """Record a decision."""
         db = self._db()
         cur = db.execute(
@@ -210,11 +232,11 @@ class Brain:
         db.close()
         return did
     
-    def stats(self):
+    def stats(self) -> Dict[str, int]:
         """Get database statistics."""
         db = self._db()
-        stats = {}
-        for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges"]:
+        stats: Dict[str, int] = {}
+        for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges", "affect_log"]:
             try:
                 stats[tbl] = db.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
             except:
@@ -227,3 +249,37 @@ class Brain:
             stats["active_memories"] = 0
         db.close()
         return stats
+
+    def affect(self, text: str) -> Dict[str, Any]:
+        """Classify affect from text. Returns VAD scores and labels."""
+        return classify_affect(text)
+
+    def affect_log(self, text: str, source: str = "observation") -> Dict[str, Any]:
+        """Classify affect from text and store in affect_log table. Returns the affect result with stored ID."""
+        result = classify_affect(text)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        db = self._db()
+        cur = db.execute(
+            "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
+            "cluster, functional_state, safety_flag, trigger, source, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                self.agent_id,
+                result.get("valence", 0.0),
+                result.get("arousal", 0.0),
+                result.get("dominance", 0.0),
+                result.get("affect_label"),
+                result.get("cluster"),
+                result.get("functional_state"),
+                result.get("safety_flag"),
+                text,
+                source,
+                now,
+            ),
+        )
+        db.commit()
+        result["id"] = cur.lastrowid
+        result["source"] = source
+        result["created_at"] = now
+        db.close()
+        return result

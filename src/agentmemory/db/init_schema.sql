@@ -305,5 +305,29 @@ CREATE TABLE IF NOT EXISTS access_log (
 CREATE INDEX idx_access_agent ON access_log(agent_id);
 CREATE INDEX idx_access_time ON access_log(created_at DESC);
 
+-- =============================================================================
+-- AFFECT TRACKING — per-agent functional affect states
+-- Grounded in Anthropic "Emotion Concepts in LLMs" (2026)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS affect_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    valence REAL NOT NULL DEFAULT 0.0,
+    arousal REAL NOT NULL DEFAULT 0.0,
+    dominance REAL NOT NULL DEFAULT 0.0,
+    affect_label TEXT,
+    cluster TEXT,
+    functional_state TEXT,
+    safety_flag TEXT,
+    trigger TEXT,
+    source TEXT DEFAULT 'observation',
+    metadata TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_affect_agent_time ON affect_log(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_affect_safety ON affect_log(safety_flag) WHERE safety_flag IS NOT NULL;
+
 -- Prune access log older than 30 days automatically
 -- (run via brainctl maintenance command)

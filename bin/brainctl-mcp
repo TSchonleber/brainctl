@@ -1367,7 +1367,161 @@ TOOLS = [
         },
     ),
 ]
+    ),
+    # --- Affect tools ---
+    Tool(
+        name="affect_classify",
+        description=(
+            "Classify functional affect (emotion) from text using local lexical analysis. "
+            "Zero LLM cost, ~1ms. Returns valence/arousal/dominance, emotion label, "
+            "cluster, functional state, and safety flags. Does NOT log to database."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID (optional, for context)"},
+                "text":     {"type": "string", "description": "Text to classify affect from"},
+            },
+            "required": ["text"],
+        },
+    ),
+    Tool(
+        name="affect_log",
+        description=(
+            "Classify affect from text AND store the result in the affect_log table. "
+            "Use this to track agent emotional state over time. Returns the classification "
+            "plus the inserted row ID."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID"},
+                "text":     {"type": "string", "description": "Text to classify and log"},
+                "source":   {"type": "string", "description": "Source label (default: observation)",
+                             "default": "observation"},
+            },
+            "required": ["text"],
+        },
+    ),
+    Tool(
+        name="affect_check",
+        description=(
+            "Check current affect state for an agent. Returns the latest affect_log entry, "
+            "recent affect velocity (rate of change), and any active safety flags. "
+            "Use this to monitor agent wellbeing before critical tasks."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID to check (required)"},
+            },
+            "required": ["agent_id"],
+        },
+    ),
+    Tool(
+        name="affect_monitor",
+        description=(
+            "Fleet-wide affect scan across all agents. Returns mean VAD coordinates, "
+            "cluster distribution, safety alerts, and overall fleet health status. "
+            "Use for supervisory oversight of multi-agent systems."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Agent ID (ignored, fleet-wide scan)"},
+            },
+        },
+    ),
+]
 
+# ---------------------------------------------------------------------------
+# Affect tools
+# ---------------------------------------------------------------------------
+
+def tool_affect_classify(agent_id="mcp-client", text="", **kw):
+    sys.path.insert(0, str(Path.home() / "agentmemory" / "src"))
+    from agentmemory.affect import classify_affect
+    return classify_affect(text)
+
+def tool_affect_log(agent_id="mcp-client", text="", source="observation", **kw):
+    sys.path.insert(0, str(Path.home() / "agentmemory" / "src"))
+    from agentmemory.affect import classify_affect
+    result = classify_affect(text)
+    db = get_db()
+    safety = result["safety_flags"][0]["severity"] if result["safety_flags"] else None
+    db.execute(
+        "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
+        "cluster, functional_state, safety_flag, trigger, source, metadata, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%S','now'))",
+        (agent_id, result["valence"], result["arousal"], result["dominance"],
+         result["affect_label"], result["cluster"], result["functional_state"],
+         safety, text[:200], source,
+         json.dumps({"emotions": result["emotions"], "safety_flags": result["safety_flags"]}))
+    )
+    db.commit()
+    return result
+
+def tool_affect_check(agent_id="mcp-client", **kw):
+    sys.path.insert(0, str(Path.home() / "agentmemory" / "src"))
+    from agentmemory.affect import SAFETY_PATTERNS, affect_velocity
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM affect_log WHERE agent_id=? ORDER BY created_at DESC LIMIT 1",
+        (agent_id,)
+    ).fetchone()
+    if not row:
+        return {"agent": agent_id, "status": "no_data"}
+    current = dict(row)
+    history_rows = db.execute(
+        "SELECT valence, arousal, dominance FROM affect_log WHERE agent_id=? ORDER BY created_at DESC LIMIT 10",
+        (agent_id,)
+    ).fetchall()
+    history = list(reversed([dict(r) for r in history_rows]))
+    velocity = affect_velocity(history)
+    v, a, d = current["valence"], current["arousal"], current["dominance"]
+    flags = []
+    for name, pattern in SAFETY_PATTERNS.items():
+        try:
+            if pattern["conditions"](v, a, d):
+                flags.append({"pattern": name, "severity": pattern["severity"], "description": pattern["description"]})
+        except Exception:
+            pass
+    return {
+        "agent": agent_id,
+        "current": {"valence": v, "arousal": a, "dominance": d,
+                     "affect_label": current["affect_label"], "cluster": current["cluster"],
+                     "functional_state": current["functional_state"]},
+        "velocity": velocity,
+        "safety_flags": flags,
+        "status": "critical" if any(f["severity"] == "critical" for f in flags)
+                  else "warning" if flags else "healthy",
+    }
+
+def tool_affect_monitor(agent_id="mcp-client", **kw):
+    sys.path.insert(0, str(Path.home() / "agentmemory" / "src"))
+    from agentmemory.affect import SAFETY_PATTERNS, fleet_affect_summary
+    db = get_db()
+    rows = db.execute("""
+        SELECT a.agent_id, a.valence, a.arousal, a.dominance,
+               a.affect_label, a.cluster, a.functional_state, a.safety_flag
+        FROM affect_log a INNER JOIN (
+            SELECT agent_id, MAX(id) as max_id FROM affect_log GROUP BY agent_id
+        ) latest ON a.id = latest.max_id
+    """).fetchall()
+    agent_states = {}
+    for r in rows:
+        state = dict(r)
+        v, a, d = state["valence"], state["arousal"], state["dominance"]
+        flags = []
+        for name, pattern in SAFETY_PATTERNS.items():
+            try:
+                if pattern["conditions"](v, a, d):
+                    flags.append({"pattern": name, "severity": pattern["severity"], "description": pattern["description"]})
+            except Exception:
+                pass
+        state["safety_flags"] = flags
+        agent_states[state["agent_id"]] = state
+    return fleet_affect_summary(agent_states)
 
 # ---------------------------------------------------------------------------
 # MCP Server
@@ -1405,6 +1559,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "resolve_conflict": tool_resolve_conflict,
         "belief_collapse": tool_belief_collapse,
         "access_log_annotate": tool_access_log_annotate,
+        "affect_classify": tool_affect_classify,
+        "affect_log": tool_affect_log,
+        "affect_check": tool_affect_check,
+        "affect_monitor": tool_affect_monitor,
     }
 
     fn = dispatch.get(name)

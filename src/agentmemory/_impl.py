@@ -90,7 +90,7 @@ except Exception:
 DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
 BLOBS_DIR = Path.home() / "agentmemory" / "blobs"
 BACKUPS_DIR = Path.home() / "agentmemory" / "backups"
-VERSION = "3.0.0"
+VERSION = "1.0.0"
 
 VALID_MEMORY_CATEGORIES = {
     "identity", "user", "environment", "convention",
@@ -846,13 +846,24 @@ def cmd_memory_add(args):
         surprise, surprise_method = 0.7, "error"
 
     # Lightweight W(m) worthiness pre-check using surprise score
-    # worthiness = surprise * importance_estimate * (1 - redundancy)
+    # worthiness = surprise * importance_estimate * (1 - redundancy) * arousal_boost
     # importance_estimate derived from confidence and category weight
     importance_estimate = effective_confidence * (0.5 + 0.5 * source_weight_applied)
     _pre_redundancy = 0.0
     if surprise is not None and surprise < 0.2:
         _pre_redundancy = 0.5  # high overlap implies some redundancy
-    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy)
+
+    # Affect-modulated worthiness: high-arousal memories are more worth storing
+    # Grounded in McGaugh (2004) + Anthropic "Emotion Concepts in LLMs" (2026)
+    _arousal_boost = 1.0
+    try:
+        from agentmemory.affect import classify_affect, arousal_write_boost
+        _affect = classify_affect(args.content)
+        _arousal_boost = arousal_write_boost(_affect.get("arousal", 0.0))
+    except Exception:
+        pass  # affect module failure is never fatal
+
+    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _arousal_boost
     if _pre_worthiness < 0.3 and not force_write:
         # Log rejected memory as observation event
         try:
@@ -4982,6 +4993,23 @@ def cmd_stats(args):
         pass
 
     json_out(stats)
+
+def cmd_init(args):
+    """Initialize a fresh brain.db at the default or specified path."""
+    target = Path(getattr(args, "path", None) or DB_PATH)
+    if target.exists() and not getattr(args, "force", False):
+        json_out({"ok": False, "error": f"Database already exists at {target}. Use --force to overwrite."})
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Use the Brain class which has a self-contained schema
+    try:
+        from agentmemory.brain import Brain
+        brain = Brain(str(target))
+        stats = brain.stats()
+        json_out({"ok": True, "path": str(target), "tables": stats})
+    except Exception as e:
+        json_out({"ok": False, "error": str(e)})
+
 
 def cmd_cost(args):
     """Estimate token cost of brain operations — helps users understand and reduce model usage."""
@@ -10655,7 +10683,25 @@ def cmd_infer_gapfill(args):
 # ---------------------------------------------------------------------------
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="brainctl", description="Unified agent memory CLI v3")
+    p = argparse.ArgumentParser(
+        prog="brainctl",
+        description="brainctl — A cognitive memory system for AI agents.\n\n"
+                    "Core commands:\n"
+                    "  init          Create a fresh brain.db\n"
+                    "  memory        Add, search, list, retire memories\n"
+                    "  entity        Create, search, relate typed entities\n"
+                    "  event         Log and search events\n"
+                    "  search        Universal cross-table search (FTS5 + vector)\n"
+                    "  affect        Functional affect tracking and safety monitoring\n"
+                    "  stats         Database statistics\n"
+                    "  cost          Token cost analysis and optimization tips\n"
+                    "  trigger       Prospective memory triggers\n"
+                    "  decision      Record decisions with rationale\n"
+                    "  graph         Knowledge graph operations\n"
+                    "  neurostate    Neuromodulation state management\n"
+                    "  ui            Web dashboard (port 3939)\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--agent", "-a", help="Agent ID for attribution (default: unknown)")
     sub = p.add_subparsers(dest="command")
 
@@ -11107,6 +11153,11 @@ def build_parser():
                      help="Hypothesis status to show (default: incubating)")
     drm.add_argument("--limit", "-l", type=int, default=20, help="Max results (default: 20)")
     drm.add_argument("--format", "-f", choices=["text", "json"], default="text")
+
+    # --- init ---
+    init_p = sub.add_parser("init", help="Initialize a fresh brain.db database")
+    init_p.add_argument("--path", help="Custom path for brain.db (default: ~/agentmemory/db/brain.db)")
+    init_p.add_argument("--force", action="store_true", help="Overwrite existing database")
 
     # --- maintenance ---
     sub.add_parser("backup", help="Backup database")
@@ -11823,6 +11874,7 @@ def main():
         "version": cmd_version,
         "search": cmd_search,
         "backup": cmd_backup,
+        "init": cmd_init,
         "stats": cmd_stats,
         "cost": cmd_cost,
         "affect": None,  # subcommand dispatch below
