@@ -1,38 +1,90 @@
-/* ===== Neural Map — 3D Knowledge Graph Visualization ===== */
-/* Three.js force-directed graph in 3D space */
+/* ===== Neural Map — Brain-Structured 3D Knowledge Visualization ===== */
+/* Three.js force-directed graph organized by cognitive function regions */
 
 let neuralInitialized = false;
 let scene, camera3d, renderer, controls;
 let graphData = { nodes: [], edges: [] };
-let nodeMeshes = new Map(); // id -> mesh
+let nodeMeshes = new Map();
 let edgeLines = [];
+let impulseParticles = [];
 let simNodes = [];
 let simEdges = [];
 let raycaster, mouse;
 let hoveredNode = null;
 let selectedNode = null;
 let neuralFilters = { scope: 'overview', showEvents: true, showDecisions: true, showMemories: true };
-let animFrame;
+let clock;
 
 const NODE_COLORS = {
-  person: 0x4fc3f7,
-  project: 0x81c784,
-  tool: 0xffb74d,
-  concept: 0xce93d8,
-  agent: 0xef5350,
-  organization: 0x4dd0e1,
-  decision: 0xffd166,
-  event: 0x7bdff2,
-  memory: 0x9bdeac,
-  unknown: 0x888888
+  person: 0x4fc3f7, project: 0x81c784, tool: 0xffb74d,
+  concept: 0xce93d8, agent: 0x5c6bc0, organization: 0x4dd0e1,
+  decision: 0xffd54f, event: 0x4dd0e1, memory: 0x66bb6a, unknown: 0x888888
 };
 
-const NODE_SIZES = {
-  person: 3.0, organization: 2.8, project: 2.2, tool: 1.8,
-  concept: 2.0, agent: 1.0, decision: 1.6, event: 1.2, memory: 1.0
+const REGION_COLORS = {
+  prefrontal: 0xffd54f,  // decisions — gold
+  temporal: 0x4dd0e1,    // events — cyan
+  hippocampus: 0x66bb6a, // memories — green
+  cortex: 0x7986cb,      // entities — indigo
+  amygdala: 0xef5350,    // affect — red
 };
 
-// Load Three.js from CDN (r148 — last version with UMD/global THREE support)
+// Brain region target positions (spherical-ish layout)
+const REGION_CENTERS = {
+  prefrontal:  { x: 0, y: 220, z: 80 },    // top — decisions, planning
+  temporal_l:  { x: -250, y: -30, z: 50 },  // left — older events
+  temporal_r:  { x: 250, y: -30, z: 50 },   // right — recent events
+  hippocampus: { x: 0, y: -20, z: 0 },      // center — memories
+  cortex_top:  { x: 0, y: 160, z: -120 },   // upper back — concepts
+  cortex_left: { x: -200, y: 80, z: -60 },  // left — tools
+  cortex_right:{ x: 200, y: 80, z: -60 },   // right — projects
+  cortex_front:{ x: 0, y: 40, z: 180 },     // front — people, orgs
+  amygdala:    { x: 0, y: -100, z: 60 },     // below center — affect
+  agents_l:    { x: -180, y: -140, z: -40 }, // lower left — agents cluster
+  agents_r:    { x: 180, y: -140, z: -40 },  // lower right — agents cluster
+};
+
+function getRegion(node) {
+  const kind = node.kind || node.type;
+  if (kind === 'decision') return 'prefrontal';
+  if (kind === 'event') {
+    // Split events left/right by age
+    const created = node.created_at || '';
+    return created > '2026-04-01' ? 'temporal_r' : 'temporal_l';
+  }
+  if (kind === 'memory') return 'hippocampus';
+  if (kind === 'concept') return 'cortex_top';
+  if (kind === 'tool') return 'cortex_left';
+  if (kind === 'project') return 'cortex_right';
+  if (kind === 'person' || kind === 'organization') return 'cortex_front';
+  if (kind === 'agent') {
+    // Split agents across two clusters by hash
+    const hash = (node.label || '').charCodeAt(0) || 0;
+    return hash % 2 === 0 ? 'agents_l' : 'agents_r';
+  }
+  return 'hippocampus';
+}
+
+function getRegionColor(node) {
+  const kind = node.kind || node.type;
+  if (kind === 'decision') return REGION_COLORS.prefrontal;
+  if (kind === 'event') return REGION_COLORS.temporal;
+  if (kind === 'memory') return REGION_COLORS.hippocampus;
+  if (kind === 'agent') return 0x5c6bc0;
+  return NODE_COLORS[kind] || NODE_COLORS.unknown;
+}
+
+function getNodeSize(node) {
+  const kind = node.kind || node.type;
+  const base = {
+    person: 4.0, organization: 3.5, project: 3.0, tool: 2.5,
+    concept: 2.8, decision: 2.2, event: 1.4, memory: 1.6, agent: 1.0,
+  }[kind] || 1.5;
+  const conf = node.confidence || 0.5;
+  return base * (0.6 + conf * 0.5);
+}
+
+// ===== THREE.JS LOADING =====
 function loadThreeJS() {
   return new Promise((resolve, reject) => {
     if (window.THREE && window.THREE.OrbitControls) { resolve(); return; }
@@ -41,18 +93,16 @@ function loadThreeJS() {
     s1.onload = () => {
       const s2 = document.createElement('script');
       s2.src = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js';
-      s2.onload = () => {
-        console.log('Three.js + OrbitControls loaded', THREE.REVISION);
-        resolve();
-      };
-      s2.onerror = () => { console.error('Failed to load OrbitControls'); reject(); };
+      s2.onload = () => resolve();
+      s2.onerror = () => reject('OrbitControls failed');
       document.head.appendChild(s2);
     };
-    s1.onerror = () => { console.error('Failed to load Three.js'); reject(); };
+    s1.onerror = () => reject('Three.js failed');
     document.head.appendChild(s1);
   });
 }
 
+// ===== INIT =====
 async function initNeural() {
   if (neuralInitialized) return;
   neuralInitialized = true;
@@ -60,57 +110,73 @@ async function initNeural() {
   await loadThreeJS();
   const container = document.getElementById('neuralView');
   const canvas = document.getElementById('neuralCanvas');
+  clock = new THREE.Clock();
 
-  // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x060d17);
-  scene.fog = new THREE.FogExp2(0x060d17, 0.0008);
+  scene.background = new THREE.Color(0x050a14);
+  scene.fog = new THREE.FogExp2(0x050a14, 0.0006);
 
-  // Camera
-  camera3d = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 1, 8000);
-  camera3d.position.set(0, 0, 600);
+  camera3d = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 1, 8000);
+  camera3d.position.set(0, 150, 700);
 
-  // Renderer
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setSize(container.clientWidth, container.clientHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
 
-  // Controls
   controls = new THREE.OrbitControls(camera3d, renderer.domElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.rotateSpeed = 0.6;
-  controls.zoomSpeed = 1.2;
-  controls.minDistance = 100;
-  controls.maxDistance = 3000;
+  controls.dampingFactor = 0.06;
+  controls.rotateSpeed = 0.5;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.3;
+  controls.minDistance = 120;
+  controls.maxDistance = 2500;
 
-  // Ambient light
-  scene.add(new THREE.AmbientLight(0x404060, 0.6));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.4);
-  dirLight.position.set(200, 300, 400);
-  scene.add(dirLight);
+  // Lighting
+  scene.add(new THREE.AmbientLight(0x1a1a3e, 0.5));
+  const hemi = new THREE.HemisphereLight(0x4fc3f7, 0x1a0a2e, 0.3);
+  scene.add(hemi);
+  const point1 = new THREE.PointLight(0x4fc3f7, 0.6, 1200);
+  point1.position.set(200, 300, 200);
+  scene.add(point1);
+  const point2 = new THREE.PointLight(0xce93d8, 0.4, 800);
+  point2.position.set(-200, -100, -200);
+  scene.add(point2);
 
-  // Starfield background
+  // Starfield
   const starGeo = new THREE.BufferGeometry();
-  const starPositions = new Float32Array(3000);
-  for (let i = 0; i < 3000; i++) {
-    starPositions[i] = (Math.random() - 0.5) * 6000;
-  }
-  starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-  const starMat = new THREE.PointsMaterial({ color: 0x4fc3f7, size: 1.2, transparent: true, opacity: 0.3 });
-  scene.add(new THREE.Points(starGeo, starMat));
+  const starPos = new Float32Array(4500);
+  for (let i = 0; i < 4500; i++) starPos[i] = (Math.random() - 0.5) * 5000;
+  starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+  scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({
+    color: 0x4fc3f7, size: 1.0, transparent: true, opacity: 0.2
+  })));
 
-  // Raycaster for mouse interaction
+  // Brain region markers (subtle glowing spheres showing structure)
+  Object.entries(REGION_CENTERS).forEach(([name, pos]) => {
+    if (name.startsWith('agents')) return; // skip agent clusters
+    const color = name === 'prefrontal' ? REGION_COLORS.prefrontal :
+                  name.startsWith('temporal') ? REGION_COLORS.temporal :
+                  name === 'hippocampus' ? REGION_COLORS.hippocampus :
+                  name === 'amygdala' ? REGION_COLORS.amygdala : REGION_COLORS.cortex;
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(35, 24, 16),
+      new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.04, emissive: color, emissiveIntensity: 0.15 })
+    );
+    marker.position.set(pos.x, pos.y, pos.z);
+    scene.add(marker);
+  });
+
   raycaster = new THREE.Raycaster();
   mouse = new THREE.Vector2();
-  raycaster.params.Points = { threshold: 5 };
 
-  // Events
   renderer.domElement.addEventListener('mousemove', onMouseMove3D);
   renderer.domElement.addEventListener('click', onClick3D);
   window.addEventListener('resize', onResize3D);
 
-  // Filter buttons
+  // Filter buttons — with actual different behavior
   document.querySelectorAll('.neural-filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       neuralFilters.scope = btn.dataset.filter;
@@ -118,122 +184,129 @@ async function initNeural() {
       buildScene();
     });
   });
-  bindToggle3D('neuralEventsToggle', 'showEvents');
-  bindToggle3D('neuralDecisionsToggle', 'showDecisions');
-  bindToggle3D('neuralMemoriesToggle', 'showMemories');
+  bindToggle('neuralEventsToggle', 'showEvents');
+  bindToggle('neuralDecisionsToggle', 'showDecisions');
+  bindToggle('neuralMemoriesToggle', 'showMemories');
 
-  // Zoom buttons
-  document.getElementById('neuralZoomIn').addEventListener('click', () => {
-    camera3d.position.multiplyScalar(0.75);
-  });
-  document.getElementById('neuralZoomOut').addEventListener('click', () => {
-    camera3d.position.multiplyScalar(1.35);
-  });
+  document.getElementById('neuralZoomIn').addEventListener('click', () => camera3d.position.multiplyScalar(0.75));
+  document.getElementById('neuralZoomOut').addEventListener('click', () => camera3d.position.multiplyScalar(1.35));
   document.getElementById('neuralReset').addEventListener('click', () => {
-    camera3d.position.set(0, 0, 600);
+    camera3d.position.set(0, 150, 700);
     controls.target.set(0, 0, 0);
+    controls.autoRotate = true;
     selectedNode = null;
-    hideDetail3D();
+    hideDetail();
   });
 
-  await loadGraph3D();
-  animate3D();
+  await loadGraph();
+  animate();
 }
 
-function bindToggle3D(id, key) {
+function bindToggle(id, key) {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('change', (e) => { neuralFilters[key] = e.target.checked; buildScene(); });
 }
 
-async function loadGraph3D() {
+async function loadGraph() {
   try {
     const res = await fetch('/api/graph');
     graphData = await res.json();
     buildScene();
-  } catch (err) {
-    console.error('Graph load error:', err);
+  } catch (err) { console.error('Graph load error:', err); }
+}
+
+function isNarrative(n) { return n.kind === 'event' || n.kind === 'decision' || n.kind === 'memory'; }
+
+// ===== FILTERING — Each mode shows genuinely different data =====
+function getFilteredData() {
+  const allNodes = graphData.nodes || [];
+  const allEdges = graphData.edges || [];
+
+  // Toggle filters
+  let nodes = allNodes.filter(n => {
+    if (n.kind === 'event' && !neuralFilters.showEvents) return false;
+    if (n.kind === 'decision' && !neuralFilters.showDecisions) return false;
+    if (n.kind === 'memory' && !neuralFilters.showMemories) return false;
+    return true;
+  });
+
+  if (neuralFilters.scope === 'overview') {
+    // OVERVIEW: structural backbone only — entities + their inter-entity edges
+    // No events, no memories, no decisions. Pure knowledge graph.
+    nodes = nodes.filter(n => !isNarrative(n));
+  } else if (neuralFilters.scope === 'thinking') {
+    // THINKING: entities + decisions + recent events (active cognition)
+    // Skip memories (long-term storage) and old events (processed)
+    nodes = nodes.filter(n => {
+      if (n.kind === 'memory') return false;
+      if (n.kind === 'event') {
+        // Only last 30 events
+        const rank = allNodes.filter(x => x.kind === 'event')
+          .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+          .indexOf(n);
+        return rank < 30;
+      }
+      return true;
+    });
   }
+  // 'all' = everything
+
+  const nodeIds = new Set(nodes.map(n => n.id));
+  const edges = allEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+  return { nodes, edges };
 }
 
-function filterNode(node) {
-  if (node.kind === 'event' && !neuralFilters.showEvents) return false;
-  if (node.kind === 'decision' && !neuralFilters.showDecisions) return false;
-  if (node.kind === 'memory' && !neuralFilters.showMemories) return false;
-  return true;
-}
-
+// ===== BUILD SCENE =====
 function buildScene() {
-  // Clear old meshes
+  // Clear
   nodeMeshes.forEach(m => scene.remove(m));
   nodeMeshes.clear();
   edgeLines.forEach(l => scene.remove(l));
   edgeLines = [];
+  impulseParticles.forEach(p => scene.remove(p.mesh));
+  impulseParticles = [];
   simNodes = [];
   simEdges = [];
 
-  const allNodes = (graphData.nodes || []).filter(filterNode);
-  const allEdges = graphData.edges || [];
-
-  // Apply scope filtering
-  let visibleNodes, visibleEdges;
-  if (neuralFilters.scope === 'all') {
-    visibleNodes = allNodes;
-  } else if (neuralFilters.scope === 'thinking') {
-    visibleNodes = allNodes;
-  } else {
-    // Overview: entities + limited narrative
-    const entities = allNodes.filter(n => !isNarrative(n));
-    const narratives = allNodes.filter(n => isNarrative(n));
-    // Take top narratives by confidence/importance
-    const topNarratives = narratives
-      .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
-      .slice(0, 80);
-    visibleNodes = [...entities, ...topNarratives];
-  }
-
-  const visibleIds = new Set(visibleNodes.map(n => n.id));
-  visibleEdges = allEdges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
-
-  // Create simulation nodes with random 3D positions
+  const { nodes, edges } = getFilteredData();
   const nodeMap = {};
-  visibleNodes.forEach(node => {
-    const spread = 400;
+
+  // Initial positions based on brain region + jitter
+  nodes.forEach(node => {
+    const region = getRegion(node);
+    const center = REGION_CENTERS[region] || { x: 0, y: 0, z: 0 };
+    const spread = isNarrative(node) ? 80 : 60;
     const sn = {
       ...node,
-      x: (Math.random() - 0.5) * spread,
-      y: (Math.random() - 0.5) * spread,
-      z: (Math.random() - 0.5) * spread,
+      x: center.x + (Math.random() - 0.5) * spread,
+      y: center.y + (Math.random() - 0.5) * spread,
+      z: center.z + (Math.random() - 0.5) * spread,
       vx: 0, vy: 0, vz: 0,
-      size: NODE_SIZES[node.kind] || NODE_SIZES[node.type] || 1.5,
+      region,
+      size: getNodeSize(node),
     };
-    // Scale by confidence
-    if (node.confidence) sn.size *= (0.6 + node.confidence * 0.6);
     simNodes.push(sn);
     nodeMap[node.id] = sn;
   });
 
-  visibleEdges.forEach(edge => {
+  edges.forEach(edge => {
     const src = nodeMap[edge.source];
     const tgt = nodeMap[edge.target];
     if (src && tgt) simEdges.push({ ...edge, src, tgt });
   });
 
   // Run force simulation
-  for (let i = 0; i < 200; i++) {
-    stepSimulation3D();
-  }
+  for (let i = 0; i < 250; i++) stepSim();
 
-  // Create Three.js objects
+  // Create meshes
   simNodes.forEach(sn => {
-    const color = NODE_COLORS[sn.kind] || NODE_COLORS[sn.type] || NODE_COLORS.unknown;
-    const geo = new THREE.SphereGeometry(sn.size, 16, 12);
+    const color = getRegionColor(sn);
+    const geo = new THREE.SphereGeometry(sn.size, 14, 10);
     const mat = new THREE.MeshPhongMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.3,
-      transparent: true,
-      opacity: isNarrative(sn) ? 0.75 : 0.95,
+      color, emissive: color, emissiveIntensity: 0.35,
+      transparent: true, opacity: isNarrative(sn) ? 0.8 : 0.95,
+      shininess: 60
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(sn.x, sn.y, sn.z);
@@ -241,70 +314,71 @@ function buildScene() {
     scene.add(mesh);
     nodeMeshes.set(sn.id, mesh);
 
-    // Add glow sprite
-    const spriteMat = new THREE.SpriteMaterial({
-      map: createGlowTexture(color),
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      opacity: 0.35,
+    // Glow
+    const glowMat = new THREE.SpriteMaterial({
+      map: makeGlow(color), blending: THREE.AdditiveBlending,
+      transparent: true, opacity: 0.3
     });
-    const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(sn.size * 6, sn.size * 6, 1);
-    mesh.add(sprite);
+    const glow = new THREE.Sprite(glowMat);
+    glow.scale.set(sn.size * 5, sn.size * 5, 1);
+    mesh.add(glow);
 
-    // Label (only for larger nodes)
-    if (sn.size > 1.3 || !isNarrative(sn)) {
-      const label = createTextSprite(sn.label || sn.id, color);
-      label.position.set(0, -(sn.size + 3), 0);
+    // Label for significant nodes
+    if (sn.size > 1.8 || !isNarrative(sn)) {
+      const label = makeLabel(sn.label || sn.id, color);
+      label.position.set(0, -(sn.size + 2.5), 0);
       mesh.add(label);
     }
   });
 
-  // Create edges as lines
+  // Edges as lines
   simEdges.forEach(edge => {
-    const isEntityEdge = edge.kind === 'entity';
-    const points = [
+    const isEntity = edge.kind === 'entity';
+    const color = isEntity ? 0x4fc3f7 : 0x223344;
+    const opacity = isEntity ? 0.45 : 0.12;
+    const geo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(edge.src.x, edge.src.y, edge.src.z),
       new THREE.Vector3(edge.tgt.x, edge.tgt.y, edge.tgt.z),
-    ];
-    const geo = new THREE.BufferGeometry().setFromPoints(points);
-    const mat = new THREE.LineBasicMaterial({
-      color: isEntityEdge ? 0x4fc3f7 : 0x334455,
-      transparent: true,
-      opacity: isEntityEdge ? 0.5 : 0.15,
-      linewidth: 1,
-    });
-    const line = new THREE.Line(geo, mat);
+    ]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
     line.userData = edge;
     scene.add(line);
     edgeLines.push(line);
+
+    // Neural impulse particles on entity edges
+    if (isEntity && Math.random() < 0.6) {
+      const pGeo = new THREE.SphereGeometry(0.5, 6, 4);
+      const pMat = new THREE.MeshBasicMaterial({ color: 0x4fc3f7, transparent: true, opacity: 0.8 });
+      const pMesh = new THREE.Mesh(pGeo, pMat);
+      scene.add(pMesh);
+      impulseParticles.push({ mesh: pMesh, edge, t: Math.random(), speed: 0.002 + Math.random() * 0.004 });
+    }
   });
 }
 
-function isNarrative(node) {
-  return node.kind === 'event' || node.kind === 'decision' || node.kind === 'memory';
-}
+// ===== FORCE SIMULATION =====
+function stepSim() {
+  const repulsion = 60;
+  const attraction = 0.006;
+  const regionPull = 0.003; // Pull toward assigned brain region
+  const damping = 0.82;
 
-function stepSimulation3D() {
-  const repulsion = 80;
-  const attraction = 0.008;
-  const damping = 0.85;
-  const centerPull = 0.001;
-
-  // Repulsion (all pairs, use spatial hashing for perf)
   for (let i = 0; i < simNodes.length; i++) {
     const a = simNodes[i];
-    // Center pull
-    a.vx -= a.x * centerPull;
-    a.vy -= a.y * centerPull;
-    a.vz -= a.z * centerPull;
+    // Pull toward brain region center
+    const rc = REGION_CENTERS[a.region] || { x: 0, y: 0, z: 0 };
+    a.vx += (rc.x - a.x) * regionPull;
+    a.vy += (rc.y - a.y) * regionPull;
+    a.vz += (rc.z - a.z) * regionPull;
 
     for (let j = i + 1; j < simNodes.length; j++) {
       const b = simNodes[j];
       let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
       let dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      if (dist > 500) continue; // skip distant pairs
-      const force = repulsion / (dist * dist);
+      if (dist > 400) continue;
+      // Stronger repulsion within same region
+      const sameRegion = a.region === b.region ? 1.5 : 1.0;
+      const force = (repulsion * sameRegion) / (dist * dist);
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
       const fz = (dz / dist) * force;
@@ -313,13 +387,12 @@ function stepSimulation3D() {
     }
   }
 
-  // Attraction along edges
   simEdges.forEach(edge => {
     const dx = edge.tgt.x - edge.src.x;
     const dy = edge.tgt.y - edge.src.y;
     const dz = edge.tgt.z - edge.src.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-    const ideal = edge.kind === 'entity' ? 60 : 100;
+    const ideal = edge.kind === 'entity' ? 40 : 70;
     const force = (dist - ideal) * attraction;
     const fx = (dx / dist) * force;
     const fy = (dy / dist) * force;
@@ -328,177 +401,187 @@ function stepSimulation3D() {
     edge.tgt.vx -= fx; edge.tgt.vy -= fy; edge.tgt.vz -= fz;
   });
 
-  // Apply velocities with damping
   simNodes.forEach(n => {
     n.vx *= damping; n.vy *= damping; n.vz *= damping;
     n.x += n.vx; n.y += n.vy; n.z += n.vz;
   });
 }
 
-function createGlowTexture(color) {
-  const size = 64;
+// ===== TEXTURES =====
+function makeGlow(color) {
   const c = document.createElement('canvas');
-  c.width = size; c.height = size;
+  c.width = 64; c.height = 64;
   const ctx = c.getContext('2d');
   const hex = '#' + new THREE.Color(color).getHexString();
-  const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
-  gradient.addColorStop(0, hex);
-  gradient.addColorStop(0.3, hex + '88');
-  gradient.addColorStop(1, hex + '00');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(c);
-  return tex;
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, hex); g.addColorStop(0.25, hex + '66'); g.addColorStop(1, hex + '00');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
 }
 
-function createTextSprite(text, color) {
+function makeLabel(text, color) {
   const c = document.createElement('canvas');
   const ctx = c.getContext('2d');
-  const label = (text || '').substring(0, 30);
-  ctx.font = '600 24px system-ui, sans-serif';
-  const w = Math.min(ctx.measureText(label).width + 16, 400);
-  c.width = w; c.height = 36;
-  ctx.font = '600 24px system-ui, sans-serif';
+  const label = (text || '').substring(0, 28);
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  const w = Math.min(ctx.measureText(label).width + 12, 360);
+  c.width = w; c.height = 32;
+  ctx.font = 'bold 22px system-ui, sans-serif';
   ctx.fillStyle = '#' + new THREE.Color(color).getHexString();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, w / 2, 18);
-  const tex = new THREE.CanvasTexture(c);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85 });
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, w / 2, 16);
+  const mat = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, opacity: 0.8 });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(w / 12, 3, 1);
+  sprite.scale.set(w / 12, 2.8, 1);
   return sprite;
 }
 
-function animate3D() {
-  animFrame = requestAnimationFrame(animate3D);
+// ===== ANIMATE =====
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
   controls.update();
 
-  // Slow continuous simulation for organic movement
-  stepSimulation3D();
+  // Gentle continuous simulation
+  stepSim();
+
+  // Update positions with lerp
   simNodes.forEach(sn => {
     const mesh = nodeMeshes.get(sn.id);
-    if (mesh) {
-      mesh.position.lerp(new THREE.Vector3(sn.x, sn.y, sn.z), 0.05);
-    }
+    if (mesh) mesh.position.lerp(new THREE.Vector3(sn.x, sn.y, sn.z), 0.04);
   });
-  // Update edge positions
+
+  // Update edges
   edgeLines.forEach(line => {
-    const edge = line.userData;
-    const positions = line.geometry.attributes.position.array;
-    positions[0] = edge.src.x; positions[1] = edge.src.y; positions[2] = edge.src.z;
-    positions[3] = edge.tgt.x; positions[4] = edge.tgt.y; positions[5] = edge.tgt.z;
+    const e = line.userData;
+    const p = line.geometry.attributes.position.array;
+    p[0] = e.src.x; p[1] = e.src.y; p[2] = e.src.z;
+    p[3] = e.tgt.x; p[4] = e.tgt.y; p[5] = e.tgt.z;
     line.geometry.attributes.position.needsUpdate = true;
   });
 
-  // Highlight hovered/selected
+  // Animate impulse particles along edges (neural firing)
+  impulseParticles.forEach(ip => {
+    ip.t += ip.speed;
+    if (ip.t > 1) ip.t = 0;
+    const e = ip.edge;
+    ip.mesh.position.set(
+      e.src.x + (e.tgt.x - e.src.x) * ip.t,
+      e.src.y + (e.tgt.y - e.src.y) * ip.t,
+      e.src.z + (e.tgt.z - e.src.z) * ip.t,
+    );
+    ip.mesh.material.opacity = 0.4 + Math.sin(ip.t * Math.PI) * 0.5;
+  });
+
+  // Pulse selected node
+  if (selectedNode) {
+    const mesh = nodeMeshes.get(selectedNode.id);
+    if (mesh) {
+      const pulse = 0.3 + Math.sin(clock.elapsedTime * 3) * 0.15;
+      mesh.material.emissiveIntensity = pulse;
+    }
+  }
+
+  // Dim unconnected nodes when something is selected
   nodeMeshes.forEach((mesh, id) => {
-    const isSelected = selectedNode && selectedNode.id === id;
-    const isHovered = hoveredNode && hoveredNode.id === id;
-    const baseOpacity = isNarrative(mesh.userData) ? 0.75 : 0.95;
-    mesh.material.opacity = isSelected ? 1.0 : isHovered ? 0.95 :
-      (selectedNode ? 0.15 : baseOpacity);
-    mesh.material.emissiveIntensity = isSelected ? 0.8 : isHovered ? 0.5 : 0.3;
+    const isS = selectedNode && selectedNode.id === id;
+    const isH = hoveredNode && hoveredNode.id === id;
+    const isConnected = selectedNode && simEdges.some(e =>
+      (e.src.id === selectedNode.id && e.tgt.id === id) ||
+      (e.tgt.id === selectedNode.id && e.src.id === id));
+    const base = isNarrative(mesh.userData) ? 0.8 : 0.95;
+    mesh.material.opacity = isS ? 1.0 : isH ? 0.95 : (selectedNode ? (isConnected ? 0.85 : 0.08) : base);
+    if (!isS) mesh.material.emissiveIntensity = isH ? 0.5 : (selectedNode && !isConnected ? 0.05 : 0.35);
   });
 
   renderer.render(scene, camera3d);
 }
 
+// ===== INTERACTION =====
 function onResize3D() {
-  const container = document.getElementById('neuralView');
-  if (!container || !renderer) return;
-  camera3d.aspect = container.clientWidth / container.clientHeight;
+  const c = document.getElementById('neuralView');
+  if (!c || !renderer) return;
+  camera3d.aspect = c.clientWidth / c.clientHeight;
   camera3d.updateProjectionMatrix();
-  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.setSize(c.clientWidth, c.clientHeight);
 }
 
 function onMouseMove3D(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
   raycaster.setFromCamera(mouse, camera3d);
-  const meshes = Array.from(nodeMeshes.values());
-  const intersects = raycaster.intersectObjects(meshes);
-
-  const prev = hoveredNode;
-  hoveredNode = intersects.length > 0 ? intersects[0].object.userData : null;
+  const hits = raycaster.intersectObjects(Array.from(nodeMeshes.values()));
+  hoveredNode = hits.length > 0 ? hits[0].object.userData : null;
   renderer.domElement.style.cursor = hoveredNode ? 'pointer' : 'grab';
 
+  const tooltip = document.getElementById('neuralTooltip');
   if (hoveredNode) {
-    renderTooltip3D(event.clientX, event.clientY, hoveredNode);
+    const hex = '#' + new THREE.Color(getRegionColor(hoveredNode)).getHexString();
+    const kind = hoveredNode.kind || hoveredNode.type || 'node';
+    const meta = [hoveredNode.agent_id, hoveredNode.project, hoveredNode.event_type].filter(Boolean);
+    const region = getRegion(hoveredNode).replace(/_/g, ' ');
+    tooltip.innerHTML = `
+      <div class="tooltip-type" style="color:${hex}">${esc(kind)} · ${esc(region)}</div>
+      <div class="tooltip-name">${esc(hoveredNode.label)}</div>
+      ${meta.length ? `<div class="tooltip-meta">${esc(meta.join(' · '))}</div>` : ''}
+    `;
+    tooltip.classList.remove('hidden');
+    tooltip.style.left = `${event.clientX + 16}px`;
+    tooltip.style.top = `${event.clientY - 20}px`;
   } else {
-    document.getElementById('neuralTooltip').classList.add('hidden');
+    tooltip.classList.add('hidden');
   }
 }
 
 function onClick3D(event) {
-  if (!hoveredNode) {
-    selectedNode = null;
-    hideDetail3D();
-    return;
-  }
+  if (!hoveredNode) { selectedNode = null; hideDetail(); return; }
   selectedNode = hoveredNode;
-  showDetail3D(selectedNode);
-
-  // Fly camera toward selected node
-  const target = new THREE.Vector3(selectedNode.x, selectedNode.y, selectedNode.z);
-  controls.target.lerp(target, 0.5);
+  controls.autoRotate = false; // stop spinning when user selects
+  // Fly toward node
+  const t = new THREE.Vector3(selectedNode.x, selectedNode.y, selectedNode.z);
+  controls.target.lerp(t, 0.5);
+  showDetail(selectedNode);
 }
 
-function renderTooltip3D(clientX, clientY, node) {
-  const tooltip = document.getElementById('neuralTooltip');
-  const hex = '#' + new THREE.Color(NODE_COLORS[node.kind] || NODE_COLORS[node.type] || 0x888888).getHexString();
-  const kind = node.kind || node.type || 'node';
-  const meta = [node.agent_id, node.project, node.category, node.event_type].filter(Boolean);
-  tooltip.innerHTML = `
-    <div class="tooltip-type" style="color:${hex}">${escHtml(kind)}</div>
-    <div class="tooltip-name">${escHtml(node.label)}</div>
-    ${meta.length ? `<div class="tooltip-meta">${escHtml(meta.join(' · '))}</div>` : ''}
-  `;
-  tooltip.classList.remove('hidden');
-  tooltip.style.left = `${clientX + 16}px`;
-  tooltip.style.top = `${clientY - 20}px`;
-}
-
-function showDetail3D(node) {
+function showDetail(node) {
   const panel = document.getElementById('neuralDetail');
-  const hex = '#' + new THREE.Color(NODE_COLORS[node.kind] || NODE_COLORS[node.type] || 0x888888).getHexString();
+  const hex = '#' + new THREE.Color(getRegionColor(node)).getHexString();
   const kind = node.kind || node.type || 'node';
-  const connections = simEdges
+  const region = getRegion(node).replace(/_/g, ' ');
+  const conns = simEdges
     .filter(e => e.src.id === node.id || e.tgt.id === node.id)
-    .slice(0, 18)
+    .slice(0, 20)
     .map(e => {
       const other = e.src.id === node.id ? e.tgt : e.src;
-      return `<li>${escHtml(e.label || e.kind || 'linked')}: ${escHtml(other.label)}</li>`;
+      return `<li>${esc(e.label || e.kind || 'linked')}: <span style="color:${hex}">${esc(other.label)}</span></li>`;
     }).join('');
 
   const facts = [];
   if (node.agent_id) facts.push(`Agent: ${node.agent_id}`);
   if (node.project) facts.push(`Project: ${node.project}`);
-  if (node.event_type) facts.push(`Event: ${node.event_type}`);
+  if (node.event_type) facts.push(`Event type: ${node.event_type}`);
   if (node.created_at) facts.push(`Created: ${node.created_at}`);
+  facts.push(`Region: ${region}`);
 
   let body = '';
-  if (node.detail) body = `<div class="detail-section-title">Content</div><div class="detail-text">${escHtml(node.detail)}</div>`;
-  else if (node.observations && node.observations.length) body = `<div class="detail-section-title">Observations</div><ul class="detail-obs-list">${node.observations.map(o => `<li>${escHtml(o)}</li>`).join('')}</ul>`;
+  if (node.detail) body = `<div class="detail-section-title">Content</div><div class="detail-text">${esc(node.detail)}</div>`;
+  else if (node.observations && node.observations.length)
+    body = `<div class="detail-section-title">Observations</div><ul class="detail-obs-list">${node.observations.map(o => `<li>${esc(o)}</li>`).join('')}</ul>`;
+
+  const edgeCount = simEdges.filter(e => e.src.id === node.id || e.tgt.id === node.id).length;
 
   panel.innerHTML = `
-    <button class="detail-close" onclick="hideDetail3D();selectedNode=null">×</button>
-    <div class="detail-name" style="color:${hex}">${escHtml(node.label)}</div>
-    <div class="detail-type">${escHtml(kind)}</div>
-    ${facts.length ? `<ul class="detail-obs-list">${facts.map(f => `<li>${escHtml(f)}</li>`).join('')}</ul>` : ''}
+    <button class="detail-close" onclick="hideDetail();selectedNode=null;controls.autoRotate=true">×</button>
+    <div class="detail-name" style="color:${hex}">${esc(node.label)}</div>
+    <div class="detail-type">${esc(kind)} · ${esc(region)}</div>
+    ${facts.length ? `<ul class="detail-obs-list">${facts.map(f => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
     ${body}
-    ${connections ? `<div class="detail-section-title">Connections (${simEdges.filter(e => e.src.id === node.id || e.tgt.id === node.id).length})</div><ul class="detail-obs-list">${connections}</ul>` : ''}
+    ${conns ? `<div class="detail-section-title">Connections (${edgeCount})</div><ul class="detail-obs-list">${conns}</ul>` : ''}
   `;
   panel.classList.remove('hidden');
 }
 
-function hideDetail3D() {
-  document.getElementById('neuralDetail').classList.add('hidden');
-}
+function hideDetail() { document.getElementById('neuralDetail').classList.add('hidden'); }
 
-function escHtml(v) {
-  if (!v) return '';
-  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+function esc(v) { return v ? String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
