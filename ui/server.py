@@ -801,6 +801,38 @@ def api_update(params, db):
 
 db_path_actual = DB_PATH
 
+def api_cost(params, db):
+    """Token cost dashboard for the web UI."""
+    from datetime import datetime, timedelta, timezone
+    report = {}
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    today_row = db.execute(
+        "SELECT COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ?", (today + " 00:00:00",)
+    ).fetchone()
+    report["today"] = {"queries": today_row[0], "tokens": today_row[1]}
+
+    week_row = db.execute(
+        "SELECT COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ?", (week_ago + " 00:00:00",)
+    ).fetchone()
+    report["last_7_days"] = {
+        "queries": week_row[0], "tokens": week_row[1],
+        "avg_per_query": round(week_row[1] / max(week_row[0], 1)),
+    }
+
+    top_agents = db.execute(
+        "SELECT agent_id, COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ? AND tokens_consumed IS NOT NULL "
+        "GROUP BY agent_id ORDER BY tokens DESC LIMIT 5",
+        (week_ago + " 00:00:00",)
+    ).fetchall()
+    report["top_agents"] = [{"agent": r[0], "queries": r[1], "tokens": r[2]} for r in top_agents]
+    return report
+
+
 ROUTES = {
     "/api/memories": api_memories,
     "/api/entities": api_entities,
@@ -808,6 +840,7 @@ ROUTES = {
     "/api/decisions": api_decisions,
     "/api/triggers": api_triggers,
     "/api/health": api_health,
+    "/api/cost": api_cost,
     "/api/graph": api_graph,
     "/api/stats": api_stats,
     "/api/update": api_update,

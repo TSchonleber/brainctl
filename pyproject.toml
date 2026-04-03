@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainctl"
-version = "0.1.0"
+version = "0.1.1"
 description = "A cognitive memory system for AI agents — episodic, semantic, and procedural memory with FTS5 search, vector embeddings, neuromodulation, and MCP server integration."
 readme = "README.md"
 license = {text = "MIT"}

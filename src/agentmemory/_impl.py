@@ -245,8 +245,37 @@ def _estimate_tokens(obj) -> int:
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def json_out(data):
-    print(json.dumps(data, indent=2, default=str))
+def json_out(data, compact=False):
+    """Output data as JSON. compact=True uses minimal whitespace for lower token consumption."""
+    if compact:
+        print(json.dumps(data, separators=(",", ":"), default=str))
+    else:
+        print(json.dumps(data, indent=2, default=str))
+
+
+def oneline_out(items, fields=("content", "summary", "name", "title", "rationale", "source_ref")):
+    """Print one-line-per-result format: ID | first available text field. Ultra-compact for agents."""
+    if isinstance(items, dict):
+        # Flatten search results dict
+        flat = []
+        for key, val in items.items():
+            if isinstance(val, list):
+                flat.extend(val)
+        items = flat
+    if not isinstance(items, list):
+        print(json.dumps(items, separators=(",", ":"), default=str))
+        return
+    for item in items:
+        item_id = item.get("id", "?")
+        text = ""
+        for f in fields:
+            if item.get(f):
+                text = str(item[f])[:120]
+                break
+        ttype = item.get("type", item.get("category", item.get("entity_type", "")))
+        conf = item.get("confidence") or item.get("final_score") or ""
+        conf_str = f" [{conf:.2f}]" if isinstance(conf, (int, float)) else ""
+        print(f"{item_id}|{ttype}|{text}{conf_str}")
 
 def row_to_dict(row):
     return dict(row) if row else None
@@ -1121,7 +1150,13 @@ def cmd_memory_search(args):
     log_access(db, args.agent or "unknown", "search", "memories", query=query, result_count=len(results))
     db.commit()
 
-    json_out(results)
+    _ofmt = getattr(args, "output", "json")
+    if _ofmt == "oneline":
+        oneline_out(results)
+    elif _ofmt == "compact":
+        json_out(results, compact=True)
+    else:
+        json_out(results)
 
 def cmd_memory_list(args):
     db = get_db()
@@ -3869,7 +3904,13 @@ def cmd_search(args):
     _out = {"mode": mode, "metacognition": {"tier": tier, "label": tier_label, "note": tier_note, **_intent_meta}, **results}
     if _triggered:
         _out["triggered_memories"] = _triggered
-    json_out(_out)
+    _ofmt = getattr(args, "output", "json")
+    if _ofmt == "oneline":
+        oneline_out(_out)
+    elif _ofmt == "compact":
+        json_out(_out, compact=True)
+    else:
+        json_out(_out)
 
 # ---------------------------------------------------------------------------
 # VECTOR SEARCH
@@ -4941,6 +4982,89 @@ def cmd_stats(args):
         pass
 
     json_out(stats)
+
+def cmd_cost(args):
+    """Estimate token cost of brain operations — helps users understand and reduce model usage."""
+    db = get_db()
+    report = {}
+
+    # 1. Average search result size (tokens)
+    # Simulate a broad search to estimate typical output size
+    sample_rows = db.execute(
+        "SELECT * FROM memories WHERE retired_at IS NULL ORDER BY recalled_count DESC LIMIT 10"
+    ).fetchall()
+    sample_data = [dict(r) for r in sample_rows]
+    avg_mem_tokens = _estimate_tokens(sample_data) // max(len(sample_data), 1) if sample_data else 0
+
+    # 2. Per-format comparison
+    sample_json = json.dumps(sample_data, indent=2, default=str)
+    sample_compact = json.dumps(sample_data, separators=(",", ":"), default=str)
+    sample_oneline = "\n".join(
+        f"{r.get('id', '?')}|{r.get('category', '')}|{str(r.get('content', ''))[:120]}"
+        for r in sample_data
+    )
+
+    report["format_comparison"] = {
+        "sample_size": len(sample_data),
+        "json_tokens": len(sample_json) // 4,
+        "compact_tokens": len(sample_compact) // 4,
+        "oneline_tokens": len(sample_oneline) // 4,
+        "savings_compact_pct": round((1 - len(sample_compact) / max(len(sample_json), 1)) * 100, 1),
+        "savings_oneline_pct": round((1 - len(sample_oneline) / max(len(sample_json), 1)) * 100, 1),
+    }
+
+    # 3. Access log: queries today + tokens consumed
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_row = db.execute(
+        "SELECT COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ?",
+        (today + " 00:00:00",)
+    ).fetchone()
+    report["today"] = {
+        "queries": today_row["queries"],
+        "tokens_consumed": today_row["tokens"],
+    }
+
+    # 4. Last 7 days
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    week_row = db.execute(
+        "SELECT COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ?",
+        (week_ago + " 00:00:00",)
+    ).fetchone()
+    report["last_7_days"] = {
+        "queries": week_row["queries"],
+        "tokens_consumed": week_row["tokens"],
+        "avg_tokens_per_query": round(week_row["tokens"] / max(week_row["queries"], 1)),
+    }
+
+    # 5. Top token-consuming agents
+    top_agents = db.execute(
+        "SELECT agent_id, COUNT(*) as queries, COALESCE(SUM(tokens_consumed), 0) as tokens "
+        "FROM access_log WHERE created_at >= ? AND tokens_consumed IS NOT NULL "
+        "GROUP BY agent_id ORDER BY tokens DESC LIMIT 5",
+        (week_ago + " 00:00:00",)
+    ).fetchall()
+    report["top_agents_7d"] = [
+        {"agent": r["agent_id"], "queries": r["queries"], "tokens": r["tokens"]}
+        for r in top_agents
+    ]
+
+    # 6. Recommendations
+    tips = []
+    if report["format_comparison"]["savings_oneline_pct"] > 30:
+        tips.append(f"Use --output oneline to save ~{report['format_comparison']['savings_oneline_pct']}% tokens on search results")
+    if report["format_comparison"]["savings_compact_pct"] > 15:
+        tips.append(f"Use --output compact to save ~{report['format_comparison']['savings_compact_pct']}% tokens vs pretty JSON")
+    tips.append("Use --budget N to cap search output at N tokens (e.g. --budget 500)")
+    tips.append("Use --limit 5 instead of default 10 for focused queries")
+    avg_tpq = report["last_7_days"]["avg_tokens_per_query"]
+    if avg_tpq > 2000:
+        tips.append(f"Avg {avg_tpq} tokens/query is high — consider --min-salience 0.1 to filter noise")
+    report["recommendations"] = tips
+
+    json_out(report)
+
 
 def cmd_prune_access_log(args):
     db = get_db()
@@ -10451,6 +10575,8 @@ def build_parser():
                              help="Disable temporal recency weighting; return raw FTS rank order")
     mem_search.add_argument("--epistemic", action="store_true",
                              help="Epistemic foraging mode: prioritize memories with confidence < 0.6 (high uncertainty = high info value)")
+    mem_search.add_argument("--output", "-o", choices=["json", "compact", "oneline"], default="json",
+                             help="Output format: json (default), compact (minified), oneline (ID|type|text)")
 
     mem_list = mem_sub.add_parser("list", help="List memories")
     mem_list.add_argument("--category", "-c")
@@ -10813,6 +10939,8 @@ def build_parser():
                        help="Apply phase-aware quantum amplitude re-ranking to memory results")
     srch.add_argument("--benchmark", action="store_true",
                        help="Compare classical vs quantum scores side-by-side; implies --quantum")
+    srch.add_argument("--output", "-o", choices=["json", "compact", "oneline"], default="json",
+                       help="Output format: json (default, pretty), compact (minified JSON), oneline (ID|type|text per line)")
 
     # --- promote ---
     prom = sub.add_parser("promote", help="Promote an event to a durable memory")
@@ -10846,6 +10974,7 @@ def build_parser():
     # --- maintenance ---
     sub.add_parser("backup", help="Backup database")
     sub.add_parser("stats", help="Show database statistics")
+    sub.add_parser("cost", help="Token cost analysis — shows format savings, query costs, and optimization tips")
     sub.add_parser("validate", help="Validate database integrity")
 
     prune = sub.add_parser("prune-log", help="Prune old access log entries")
@@ -11541,6 +11670,7 @@ def main():
         "search": cmd_search,
         "backup": cmd_backup,
         "stats": cmd_stats,
+        "cost": cmd_cost,
         "validate": cmd_validate,
         "prune-log": cmd_prune_access_log,
         "push": None,  # handled below

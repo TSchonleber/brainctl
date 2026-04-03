@@ -216,7 +216,7 @@ const renderers = {
   decisions(item) {
     return `<div class="card">
       <div class="card-header">
-        <span class="card-title">${escHtml(item.decision || '')}</span>
+        <span class="card-title">${escHtml(item.title || item.decision || '')}</span>
         <span class="time-ago">${timeAgo(item.created_at)}</span>
       </div>
       <div class="card-body">
@@ -275,6 +275,26 @@ async function loadHealth(area) {
     });
     html += '</div>';
   }
+
+  // Token cost section
+  try {
+    const costRes = await fetch(`${API}/api/cost`);
+    const cost = await costRes.json();
+    html += '<h3 style="font-size:14px;color:#888;margin:24px 0 12px">Token Cost (7 days)</h3><div class="health-grid">';
+    html += `<div class="health-card"><div style="font-size:24px;margin-bottom:8px">🔥</div><div class="health-value">${fmtNum(cost.last_7_days?.tokens || 0)}</div><div class="health-label">Tokens consumed</div></div>`;
+    html += `<div class="health-card"><div style="font-size:24px;margin-bottom:8px">📊</div><div class="health-value">${cost.last_7_days?.avg_per_query || 0}</div><div class="health-label">Avg tokens/query</div></div>`;
+    html += `<div class="health-card"><div style="font-size:24px;margin-bottom:8px">🔍</div><div class="health-value">${fmtNum(cost.last_7_days?.queries || 0)}</div><div class="health-label">Queries (7d)</div></div>`;
+    html += `<div class="health-card"><div style="font-size:24px;margin-bottom:8px">📅</div><div class="health-value">${fmtNum(cost.today?.tokens || 0)}</div><div class="health-label">Tokens today</div></div>`;
+    html += '</div>';
+    if (cost.top_agents?.length) {
+      html += '<h3 style="font-size:14px;color:#888;margin:16px 0 12px">Top Token Consumers</h3><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px">';
+      cost.top_agents.forEach(a => {
+        html += `<span class="cat-badge" style="padding:4px 10px"><span class="cat-dot" style="background:#ef5350"></span>${escHtml(a.agent)}: ${fmtNum(a.tokens)} tokens</span>`;
+      });
+      html += '</div>';
+    }
+  } catch (e) { console.error('Cost API error:', e); }
+
   area.innerHTML = html;
 }
 

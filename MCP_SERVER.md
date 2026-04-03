@@ -4,7 +4,7 @@ MCP (Model Context Protocol) server exposing brain.db to AI assistants and edito
 
 ## Setup
 
-After installing (`pip install agentmemory`), the `brainctl-mcp` command is available.
+After installing (`pip install brainctl[mcp]`), the `brainctl-mcp` command is available.
 
 ### Claude Desktop
 
