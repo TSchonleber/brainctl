@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainctl"
-version = "1.0.0"
+version = "0.3.0"
 description = "A cognitive memory system for AI agents — episodic, semantic, and procedural memory with FTS5 search, vector embeddings, neuromodulation, and MCP server integration."
 readme = "README.md"
 license = {text = "MIT"}
@@ -31,7 +31,7 @@ all = ["mcp>=1.27.0", "sqlite-vec>=0.1.0"]
 
 [project.scripts]
 brainctl = "agentmemory.cli:main"
-brainctl-mcp = "agentmemory.mcp_server:main"
+brainctl-mcp = "agentmemory.mcp_server:run"
 
 [project.urls]
 Homepage = "https://github.com/TSchonleber/brainctl"

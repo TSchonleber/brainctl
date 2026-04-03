@@ -203,11 +203,14 @@ _EMOTIONS = {
         "filth", "waste", "rotten", "decay", "stink", "hack", "kludge",
     }),
     "fear": frozenset({
-        "afraid", "scared", "terrified", "anxious", "nervous", "worried",
-        "panic", "dread", "alarm", "horror", "threat", "danger", "risk",
-        "vulnerable", "helpless", "desperate", "insecure", "paranoid",
-        "stress", "overwhelm", "crisis", "emergency", "caution", "warn",
-        "beware", "escape", "flee", "blocked", "stuck", "trapped",
+        "afraid", "scared", "terrified", "terrifying", "anxious", "nervous",
+        "worried", "worrying", "panic", "panicking", "panicked", "dread",
+        "alarm", "alarming", "alarmed", "horror", "threat", "threatening",
+        "danger", "dangerous", "risk", "risky", "vulnerable", "helpless",
+        "desperate", "insecure", "paranoid", "stress", "stressed", "stressful",
+        "overwhelm", "overwhelmed", "overwhelming", "crisis", "emergency",
+        "caution", "warn", "warning", "beware", "escape", "flee",
+        "blocked", "stuck", "trapped", "catastrophic", "catastrophe",
     }),
     "joy": frozenset({
         "happy", "joyful", "delighted", "pleased", "glad", "cheerful",
@@ -245,10 +248,12 @@ _EMOTIONS = {
 # Arousal indicators
 _HIGH_AROUSAL = frozenset({
     "urgent", "immediately", "critical", "emergency", "asap", "now",
-    "hurry", "rush", "quick", "fast", "panic", "alarm", "explode",
-    "crash", "scream", "shout", "excited", "thrilled", "ecstatic",
-    "furious", "terrified", "desperate", "incredible", "breaking",
-    "blocker", "production", "outage", "incident", "pager",
+    "hurry", "rush", "quick", "fast", "panic", "panicking", "panicked",
+    "alarm", "alarming", "alarmed", "explode", "exploding",
+    "crash", "crashed", "crashing", "scream", "screaming", "shout",
+    "excited", "thrilled", "ecstatic", "furious", "terrified", "terrifying",
+    "desperate", "incredible", "breaking", "blocker", "production",
+    "outage", "incident", "pager", "catastrophic", "failing", "melting",
 })
 
 _LOW_AROUSAL = frozenset({
@@ -364,9 +369,22 @@ def classify_affect(text: str) -> dict:
     arousal += excl * 0.08 + len(caps) * 0.06
     arousal = max(-1.0, min(1.0, arousal))
 
-    # --- 4. Dominance ---
-    hi_d = sum(1 for w in words if w in _HIGH_DOMINANCE)
-    lo_d = sum(1 for w in words if w in _LOW_DOMINANCE)
+    # --- 4. Dominance (with negation awareness) ---
+    hi_d = 0
+    lo_d = 0
+    for i, w in enumerate(words):
+        # Check for negation in prior 3 words — flips dominance direction
+        negated = any(words[j] in _NEGATION for j in range(max(0, i - 3), i))
+        if w in _HIGH_DOMINANCE:
+            if negated:
+                lo_d += 1  # "can't fix" = low dominance, not high
+            else:
+                hi_d += 1
+        elif w in _LOW_DOMINANCE:
+            if negated:
+                hi_d += 1  # "not helpless" = high dominance
+            else:
+                lo_d += 1
     dominance = (hi_d - lo_d) / n if n > 0 else 0.0
     dominance = max(-1.0, min(1.0, dominance))
 

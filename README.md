@@ -3,7 +3,7 @@
 A cognitive memory system for AI agents. Single SQLite file. No server required.
 
 ```python
-from brainctl import Brain
+from agentmemory import Brain
 
 brain = Brain()
 brain.remember("User prefers dark mode")
@@ -178,7 +178,7 @@ brainctl affect monitor --watch
 ### Python API
 
 ```python
-from brainctl import Brain
+from agentmemory import Brain
 
 brain = Brain()
 state = brain.affect("deployment failed, team is panicking")

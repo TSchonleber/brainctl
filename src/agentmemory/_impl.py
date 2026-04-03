@@ -87,10 +87,10 @@ except Exception:
 # Constants
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
 BLOBS_DIR = Path.home() / "agentmemory" / "blobs"
 BACKUPS_DIR = Path.home() / "agentmemory" / "backups"
-VERSION = "1.0.0"
+VERSION = "0.3.0"
 
 VALID_MEMORY_CATEGORIES = {
     "identity", "user", "environment", "convention",
@@ -226,6 +226,23 @@ def get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _ensure_agent(db, agent_id):
+    """Auto-register an agent if it doesn't exist. Prevents FK violations on fresh DBs."""
+    if not agent_id:
+        return
+    try:
+        exists = db.execute("SELECT 1 FROM agents WHERE id=?", (agent_id,)).fetchone()
+        if not exists:
+            db.execute(
+                "INSERT OR IGNORE INTO agents (id, display_name, agent_type, status, created_at, updated_at) "
+                "VALUES (?, ?, 'cli', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))",
+                (agent_id, agent_id)
+            )
+            db.commit()
+    except Exception:
+        pass  # agents table may not exist in minimal schemas
 
 def log_access(conn, agent_id, action, target_table=None, target_id=None, query=None, result_count=None, tokens_consumed=None):
     conn.execute(
@@ -4995,18 +5012,60 @@ def cmd_stats(args):
     json_out(stats)
 
 def cmd_init(args):
-    """Initialize a fresh brain.db at the default or specified path."""
+    """Initialize a fresh brain.db with the full production schema."""
     target = Path(getattr(args, "path", None) or DB_PATH)
     if target.exists() and not getattr(args, "force", False):
         json_out({"ok": False, "error": f"Database already exists at {target}. Use --force to overwrite."})
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Use the Brain class which has a self-contained schema
+    if target.exists():
+        target.unlink()  # --force: remove existing
+
+    # Try to find init_schema.sql from the package
+    schema_sql = None
+    schema_locations = [
+        Path(__file__).parent / "db" / "init_schema.sql",  # pip-installed
+        Path.home() / "agentmemory" / "db" / "init_schema.sql",  # dev checkout
+    ]
+    for loc in schema_locations:
+        if loc.exists():
+            schema_sql = loc.read_text()
+            break
+
     try:
-        from agentmemory.brain import Brain
-        brain = Brain(str(target))
-        stats = brain.stats()
-        json_out({"ok": True, "path": str(target), "tables": stats})
+        conn = sqlite3.connect(str(target))
+        if schema_sql:
+            conn.executescript(schema_sql)
+        else:
+            conn.close()
+            from agentmemory.brain import Brain
+            Brain(str(target))
+            conn = sqlite3.connect(str(target))
+
+        # Seed required rows that triggers and commands depend on
+        _now = "strftime('%Y-%m-%dT%H:%M:%S','now')"
+        seed_sql = f"""
+            INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('enabled', '0');
+            INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('ignition_threshold', '0.7');
+            INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('urgent_threshold', '0.9');
+            INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('governor_max_per_hour', '5');
+            INSERT OR IGNORE INTO neuromodulation_state (id, org_state, dopamine_signal, arousal_level,
+                confidence_boost_rate, confidence_decay_rate, retrieval_breadth_multiplier,
+                focus_level, temporal_lambda, context_window_depth)
+                VALUES (1, 'normal', 0.0, 0.3, 0.1, 0.02, 1.0, 0.3, 0.03, 50);
+        """
+        try:
+            conn.executescript(seed_sql)
+        except Exception:
+            pass  # Some tables may not exist in minimal schema
+
+        conn.row_factory = sqlite3.Row
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()]
+        conn.close()
+
+        json_out({"ok": True, "path": str(target), "tables": len(tables), "table_list": tables})
     except Exception as e:
         json_out({"ok": False, "error": str(e)})
 
@@ -11869,6 +11928,13 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # Auto-register agent on any write command to prevent FK violations on fresh DBs
+    if args.command not in ("version", "init", "validate") and getattr(args, "agent", None):
+        try:
+            _ensure_agent(get_db(), args.agent)
+        except Exception:
+            pass
 
     dispatch = {
         "version": cmd_version,

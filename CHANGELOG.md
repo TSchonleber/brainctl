@@ -3,19 +3,26 @@
 All notable changes to **brainctl** will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0] — 2026-04-03
+## [0.3.0] — 2026-04-03
 
 ### Added
-- **`brainctl init`** — create a fresh brain.db from schema
+- **`brainctl init`** — create fresh brain.db with full production schema (30+ tables)
+- **MCP server in package** — `brainctl-mcp` now works from pip install (was broken in 0.2.0)
 - **Affect MCP tools** — `affect_classify`, `affect_log`, `affect_check`, `affect_monitor` (16 total MCP tools)
 - **Write gate integration** — arousal-modulated memory worthiness (high-arousal memories consolidate 40% stronger)
-- **brain.py API** — `Brain.affect(text)` and `Brain.affect_log(text)` with full type hints
+- **brain.py API** — `Brain.affect(text)` and `Brain.affect_log(text)` with type hints
 - `affect_log` table in init_schema.sql
+
+### Fixed
+- `brainctl-mcp` crash on pip install (missing module, now at `agentmemory.mcp_server`)
+- `brainctl init` now uses full schema, not toy 7-table schema
+- README: `from brainctl import Brain` corrected to `from agentmemory import Brain`
+- Dominance scoring now respects negation ("can't fix" = low dominance, not high)
+- Added word forms to lexicons (panicking, terrifying, overwhelmed, etc.)
 
 ### Changed
 - Schema files unified (db/ and src/agentmemory/db/ now in sync)
-- CHANGELOG.md added
-- README updated with affect tracking docs, quick start, and init command
+- Version numbers aligned across all files
 
 ## [0.2.0] — 2026-04-03
 
