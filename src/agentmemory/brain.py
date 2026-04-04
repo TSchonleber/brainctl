@@ -2,18 +2,17 @@
 brainctl — Python API for agent memory.
 
 Quick start:
-    from brainctl import Brain
-    
-    brain = Brain()                          # uses ~/brainctl/brain.db
-    brain = Brain("/path/to/brain.db")       # custom path
-    
-    brain.remember("User prefers dark mode") # add a memory
-    brain.search("preferences")              # search memories
-    brain.entity("Chief", "person",          # create entity
-        observations=["Founder", "Builder"])
-    brain.log("Deployed v2.0")               # log an event
-    brain.affect("I'm excited about this!")  # classify affect
-    brain.stats()                            # database stats
+    from agentmemory import Brain
+
+    brain = Brain()                               # uses $BRAIN_DB or ~/agentmemory/db/brain.db
+    brain = Brain("/path/to/brain.db")            # custom path
+
+    brain.remember("User prefers dark mode")
+    brain.search("preferences")
+    brain.entity("Chief", "person", observations=["Founder", "Builder"])
+    brain.log("Deployed v2.0")
+    brain.affect("I'm excited about this!")
+    brain.stats()
 """
 
 import json
@@ -25,8 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from agentmemory.affect import classify_affect
+from agentmemory.paths import get_db_path
 
 _INIT_SQL_PATH = Path(__file__).parent.parent.parent / "db" / "init_schema.sql"
+
+
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 class Brain:
@@ -34,117 +38,80 @@ class Brain:
     
     def __init__(self, db_path: Optional[str] = None, agent_id: str = "default") -> None:
         if db_path is None:
-            db_path = os.environ.get("BRAIN_DB", str(Path.home() / "brainctl" / "brain.db"))
+            db_path = str(get_db_path())
         self.db_path = Path(db_path)
         self.agent_id = agent_id
-        
+
         if not self.db_path.exists():
             self._init_db()
-    
+
     def _init_db(self) -> None:
-        """Create a fresh brain.db with core schema."""
+        """Create a fresh brain.db with the canonical production schema."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not _INIT_SQL_PATH.exists():
+            raise FileNotFoundError(f"init_schema.sql not found at {_INIT_SQL_PATH}")
+
         conn = sqlite3.connect(str(self.db_path))
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL DEFAULT 'default',
-                category TEXT NOT NULL DEFAULT 'general',
-                scope TEXT NOT NULL DEFAULT 'global',
-                content TEXT NOT NULL,
-                confidence REAL NOT NULL DEFAULT 1.0,
-                tags TEXT,
-                retired_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL DEFAULT 'default',
-                event_type TEXT NOT NULL DEFAULT 'observation',
-                summary TEXT NOT NULL,
-                detail TEXT,
-                project TEXT,
-                importance REAL NOT NULL DEFAULT 0.5,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS entities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
-                properties TEXT NOT NULL DEFAULT '{}',
-                observations TEXT NOT NULL DEFAULT '[]',
-                agent_id TEXT NOT NULL DEFAULT 'default',
-                confidence REAL NOT NULL DEFAULT 1.0,
-                scope TEXT NOT NULL DEFAULT 'global',
-                retired_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS knowledge_edges (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_table TEXT NOT NULL,
-                source_id INTEGER NOT NULL,
-                target_table TEXT NOT NULL,
-                target_id INTEGER NOT NULL,
-                relation_type TEXT NOT NULL,
-                weight REAL NOT NULL DEFAULT 1.0,
-                agent_id TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS decisions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL DEFAULT 'default',
-                title TEXT NOT NULL,
-                rationale TEXT NOT NULL,
-                project TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS memory_triggers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL DEFAULT 'default',
-                trigger_condition TEXT NOT NULL,
-                trigger_keywords TEXT NOT NULL,
-                action TEXT NOT NULL,
-                priority TEXT NOT NULL DEFAULT 'medium',
-                status TEXT NOT NULL DEFAULT 'active',
-                fired_at TEXT,
-                expires_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS affect_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL,
-                valence REAL NOT NULL DEFAULT 0.0,
-                arousal REAL NOT NULL DEFAULT 0.0,
-                dominance REAL NOT NULL DEFAULT 0.0,
-                affect_label TEXT,
-                cluster TEXT,
-                functional_state TEXT,
-                safety_flag TEXT,
-                trigger TEXT,
-                source TEXT DEFAULT 'observation',
-                metadata TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_affect_agent_time ON affect_log(agent_id, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_affect_safety ON affect_log(safety_flag) WHERE safety_flag IS NOT NULL;
-        """)
+        conn.executescript(_INIT_SQL_PATH.read_text())
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('enabled', '0')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('ignition_threshold', '0.7')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('urgent_threshold', '0.9')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_config (key, value) VALUES ('governor_max_per_hour', '5')"
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO neuromodulation_state (
+                id, org_state, dopamine_signal, arousal_level,
+                confidence_boost_rate, confidence_decay_rate, retrieval_breadth_multiplier,
+                focus_level, temporal_lambda, context_window_depth
+            ) VALUES (1, 'normal', 0.0, 0.3, 0.1, 0.02, 1.0, 0.3, 0.03, 50)
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO agents (
+                id, display_name, agent_type, status, created_at, updated_at
+            ) VALUES (?, ?, 'api', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+            """,
+            (self.agent_id, self.agent_id),
+        )
+        conn.commit()
         conn.close()
     
     def _db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO agents (
+                    id, display_name, agent_type, status, created_at, updated_at
+                ) VALUES (?, ?, 'api', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+                """,
+                (self.agent_id, self.agent_id),
+            )
+            conn.commit()
+        except Exception:
+            pass
         return conn
     
     def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:
         """Add a memory. Returns memory ID."""
         db = self._db()
         tags_json = json.dumps(tags.split(",")) if isinstance(tags, str) else (json.dumps(tags) if tags else None)
+        now = _now_ts()
         cur = db.execute(
-            "INSERT INTO memories (agent_id, category, content, confidence, tags) VALUES (?,?,?,?,?)",
-            (self.agent_id, category, content, confidence, tags_json)
+            "INSERT INTO memories (agent_id, category, content, confidence, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (self.agent_id, category, content, confidence, tags_json, now, now)
         )
         db.commit()
         mid = cur.lastrowid
@@ -167,16 +134,18 @@ class Brain:
     def forget(self, memory_id: int) -> None:
         """Soft-delete a memory."""
         db = self._db()
-        db.execute("UPDATE memories SET retired_at = datetime('now') WHERE id = ?", (memory_id,))
+        now = _now_ts()
+        db.execute("UPDATE memories SET retired_at = ?, updated_at = ? WHERE id = ?", (now, now, memory_id))
         db.commit()
         db.close()
     
     def log(self, summary: str, event_type: str = "observation", project: Optional[str] = None, importance: float = 0.5) -> int:
         """Log an event. Returns event ID."""
         db = self._db()
+        now = _now_ts()
         cur = db.execute(
-            "INSERT INTO events (agent_id, event_type, summary, project, importance) VALUES (?,?,?,?,?)",
-            (self.agent_id, event_type, summary, project, importance)
+            "INSERT INTO events (agent_id, event_type, summary, project, importance, created_at) VALUES (?,?,?,?,?,?)",
+            (self.agent_id, event_type, summary, project, importance, now)
         )
         db.commit()
         eid = cur.lastrowid
@@ -195,9 +164,10 @@ class Brain:
         
         props = json.dumps(properties) if properties else "{}"
         obs = json.dumps(observations) if observations else "[]"
+        now = _now_ts()
         cur = db.execute(
-            "INSERT INTO entities (name, entity_type, properties, observations, agent_id) VALUES (?,?,?,?,?)",
-            (name, entity_type, props, obs, self.agent_id)
+            "INSERT INTO entities (name, entity_type, properties, observations, agent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (name, entity_type, props, obs, self.agent_id, now, now)
         )
         db.commit()
         eid = cur.lastrowid
@@ -213,9 +183,9 @@ class Brain:
             db.close()
             raise ValueError(f"Entity not found: {from_entity if not from_row else to_entity}")
         db.execute(
-            "INSERT OR IGNORE INTO knowledge_edges (source_table, source_id, target_table, target_id, relation_type, agent_id) "
-            "VALUES ('entities', ?, 'entities', ?, ?, ?)",
-            (from_row["id"], to_row["id"], relation, self.agent_id)
+            "INSERT OR IGNORE INTO knowledge_edges (source_table, source_id, target_table, target_id, relation_type, agent_id, created_at) "
+            "VALUES ('entities', ?, 'entities', ?, ?, ?, ?)",
+            (from_row["id"], to_row["id"], relation, self.agent_id, _now_ts())
         )
         db.commit()
         db.close()
@@ -224,8 +194,8 @@ class Brain:
         """Record a decision."""
         db = self._db()
         cur = db.execute(
-            "INSERT INTO decisions (agent_id, title, rationale, project) VALUES (?,?,?,?)",
-            (self.agent_id, title, rationale, project)
+            "INSERT INTO decisions (agent_id, title, rationale, project, created_at) VALUES (?,?,?,?,?)",
+            (self.agent_id, title, rationale, project, _now_ts())
         )
         db.commit()
         did = cur.lastrowid

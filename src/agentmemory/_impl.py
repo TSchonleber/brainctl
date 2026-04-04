@@ -5,7 +5,7 @@ brainctl v3 — Unified agent memory CLI
 The single interface for agent memory across runtimes and frameworks
 to read, write, search, and maintain the shared memory spine.
 
-Database: ~/agentmemory/db/brain.db
+Database: $BRAIN_DB or $BRAINCTL_HOME/db/brain.db (default: ~/agentmemory/db/brain.db)
 """
 
 import argparse
@@ -21,6 +21,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from textwrap import dedent
+
+from agentmemory.paths import get_backups_dir, get_blobs_dir, get_brain_home, get_db_path
 
 # Adaptive salience routing
 try:
@@ -87,9 +89,9 @@ except Exception:
 # Constants
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
-BLOBS_DIR = Path.home() / "agentmemory" / "blobs"
-BACKUPS_DIR = Path.home() / "agentmemory" / "backups"
+DB_PATH = get_db_path()
+BLOBS_DIR = get_blobs_dir()
+BACKUPS_DIR = get_backups_dir()
 VERSION = "1.0.1"
 
 VALID_MEMORY_CATEGORIES = {
@@ -285,6 +287,11 @@ def _age_str(created_at_str):
 # ---------------------------------------------------------------------------
 
 def get_db() -> sqlite3.Connection:
+    global DB_PATH, BLOBS_DIR, BACKUPS_DIR
+    if os.environ.get("BRAIN_DB") or os.environ.get("BRAINCTL_HOME"):
+        DB_PATH = get_db_path()
+        BLOBS_DIR = get_blobs_dir()
+        BACKUPS_DIR = get_backups_dir()
     if not DB_PATH.exists():
         json_out({"error": f"Database not found at {DB_PATH}",
                   "hint": "Run 'brainctl init' to create a new database, or set BRAIN_DB env var."})
@@ -11570,7 +11577,7 @@ def build_parser():
                     "  ui            Web dashboard (port 3939)\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--agent", "-a", help="Agent ID for attribution (default: unknown)")
+    p.add_argument("--agent", "-a", default=os.environ.get("AGENT_ID", "default"), help="Agent ID for attribution (default: $AGENT_ID or 'default')")
     sub = p.add_subparsers(dest="command")
 
     # --- version ---

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentmemory.paths import get_db_path
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -81,7 +82,8 @@ except Exception:
 # Constants (same as brainctl)
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+DB_PATH = get_db_path()
+
 def _find_vec_dylib():
     """Auto-discover the sqlite-vec loadable extension path."""
     try:
@@ -123,12 +125,31 @@ VALID_ENTITY_TYPES = [
 # DB helpers
 # ---------------------------------------------------------------------------
 
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def get_db() -> sqlite3.Connection:
+    global DB_PATH
+    if os.environ.get("BRAIN_DB") or os.environ.get("BRAINCTL_HOME"):
+        DB_PATH = get_db_path()
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def ensure_agent(conn, agent_id: str) -> None:
+    if not agent_id:
+        return
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO agents (id, display_name, agent_type, status, created_at, updated_at)
+        VALUES (?, ?, 'mcp', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+        """,
+        (agent_id, agent_id),
+    )
 
 
 def log_access(conn, agent_id, action, target_table=None, target_id=None, query=None, result_count=None):
@@ -286,6 +307,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                     force: bool = False, supersedes_id: int = None) -> dict:
     """Add a memory with W(m) worthiness gate and PII recency gate."""
     db = get_db()
+    ensure_agent(db, agent_id)
     tags_json = json.dumps(tags.split(",")) if tags else None
 
     # Surprise scoring — lightweight novelty check
@@ -307,7 +329,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'observation', ?, ?, datetime('now'))",
+                "VALUES (?, 'observation', ?, ?, ?)",
                 (agent_id,
                  f"Memory rejected by W(m) gate: {content[:60]}",
                  json.dumps({
@@ -318,7 +340,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "pre_worthiness": round(_pre_worthiness, 4),
                      "category": category,
                      "scope": scope,
-                 }))
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -368,7 +391,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'write_rejected', ?, ?, datetime('now'))",
+                "VALUES (?, 'write_rejected', ?, ?, ?)",
                 (agent_id,
                  f"W(m) gate rejected: {worthiness_reason} (score={worthiness_score})",
                  json.dumps({
@@ -377,7 +400,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "scope": scope,
                      "score": worthiness_score,
                      "reason": worthiness_reason,
-                 }))
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -487,6 +511,7 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = None,
                    project: str = None, importance: float = 0.5) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     cur = db.execute(
         "INSERT INTO events (agent_id, event_type, summary, detail, project, importance) VALUES (?,?,?,?,?,?)",
         (agent_id, event_type, summary, detail, project, importance)
@@ -530,6 +555,7 @@ def tool_event_search(agent_id: str, query: str = None, event_type: str = None,
 def tool_entity_create(agent_id: str, name: str, entity_type: str, properties: str = None,
                        observations: str = None, scope: str = "global") -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     props_json = "{}"
     if properties:
         try:
@@ -652,6 +678,7 @@ def tool_trigger_create(agent_id: str, condition: str, keywords: str, action: st
                         entity: str = None, memory_id: int = None,
                         priority: str = "medium", expires: str = None) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     entity_id = None
     if entity:
         if entity.isdigit():
@@ -730,6 +757,7 @@ def tool_entity_relate(agent_id: str, from_entity: str, relation: str, to_entity
 
 def tool_decision_add(agent_id: str, title: str, rationale: str, project: str = None) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     cur = db.execute(
         "INSERT INTO decisions (agent_id, title, rationale, project) VALUES (?,?,?,?)",
         (agent_id, title, rationale, project)

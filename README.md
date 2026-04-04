@@ -13,6 +13,11 @@ brain.relate("Alice", "works_at", "Acme")
 brain.log("Deployed v2.0")
 ```
 
+By default, Brain and the CLI should point at the same database:
+- $BRAIN_DB, if set
+- otherwise $BRAINCTL_HOME/db/brain.db
+- otherwise ~/agentmemory/db/brain.db
+
 ## MCP Server (Claude Desktop / VS Code)
 
 ```json
@@ -40,9 +45,9 @@ pip install brainctl[all]         # everything
 
 ```bash
 pip install brainctl
-brainctl init              # create brain.db
-brainctl memory add 'my first memory' -c lesson
-brainctl search 'memory'
+brainctl init                               # create brain.db
+brainctl --agent default memory add 'my first memory' -c lesson
+brainctl --agent default search 'memory'
 brainctl affect classify 'deployment failed, team is panicking'
 brainctl stats
 ```

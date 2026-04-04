@@ -2,8 +2,8 @@
 brainctl — A cognitive memory system for AI agents.
 
 Quick start:
-    from brainctl import Brain
-    
+    from agentmemory import Brain
+
     brain = Brain()
     brain.remember("User prefers dark mode")
     brain.search("preferences")
