@@ -1169,6 +1169,52 @@ def cmd_memory_add(args):
     log_access(db, args.agent, "write", "memories", memory_id)
     db.commit()
 
+    # ── Auto-link entities (self-building knowledge graph) ───────────
+    # Scan the memory content for known entity names and create
+    # knowledge_edges linking this memory to each mentioned entity.
+    # Pure string matching — no LLM call. Uses word boundaries to avoid
+    # false positives (e.g. "Go" matching inside "Google").
+    auto_linked = []
+    try:
+        entities = db.execute(
+            "SELECT id, name FROM entities WHERE retired_at IS NULL"
+        ).fetchall()
+        content_lower = args.content.lower()
+        for ent in entities:
+            ename = ent["name"]
+            # Skip very short names (<=2 chars) to avoid noise
+            if len(ename) <= 2:
+                continue
+            # Word-boundary check: the name must appear as a whole word/phrase
+            ename_lower = ename.lower()
+            idx = content_lower.find(ename_lower)
+            if idx < 0:
+                continue
+            # Verify word boundary (not inside a larger word)
+            before_ok = (idx == 0 or not content_lower[idx - 1].isalnum())
+            after_idx = idx + len(ename_lower)
+            after_ok = (after_idx >= len(content_lower) or not content_lower[after_idx].isalnum())
+            if not (before_ok and after_ok):
+                continue
+            # Create edge (or reinforce existing)
+            try:
+                db.execute(
+                    "INSERT INTO knowledge_edges "
+                    "(source_table, source_id, target_table, target_id, relation_type, weight, agent_id, created_at) "
+                    "VALUES ('memories', ?, 'entities', ?, 'mentions', 0.5, ?, ?) "
+                    "ON CONFLICT (source_table, source_id, target_table, target_id, relation_type) "
+                    "DO UPDATE SET co_activation_count = co_activation_count + 1, "
+                    "weight = MIN(1.0, weight + 0.1), last_reinforced_at = ?",
+                    (memory_id, ent["id"], args.agent, _now_ts(), _now_ts())
+                )
+                auto_linked.append(ename)
+            except Exception:
+                pass
+        if auto_linked:
+            db.commit()
+    except Exception:
+        pass  # auto-linking failure is non-fatal
+
     # Conflict preservation: --attribute mode
     # If --attribute is set, scan for memories from other agents that cover the same
     # scope/topic and log a belief_conflict entry if found. Memory is still written.
@@ -1230,6 +1276,8 @@ def cmd_memory_add(args):
         "conflict_logged": conflict_logged,
         "worthiness_score": worthiness_score,
     }
+    if auto_linked:
+        out["auto_linked_entities"] = auto_linked
     if pii_info:
         out["pii_gate"] = {**pii_info, "alpha_floor": alpha_floor}
     json_out(out)
