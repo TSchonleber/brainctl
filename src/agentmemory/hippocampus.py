@@ -188,39 +188,9 @@ def ensure_agent(conn: sqlite3.Connection, agent_id: str) -> None:
     )
 
 
-def parse_llm_json_array(raw_output: str) -> list[str]:
-    raw_output = raw_output.strip()
-    if not raw_output:
-        raise ValueError("LLM command returned empty output")
 
-    parsed = json.loads(raw_output)
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
-        raise ValueError("LLM output must be a JSON array of strings")
-
-    cleaned = [item.strip() for item in parsed if item and item.strip()]
-    if not cleaned:
-        raise ValueError("LLM output produced no usable compressed memories")
-    return cleaned
-
-
-def run_llm_compression(llm_cmd: str, scope: str, memories: list[dict]) -> list[str]:
-    payload = {
-        "scope": scope,
-        "instructions": COMPRESS_PROMPT,
-        "memories": memories,
-    }
-    proc = subprocess.run(
-        llm_cmd,
-        shell=True,
-        input=json.dumps(payload, ensure_ascii=True),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or "no stderr"
-        raise RuntimeError(f"LLM command failed with exit code {proc.returncode}: {err}")
-    return parse_llm_json_array(proc.stdout)
+# parse_llm_json_array and run_llm_compression removed — brainctl is model-agnostic.
+# The calling agent should handle LLM reasoning and feed results back via brainctl memory add.
 
 
 def compress_scope_group(
@@ -229,12 +199,13 @@ def compress_scope_group(
     scope: str,
     rows: list[sqlite3.Row],
     agent_id: str,
-    llm_cmd: str,
     dry_run: bool,
 ) -> dict:
+    # LLM compression removed — brainctl is model-agnostic.
+    # Uses pure string dedup via _fallback_compress.
     original_count = len(rows)
     max_output = math.ceil(original_count / 3)
-    memory_payload = [
+    group = [
         {
             "id": row["id"],
             "category": row["category"],
@@ -247,9 +218,7 @@ def compress_scope_group(
         for row in rows
     ]
 
-    compressed = run_llm_compression(llm_cmd, scope, memory_payload)
-    if len(compressed) > max_output:
-        compressed = compressed[:max_output]
+    compressed = _fallback_compress(group, max_output)
 
     source_ids = [row["id"] for row in rows]
     compressed_ids = []
@@ -309,13 +278,8 @@ def compress_scope_group(
 
 
 def cmd_compress(args):
-    llm_cmd = args.llm_cmd or os.environ.get("HIPPOCAMPUS_LLM_CMD")
-    if not llm_cmd:
-        raise SystemExit(
-            "Set HIPPOCAMPUS_LLM_CMD or pass --llm-cmd. "
-            "The command must read JSON payload on stdin and output a JSON array of strings on stdout."
-        )
-
+    # LLM compression removed — brainctl is model-agnostic.
+    # Uses pure string dedup via _fallback_compress.
     db = get_db()
     ensure_agent(db, args.agent)
 
@@ -350,7 +314,6 @@ def cmd_compress(args):
                 scope=scope,
                 rows=group,
                 agent_id=args.agent,
-                llm_cmd=llm_cmd,
                 dry_run=args.dry_run,
             )
         )
@@ -578,55 +541,9 @@ def build_similarity_clusters(
 
 
 def call_llm_consolidate(memories_text: str, n: int):
-    """Call LLM to produce a consolidated memory. Returns text or None on failure."""
-    prompt = CONSOLIDATION_PROMPT.format(n=n) + f"\n\nMemories to consolidate:\n{memories_text}"
-
-    # Try llm CLI
-    try:
-        result = subprocess.run(
-            ["llm", "-m", "claude-sonnet-4-20250514"],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # Try claude CLI (Claude Code)
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", prompt],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # Fallback: Anthropic API via curl
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        print("  WARNING: llm CLI, claude CLI, and ANTHROPIC_API_KEY all unavailable", file=sys.stderr)
-        return None
-    payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 512,
-        "messages": [{"role": "user", "content": prompt}],
-    })
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-X", "POST", "https://api.anthropic.com/v1/messages",
-             "-H", "Content-Type: application/json",
-             "-H", f"x-api-key: {api_key}",
-             "-H", "anthropic-version: 2023-06-01",
-             "-d", payload],
-            capture_output=True, text=True, timeout=60,
-        )
-        data = json.loads(result.stdout)
-        return data["content"][0]["text"].strip()
-    except Exception as exc:
-        print(f"  WARNING: Anthropic API call failed: {exc}", file=sys.stderr)
-        return None
+    # LLM consolidation removed — brainctl is model-agnostic.
+    # The calling agent should handle LLM reasoning and feed results back via brainctl memory add.
+    return None
 
 
 def consolidate_cluster(
@@ -2482,50 +2399,9 @@ def _add_tag(tags_json: Optional[str], tag: str) -> str:
 
 
 def _synthesize_semantic(memories_text: str, n: int) -> Optional[str]:
-    """Call LLM to synthesize a semantic memory from episodic cluster text."""
-    prompt = PROMOTION_SYNTHESIS_PROMPT.format(n=n) + f"\n\nEpisodic observations:\n{memories_text}"
-
-    try:
-        result = subprocess.run(
-            ["llm", "-m", "claude-sonnet-4-20250514"],
-            input=prompt, capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", prompt],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-    payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 512,
-        "messages": [{"role": "user", "content": prompt}],
-    })
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-X", "POST", "https://api.anthropic.com/v1/messages",
-             "-H", "Content-Type: application/json",
-             "-H", f"x-api-key: {api_key}",
-             "-H", "anthropic-version: 2023-06-01",
-             "-d", payload],
-            capture_output=True, text=True, timeout=60,
-        )
-        data = json.loads(result.stdout)
-        return data["content"][0]["text"].strip()
-    except Exception:
-        return None
+    # LLM synthesis removed — brainctl is model-agnostic.
+    # The calling agent should handle LLM reasoning and feed results back via brainctl memory add.
+    return None
 
 
 def promote_episodic_to_semantic(

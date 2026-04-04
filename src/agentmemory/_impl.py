@@ -11710,26 +11710,7 @@ def build_parser():
     lnt.add_argument("--fix", action="store_true", help="Auto-fix safe issues (duplicates, log bloat)")
     lnt.add_argument("--output", "-o", choices=["json", "text"], default="json", help="Output format")
 
-    # --- batch ---
-    bat = sub.add_parser("batch", help="Anthropic Batch API - 50%% cost for bulk LLM operations")
-    bat_sub = bat.add_subparsers(dest="batch_cmd")
-    bat_submit = bat_sub.add_parser("submit", help="Submit prompts file as batch (one prompt per line)")
-    bat_submit.add_argument("file", help="Path to prompts file")
-    bat_submit.add_argument("--model", default="claude-sonnet-4-6")
-
-    bat_status = bat_sub.add_parser("status", help="Check batch status")
-    bat_status.add_argument("batch_id", help="Batch ID from submit")
-
-    bat_results = bat_sub.add_parser("results", help="Get batch results")
-    bat_results.add_argument("batch_id", help="Batch ID")
-    bat_results.add_argument("--output", choices=["json", "jsonl"], default="json")
-
-    bat_compress = bat_sub.add_parser("compress", help="Batch-compress dense memory scopes (50% cost)")
-    bat_compress.add_argument("--model", default="claude-sonnet-4-6")
-
-    bat_audit = bat_sub.add_parser("audit", help="Batch quality audit on memories (50% cost)")
-    bat_audit.add_argument("--model", default="claude-sonnet-4-6")
-    bat_audit.add_argument("--limit", type=int, default=100)
+    # batch subcommand removed — brainctl is model-agnostic (no Anthropic Batch API)
 
     prune = sub.add_parser("prune-log", help="Prune old access log entries")
     prune.add_argument("--days", type=int, default=30)
@@ -12436,7 +12417,7 @@ def main():
         "affect": None,  # subcommand dispatch below
         "report": cmd_report,
         "lint": cmd_lint,
-        "batch": None,  # subcommand dispatch below
+
         "validate": cmd_validate,
         "prune-log": cmd_prune_access_log,
         "push": None,  # handled below
@@ -12538,15 +12519,6 @@ def main():
             "classify": cmd_affect_classify,
         }
         fn = dispatch.get(args.affect_cmd)
-    elif args.command == "batch":
-        from agentmemory.batch import (cmd_batch_submit, cmd_batch_status,
-                                        cmd_batch_results, cmd_batch_compress, cmd_batch_audit)
-        dispatch = {
-            "submit": cmd_batch_submit, "status": cmd_batch_status,
-            "results": cmd_batch_results, "compress": cmd_batch_compress,
-            "audit": cmd_batch_audit,
-        }
-        fn = dispatch.get(args.batch_cmd)
     elif args.command == "whosknows":
         fn = cmd_whosknows
     elif args.command == "ui":
