@@ -25,12 +25,10 @@ brainctl has ZERO LLM dependencies. No Anthropic, no OpenAI, no vendor SDK. It i
 
 ## Agent Attribution
 
-ALWAYS pass `-a AGENT_NAME` to attribute writes. Convention:
-- Hermes/Kokoro: `-a hermes`
-- OpenClaw: `-a openclaw`
-- Paperclip agents: `-a paperclip-YOURNAME` (lowercase)
-- Nara: `-a nara`
-- Unknown: `-a unknown`
+ALWAYS pass `-a AGENT_NAME` to attribute writes. Examples:
+- `-a my-agent` — your agent's unique name
+- `-a human` — manual/human entries
+- `-a unknown` — fallback if unsure
 
 ## Commands — Quick Reference
 
@@ -38,58 +36,58 @@ ALWAYS pass `-a AGENT_NAME` to attribute writes. Convention:
 
 ```bash
 # Add a memory (categories: identity, user, environment, convention, project, decision, lesson, preference, integration)
-brainctl -a hermes memory add "Python 3.12 is the minimum version" -c convention
+brainctl -a my-agent memory add "Python 3.12 is the minimum version" -c convention
 
 # Search memories
-brainctl -a hermes memory search "python version"
+brainctl -a my-agent memory search "python version"
 
 # List recent memories
-brainctl -a hermes memory list --limit 10
+brainctl -a my-agent memory list --limit 10
 ```
 
 ### Events (timestamped logs)
 
 ```bash
 # Log an event (types: observation, result, decision, error, handoff, task_update, artifact, session_start, session_end, warning, stale_context)
-brainctl -a hermes event add "Deployed v2.0 to production" -t result -p myproject
+brainctl -a my-agent event add "Deployed v2.0 to production" -t result -p myproject
 
 # Search events
-brainctl -a hermes event search -q "deploy"
+brainctl -a my-agent event search -q "deploy"
 
 # Recent events
-brainctl -a hermes event tail -n 20
+brainctl -a my-agent event tail -n 20
 ```
 
 ### Entities (typed knowledge graph)
 
 ```bash
 # Create an entity (types: person, project, tool, concept, org, location, etc.)
-brainctl -a hermes entity create "Alice" -t person -o "Engineer; Likes Python; Based in NYC"
+brainctl -a my-agent entity create "Alice" -t person -o "Engineer; Likes Python; Based in NYC"
 
 # Get entity details + relations
-brainctl -a hermes entity get Alice
+brainctl -a my-agent entity get Alice
 
 # Add observations to existing entity
-brainctl -a hermes entity observe "Alice" "Now leads the infrastructure team"
+brainctl -a my-agent entity observe "Alice" "Now leads the infrastructure team"
 
 # Create directed relation
-brainctl -a hermes entity relate Alice works_at Acme
+brainctl -a my-agent entity relate Alice works_at Acme
 
 # Search entities
-brainctl -a hermes entity search "engineer"
+brainctl -a my-agent entity search "engineer"
 ```
 
 ### Decisions
 
 ```bash
-brainctl -a hermes decision add "Switch to Ollama for local inference" -r "Anthropic access revoked, need local fallback"
+brainctl -a my-agent decision add "Switch to local inference" -r "Need local-first fallback"
 ```
 
 ### Cross-Table Search
 
 ```bash
 # Search across memories + events + entities at once
-brainctl -a hermes search "deployment"
+brainctl -a my-agent search "deployment"
 ```
 
 ### Prospective Memory (Triggers)
@@ -173,7 +171,7 @@ Tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_creat
 
 All tools accept optional `agent_id`. CLI and MCP are fully interchangeable — same DB.
 
-## Post-Checkout Orientation (Paperclip Agents)
+## Post-Checkout Orientation (Task-Based Agents)
 
 After checking out a task, orient yourself:
 

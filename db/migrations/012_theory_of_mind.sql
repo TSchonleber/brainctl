@@ -26,7 +26,7 @@ CREATE TABLE agent_beliefs (
     topic               TEXT    NOT NULL,
         -- Scoped topic key, e.g.:
         --   "project:agentmemory:status"
-        --   "agent:hermes:role"
+        --   "agent:my-agent:role"
         --   "global:memory_spine:schema_version"
         --   "task: :status"
     belief_content      TEXT    NOT NULL,
@@ -76,7 +76,7 @@ CREATE TABLE belief_conflicts (
     detected_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
     resolved_at     TEXT,
     resolution      TEXT,
-    requires_hermes_intervention INTEGER NOT NULL DEFAULT 0
+    requires_supervisor_intervention INTEGER NOT NULL DEFAULT 0
         -- 1 = Hermes should inject corrective context before affected agents act
 );
 CREATE INDEX idx_conflicts_topic    ON belief_conflicts(topic);
@@ -84,8 +84,8 @@ CREATE INDEX idx_conflicts_agent_a  ON belief_conflicts(agent_a_id);
 CREATE INDEX idx_conflicts_agent_b  ON belief_conflicts(agent_b_id);
 CREATE INDEX idx_conflicts_open     ON belief_conflicts(resolved_at) WHERE resolved_at IS NULL;
 CREATE INDEX idx_conflicts_severity ON belief_conflicts(severity DESC) WHERE resolved_at IS NULL;
-CREATE INDEX idx_conflicts_hermes   ON belief_conflicts(requires_hermes_intervention)
-    WHERE requires_hermes_intervention = 1 AND resolved_at IS NULL;
+CREATE INDEX idx_conflicts_supervisor ON belief_conflicts(requires_supervisor_intervention)
+    WHERE requires_supervisor_intervention = 1 AND resolved_at IS NULL;
 
 
 -- ============================================================

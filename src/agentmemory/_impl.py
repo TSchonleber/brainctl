@@ -871,7 +871,7 @@ def cmd_memory_add(args):
         _pre_redundancy = 0.5  # high overlap implies some redundancy
 
     # Affect-modulated worthiness: high-arousal memories are more worth storing
-    # Grounded in McGaugh (2004) + Anthropic "Emotion Concepts in LLMs" (2026)
+    # Grounded in McGaugh (2004) emotional modulation of memory consolidation
     _arousal_boost = 1.0
     try:
         from agentmemory.affect import classify_affect, arousal_write_boost
@@ -1638,7 +1638,7 @@ _TRUST_CATEGORY_PRIORS = {
 }
 
 _TRUST_AGENT_MULTIPLIERS = [
-    ("hermes",      1.15),
+    ("supervisor",  1.15),
     ("hippocampus", 0.90),
     ("sentinel",    1.10),
     ("prune",       1.10),
@@ -5155,7 +5155,7 @@ def cmd_cost(args):
 
 # ---------------------------------------------------------------------------
 # AFFECT TRACKING — functional affect states for AI agents
-# Grounded in Anthropic "Emotion Concepts in LLMs" (2026)
+# Functional affect classification for agent state tracking
 # ---------------------------------------------------------------------------
 
 def cmd_affect_log(args):
@@ -7323,7 +7323,7 @@ def cmd_tom_belief_invalidate(args):
         db.execute(
             """INSERT INTO belief_conflicts
                (topic, agent_a_id, agent_b_id, belief_a, belief_b,
-                conflict_type, severity, detected_at, requires_hermes_intervention)
+                conflict_type, severity, detected_at, requires_supervisor_intervention)
                VALUES (?,?,NULL,?,?,?,?,?,?)""",
             (topic, agent_id, row["belief_content"], f"Invalidated: {reason}",
              "staleness", 0.6, now, 1)
@@ -7351,7 +7351,7 @@ def cmd_tom_conflicts_list(args):
     q = (
         "SELECT bc.id, bc.topic, bc.agent_a_id, bc.agent_b_id, "
         "bc.belief_a, bc.belief_b, bc.conflict_type, bc.severity, "
-        "bc.detected_at, bc.requires_hermes_intervention "
+        "bc.detected_at, bc.requires_supervisor_intervention "
         "FROM belief_conflicts bc "
         "WHERE bc.resolved_at IS NULL AND bc.severity >= ?"
     )
@@ -7378,12 +7378,12 @@ def cmd_tom_conflicts_list(args):
         return
 
     print(f"Open belief conflicts ({len(rows)}):")
-    print(f"  {'ID':>4}  {'Sev':>5}  {'Type':<12}  {'Topic':<35}  {'Agent A':<25}  Hermes?")
+    print(f"  {'ID':>4}  {'Sev':>5}  {'Type':<12}  {'Topic':<35}  {'Agent A':<25}  Super?")
     print("  " + "-" * 100)
     for r in rows:
-        hermes_flag = "!!" if r["requires_hermes_intervention"] else "  "
+        super_flag = "!!" if r["requires_supervisor_intervention"] else "  "
         print(f"  {r['id']:>4}  {r['severity']:>5.2f}  {r['conflict_type']:<12}  "
-              f"{r['topic'][:35]:<35}  {r['agent_a_id'][:25]:<25}  {hermes_flag}")
+              f"{r['topic'][:35]:<35}  {r['agent_a_id'][:25]:<25}  {super_flag}")
         print(f"         A: {r['belief_a'][:80]}")
         print(f"         B: {r['belief_b'][:80]}")
         print()
@@ -7731,7 +7731,7 @@ def cmd_agent_model(args):
 
     conflicts = db.execute(
         "SELECT id, topic, conflict_type, severity, belief_a, belief_b, "
-        "agent_b_id, requires_hermes_intervention "
+        "agent_b_id, requires_supervisor_intervention "
         "FROM belief_conflicts "
         "WHERE (agent_a_id=? OR agent_b_id=?) AND resolved_at IS NULL "
         "ORDER BY severity DESC",
@@ -7801,9 +7801,9 @@ def cmd_agent_model(args):
     print(f"Open Belief Conflicts ({len(conflicts)})")
     if conflicts:
         for c in conflicts[:5]:
-            hermes_flag = " [!HERMES]" if c["requires_hermes_intervention"] else ""
+            super_flag = " [!SUPERVISOR]" if c["requires_supervisor_intervention"] else ""
             other = c["agent_b_id"] or "ground truth"
-            print(f"  #{c['id']} [{c['conflict_type']}] sev={c['severity']:.2f}{hermes_flag}")
+            print(f"  #{c['id']} [{c['conflict_type']}] sev={c['severity']:.2f}{super_flag}")
             print(f"    topic: {c['topic']}")
             print(f"    vs {other}: {c['belief_b'][:80]}")
     else:
@@ -7925,8 +7925,8 @@ def cmd_resolve_conflict(args):
             return
         print(f"Open belief conflicts ({len(conflicts)}):")
         for c in conflicts:
-            hermes = " [HERMES]" if c["requires_hermes_intervention"] else ""
-            print(f"  #{c['id']:4d}  [{c['conflict_type']:10s}]  sev={c['severity']:.2f}{hermes}  {c['topic'][:60]}")
+            super_flag = " [SUPERVISOR]" if c["requires_supervisor_intervention"] else ""
+            print(f"  #{c['id']:4d}  [{c['conflict_type']:10s}]  sev={c['severity']:.2f}{super_flag}  {c['topic'][:60]}")
             print(f"         A ({c['agent_a_id'][:16]}): {c['belief_a'][:60]}")
             b_agent = c['agent_b_id'] or 'ground-truth'
             print(f"         B ({b_agent[:16]}): {c['belief_b'][:60]}")
@@ -11682,7 +11682,7 @@ def build_parser():
     sub.add_parser("validate", help="Validate database integrity")
 
     # --- affect ---
-    aff = sub.add_parser("affect", help="Functional affect tracking (grounded in Anthropic 2026 emotion research)")
+    aff = sub.add_parser("affect", help="Functional affect tracking")
     aff_sub = aff.add_subparsers(dest="affect_cmd")
     aff_log = aff_sub.add_parser("log", help="Log affect observation by classifying text")
     aff_log.add_argument("text", help="Text to classify for affect state")
@@ -11710,7 +11710,7 @@ def build_parser():
     lnt.add_argument("--fix", action="store_true", help="Auto-fix safe issues (duplicates, log bloat)")
     lnt.add_argument("--output", "-o", choices=["json", "text"], default="json", help="Output format")
 
-    # batch subcommand removed — brainctl is model-agnostic (no Anthropic Batch API)
+    # batch subcommand not available — brainctl is model-agnostic
 
     prune = sub.add_parser("prune-log", help="Prune old access log entries")
     prune.add_argument("--days", type=int, default=30)

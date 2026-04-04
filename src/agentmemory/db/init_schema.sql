@@ -13,9 +13,9 @@ CREATE TABLE schema_version (
 );
 
 CREATE TABLE agents (
-    id TEXT PRIMARY KEY,                      -- e.g. 'hermes', 'openclaw', 'paperclip-codex', 'nara'
+    id TEXT PRIMARY KEY,                      -- e.g. 'my-agent', 'data-pipeline', 'reviewer'
     display_name TEXT NOT NULL,
-    agent_type TEXT NOT NULL,                 -- 'hermes', 'openclaw', 'paperclip', 'human'
+    agent_type TEXT NOT NULL,                 -- 'autonomous', 'pipeline', 'assistant', 'human'
     adapter_info TEXT,                        -- JSON: connection details, model, etc
     status TEXT NOT NULL DEFAULT 'active',    -- active, paused, retired
     last_seen_at TEXT,
@@ -170,8 +170,8 @@ END;
 
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    external_id TEXT,                              -- Paperclip issue ID, GitHub issue #, etc
-    external_system TEXT,                           -- 'paperclip', 'github', 'manual'
+    external_id TEXT,                              -- External task ID, GitHub issue #, etc
+    external_system TEXT,                           -- 'task-system', 'github', 'manual'
     title TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'pending',         -- pending, in_progress, blocked, completed, cancelled
@@ -543,7 +543,7 @@ CREATE TABLE reflexion_lessons (
     -- Lesson content
     lesson_content TEXT NOT NULL,
 
-    -- Generalization scope (JSON array: "agent_type:paperclip", "capability:brainctl", etc.)
+    -- Generalization scope (JSON array: "agent_type:pipeline", "capability:search", etc.)
     generalizable_to TEXT NOT NULL DEFAULT '[]',
 
     -- Lifecycle
@@ -777,7 +777,7 @@ CREATE TABLE agent_beliefs (
     topic               TEXT    NOT NULL,
         -- Scoped topic key, e.g.:
         --   "project:agentmemory:status"
-        --   "agent:hermes:role"
+        --   "agent:my-agent:role"
         --   "global:memory_spine:schema_version"
         --   "task:COS-246:status"
     belief_content      TEXT    NOT NULL,
@@ -826,8 +826,8 @@ CREATE TABLE belief_conflicts (
     detected_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
     resolved_at     TEXT,
     resolution      TEXT,
-    requires_hermes_intervention INTEGER NOT NULL DEFAULT 0
-        -- 1 = Hermes should inject corrective context before affected agents act
+    requires_supervisor_intervention INTEGER NOT NULL DEFAULT 0
+        -- 1 = supervisor agent should inject corrective context before affected agents act
 );
 
 CREATE INDEX idx_conflicts_topic    ON belief_conflicts(topic);
@@ -840,8 +840,8 @@ CREATE INDEX idx_conflicts_open     ON belief_conflicts(resolved_at) WHERE resol
 
 CREATE INDEX idx_conflicts_severity ON belief_conflicts(severity DESC) WHERE resolved_at IS NULL;
 
-CREATE INDEX idx_conflicts_hermes   ON belief_conflicts(requires_hermes_intervention)
-    WHERE requires_hermes_intervention = 1 AND resolved_at IS NULL;
+CREATE INDEX idx_conflicts_supervisor ON belief_conflicts(requires_supervisor_intervention)
+    WHERE requires_supervisor_intervention = 1 AND resolved_at IS NULL;
 
 CREATE TABLE agent_perspective_models (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -861,7 +861,7 @@ CREATE TABLE agent_perspective_models (
     confusion_risk          REAL    NOT NULL DEFAULT 0.0
         CHECK(confusion_risk >= 0.0 AND confusion_risk <= 1.0),
         -- Probability subject will be confused or err on tasks requiring
-        -- knowledge of this topic. Hermes uses this for proactive injection.
+        -- knowledge of this topic. Supervisor uses this for proactive injection.
         -- Thresholds: > 0.7 = HIGH (inject before routing), 0.4–0.7 = MODERATE
     last_updated_at         TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
     created_at              TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
@@ -922,7 +922,7 @@ CREATE TABLE agent_bdi_state (
     confusion_risk_score        REAL,
         -- Aggregate max confusion_risk from agent_perspective_models
         -- where this agent is the subject. 1.0 = high confusion expected.
-        -- Hermes triggers proactive injection when this > 0.7.
+        -- Supervisor triggers proactive injection when this > 0.7.
 
     last_full_assessment_at     TEXT,
     updated_at                  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))

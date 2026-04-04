@@ -68,7 +68,7 @@ def resolve_event_agent(db: sqlite3.Connection, requested_agent: str) -> str:
     if row:
         return requested_agent
 
-    for fallback in ("hippocampus", "hermes"):
+    for fallback in ("hippocampus", "consolidator"):
         row = db.execute("SELECT id FROM agents WHERE id = ?", (fallback,)).fetchone()
         if row:
             return fallback
@@ -1017,7 +1017,7 @@ def apply_temporal_demotion(
     Demotion chain (one level per call): long -> medium -> short -> ephemeral
     'permanent' is never demoted; 'ephemeral' has no lower class to fall to.
 
-    Logs a 'warning' event for each demotion so Hermes can track the state change.
+    Logs a 'warning' event for each demotion so the supervisor agent can track the state change.
     Returns stats dict with counts of demotions per transition.
     """
     if now is None:
@@ -1630,7 +1630,7 @@ def cmd_consolidation_cycle(args):
 
     This is the main scheduled job that runs as the memory consolidation cycle.
     Runs all maintenance passes and logs a single summary event with
-    event_type='consolidation_cycle'. Notifies Hermes via brainctl on completion.
+    event_type='consolidation_cycle'. Logs completion event to brain.db.
     """
     db = get_db()
     now = datetime.now()
@@ -1755,7 +1755,7 @@ def cmd_consolidation_cycle(args):
     db.commit()
     db.close()
 
-    # Notify Hermes via brainctl
+    # Log consolidation completion
     alert_summary = (
         f"Consolidation cycle complete at {now_sql}. "
         f"SNR={health['signal_to_noise']} ({health['at_risk']} at-risk / {health['total']} total). "
@@ -2049,7 +2049,7 @@ def build_contradiction_report(conn: sqlite3.Connection) -> Dict[str, Any]:
        agents that discuss the same topic (FTS5 similarity >= threshold) but
        contradict each other. Flagged as warnings, never auto-retired.
 
-    Returns a structured dict suitable for JSON output and Hermes consumption.
+    Returns a structured dict suitable for JSON output.
     """
     now_sql = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
