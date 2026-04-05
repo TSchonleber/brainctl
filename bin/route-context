@@ -1,0 +1,782 @@
+#!/Users/r4vager/agentmemory/.venv/bin/python3
+"""
+route-context — Context Routing Engine (COS-83)
+
+Routes new context (events, decisions, PRs, closures) to the right agents.
+Solves the core CKO problem: 178 agents can't all have all context.
+
+Usage:
+  route-context "content to route" [--source-type TYPE] [--source-ref REF]
+                                   [--project PROJECT] [--from-agent AGENT_ID]
+                                   [--top-n N] [--dry-run] [--min-score FLOAT]
+                                   [--alpha FLOAT] [--api-url URL] [--api-key KEY]
+
+  echo "content" | route-context --stdin ...
+
+Scoring modes:
+  v1 (keyword-only):  --alpha 0.0  — pure keyword/domain overlap
+  v2 (hybrid):        --alpha 0.5  — 50% vector cosine + 50% keyword (default when Ollama available)
+  v2 (vector-only):   --alpha 1.0  — pure cosine similarity
+
+Phase 2 vector upgrade (COS-80 done):
+  Agent profiles are embedded via Ollama nomic-embed-text (768d).
+  Cached in agent_state alongside keyword profiles (key: routing_profiles_v2).
+  Cosine similarity computed in pure Python — no sqlite-vec needed for 178 agents.
+
+Author: Weaver (da3c6951), COS-83
+"""
+
+import argparse
+import json
+import math
+import os
+import sqlite3
+import sys
+import re
+import struct
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+VERSION = "2.0.0"
+DEFAULT_TOP_N = 10
+DEFAULT_MIN_SCORE = 0.05
+DEFAULT_ALPHA = 0.5  # hybrid weight: alpha*vector + (1-alpha)*keyword
+
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
+EMBED_MODEL = "nomic-embed-text"
+PROFILE_CACHE_KEY_V2 = "routing_profiles_v2"
+
+# Role-to-domain mapping — which knowledge domains each role cares about
+ROLE_DOMAINS = {
+    "engineer":    ["backend", "frontend", "infrastructure", "code", "api", "database",
+                    "performance", "security", "deployment", "architecture", "testing",
+                    "debugging", "implementation", "pipeline", "ml", "embedding"],
+    "researcher":  ["analysis", "data", "metrics", "market", "research", "intelligence",
+                    "insights", "trends", "competitive", "analytics"],
+    "qa":          ["testing", "quality", "bugs", "regression", "automation", "verification",
+                    "validation", "coverage", "security"],
+    "devops":      ["deployment", "infrastructure", "ci", "cd", "pipeline", "release",
+                    "monitoring", "uptime", "sre", "scaling"],
+    "designer":    ["ui", "ux", "design", "visual", "prototype", "user", "interface",
+                    "accessibility", "branding"],
+    "pm":          ["product", "roadmap", "features", "requirements", "planning",
+                    "okr", "milestone", "backlog", "prioritization"],
+    "general":     ["operations", "customers", "sales", "marketing", "partnerships",
+                    "content", "communications", "strategy"],
+    "ceo":         ["company", "strategy", "goals", "hiring", "budget", "vision",
+                    "governance", "planning"],
+    "cto":         ["architecture", "technology", "engineering", "infrastructure",
+                    "roadmap", "technical", "stack"],
+    "cmo":         ["marketing", "brand", "demand", "growth", "content", "campaigns"],
+    "cfo":         ["finance", "budget", "revenue", "cost", "forecast", "runway"],
+}
+
+# Title-keyword → domain boosters (applied on top of role domains)
+TITLE_DOMAIN_BOOSTS = {
+    "memory":      ["memory", "context", "brain", "recall", "indexing", "embedding",
+                    "retrieval", "vector", "routing", "knowledge"],
+    "security":    ["security", "auth", "vulnerability", "pentest", "compliance",
+                    "audit", "encryption"],
+    "data":        ["data", "database", "sql", "pipeline", "etl", "analytics"],
+    "frontend":    ["frontend", "ui", "react", "css", "browser", "component"],
+    "backend":     ["backend", "api", "server", "database", "microservice"],
+    "ml":          ["ml", "ai", "model", "embedding", "vector", "inference", "training"],
+    "mobile":      ["mobile", "ios", "android", "react native"],
+    "sre":         ["uptime", "latency", "reliability", "monitoring", "alerts", "oncall"],
+    "sales":       ["sales", "revenue", "pipeline", "deals", "accounts", "crm"],
+    "hr":          ["hiring", "people", "onboarding", "performance", "culture"],
+    "legal":       ["legal", "compliance", "contract", "policy", "gdpr", "regulatory"],
+}
+
+# Management roles get summaries only (level-of-detail adaptation)
+PLANNING_ROLES = {"ceo", "cto", "cmo", "cfo", "general"}
+PLANNING_TITLE_KEYWORDS = [
+    "chief", "vp ", "head of", "lead", "manager", "director", "analyst",
+    "strategist", "architect", "coordinator"
+]
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
+def log_event(db: sqlite3.Connection, agent_id: str, summary: str,
+              project: str = None, metadata: dict = None):
+    db.execute(
+        "INSERT INTO events (agent_id, event_type, summary, project, metadata) "
+        "VALUES (?, 'result', ?, ?, ?)",
+        (agent_id, summary, project, json.dumps(metadata) if metadata else None)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent profile builder
+# ---------------------------------------------------------------------------
+
+def _extract_domain_tags(agent: dict) -> list[str]:
+    """Derive domain keyword set for an agent from role, title, capabilities."""
+    tags = set()
+    role = (agent.get("role") or "general").lower()
+    title = (agent.get("title") or "").lower()
+    capabilities = (agent.get("capabilities") or "").lower()
+
+    # Add role-level domains
+    for domain in ROLE_DOMAINS.get(role, ROLE_DOMAINS["general"]):
+        tags.add(domain)
+
+    # Title keyword boosters
+    for keyword, domains in TITLE_DOMAIN_BOOSTS.items():
+        if keyword in title or keyword in capabilities:
+            tags.update(domains)
+
+    # Extract meaningful words from title and capabilities directly
+    stopwords = {"and", "the", "for", "of", "in", "at", "to", "a", "an", "&",
+                 "lead", "senior", "junior", "ii", "iii", "specialist", "engineer",
+                 "analyst", "manager", "officer", "coordinator"}
+    for text in [title, capabilities]:
+        words = re.findall(r"[a-z][a-z0-9\-]{2,}", text)
+        for w in words:
+            if w not in stopwords:
+                tags.add(w)
+
+    return sorted(tags)
+
+
+def _is_planner(agent: dict) -> bool:
+    """True if this agent should receive summaries rather than full content."""
+    role = (agent.get("role") or "general").lower()
+    if role in PLANNING_ROLES and role != "general":
+        return True
+    title = (agent.get("title") or "").lower()
+    return any(kw in title for kw in PLANNING_TITLE_KEYWORDS)
+
+
+def build_agent_profiles(agents: list[dict]) -> dict[str, dict]:
+    """
+    Build a profile dict keyed by agent_id.
+    Profile: {id, name, role, title, domain_tags, is_planner}
+    """
+    profiles = {}
+    for a in agents:
+        aid = a["id"]
+        profiles[aid] = {
+            "id": aid,
+            "name": a.get("name", ""),
+            "role": (a.get("role") or "general").lower(),
+            "title": a.get("title") or "",
+            "domain_tags": _extract_domain_tags(a),
+            "is_planner": _is_planner(a),
+        }
+    return profiles
+
+
+# ---------------------------------------------------------------------------
+# Relevance scoring
+# ---------------------------------------------------------------------------
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip punctuation, return word tokens."""
+    return re.findall(r"[a-z][a-z0-9\-]{1,}", text.lower())
+
+
+def _score_keyword(content: str, profile: dict) -> float:
+    """
+    Keyword-overlap relevance score in [0, 1].
+
+    Method:
+      - Tokenize content
+      - Count how many of the agent's domain_tags appear in content tokens
+      - Normalise by total domain_tags count (with mild IDF-like length penalty)
+
+    Returns 0.0–1.0. Higher = more relevant.
+
+    TODO (COS-80 ready): Replace with cosine similarity against profile embedding.
+    """
+    if not profile["domain_tags"]:
+        return 0.0
+
+    content_tokens = set(_tokenize(content))
+    tag_set = set(profile["domain_tags"])
+
+    hits = len(content_tokens & tag_set)
+    if hits == 0:
+        return 0.0
+
+    # Jaccard-like score normalised by tag set (we care about recall over precision)
+    score = hits / len(tag_set)
+    # Mild boost for planners on any hit (they need broader awareness)
+    if profile["is_planner"] and hits > 0:
+        score = min(1.0, score * 1.2)
+    return min(1.0, score)
+
+
+# ---------------------------------------------------------------------------
+# Vector scoring (Phase 2 — COS-80 complete)
+# ---------------------------------------------------------------------------
+
+def _embed_text(text: str) -> list[float] | None:
+    """
+    Embed text via Ollama nomic-embed-text (768d).
+    Returns list of floats, or None if Ollama unavailable.
+    """
+    payload = json.dumps({"model": EMBED_MODEL, "input": text}).encode()
+    req = urllib.request.Request(
+        OLLAMA_EMBED_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            return data["embeddings"][0]
+    except (urllib.error.URLError, KeyError, IndexError):
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two equal-length vectors. Returns [0, 1]."""
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(y * y for y in b))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    raw = dot / (mag_a * mag_b)
+    # Shift from [-1,1] to [0,1]
+    return (raw + 1.0) / 2.0
+
+
+def _profile_text(profile: dict) -> str:
+    """Build embeddable text representation of an agent profile."""
+    parts = [profile["name"], profile["title"]]
+    parts += profile["domain_tags"][:20]  # cap to avoid bloat
+    return " ".join(p for p in parts if p)
+
+
+def embed_profiles(profiles: dict[str, dict]) -> dict[str, dict]:
+    """
+    Embed all agent profiles. Adds 'embedding' field to each profile.
+    Returns updated profiles dict. Skips agents where embedding fails.
+    """
+    updated = {}
+    for aid, profile in profiles.items():
+        text = _profile_text(profile)
+        vec = _embed_text(text)
+        updated[aid] = dict(profile, embedding=vec)
+    return updated
+
+
+def _score_hybrid(content_vec: list[float] | None, content: str,
+                  profile: dict, alpha: float) -> float:
+    """
+    Hybrid score: alpha * vector_cosine + (1-alpha) * keyword.
+    Falls back to pure keyword if no content_vec or no profile embedding.
+    """
+    kw = _score_keyword(content, profile)
+    if alpha == 0.0 or content_vec is None or not profile.get("embedding"):
+        return kw
+    vec = _cosine(content_vec, profile["embedding"])
+    if alpha == 1.0:
+        return vec
+    return alpha * vec + (1.0 - alpha) * kw
+
+
+def score_agents(content: str, profiles: dict[str, dict],
+                 exclude_ids: set[str] = None,
+                 alpha: float = DEFAULT_ALPHA) -> list[tuple[str, float]]:
+    """
+    Score all agents for relevance to content.
+    Returns list of (agent_id, score) sorted descending, scores > 0.
+    """
+    exclude_ids = exclude_ids or set()
+    # Pre-embed content once if doing vector scoring
+    content_vec = None
+    if alpha > 0.0:
+        content_vec = _embed_text(content)
+
+    scored = []
+    for aid, profile in profiles.items():
+        if aid in exclude_ids:
+            continue
+        s = _score_hybrid(content_vec, content, profile, alpha)
+        if s > 0:
+            scored.append((aid, s))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
+
+
+def _load_expertise_scores(db: sqlite3.Connection, content: str, agent_ids: list[str]) -> dict[str, float]:
+    """
+    Query agent_expertise for domains matching content tokens.
+    Returns {agent_id: expertise_boost} where boost is the sum of matched strengths.
+    Silently returns empty dict if table doesn't exist.
+    """
+    try:
+        tbl_exists = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_expertise'"
+        ).fetchone()
+        if not tbl_exists:
+            return {}
+
+        # Tokenize content for domain matching
+        tokens = list(dict.fromkeys(re.findall(r"[a-z][a-z0-9_-]{2,}", content.lower())))[:30]
+        if not tokens:
+            return {}
+
+        like_clauses = " OR ".join("domain LIKE ?" for _ in tokens)
+        like_params = [f"%{t}%" for t in tokens]
+        id_placeholders = ",".join("?" * len(agent_ids))
+
+        rows = db.execute(
+            f"""
+            SELECT agent_id, SUM(strength) as total
+            FROM agent_expertise
+            WHERE ({like_clauses})
+              AND agent_id IN ({id_placeholders})
+            GROUP BY agent_id
+            """,
+            like_params + agent_ids
+        ).fetchall()
+
+        if not rows:
+            return {}
+
+        # Normalize to [0, 1] range
+        max_score = max(r["total"] for r in rows) or 1.0
+        return {r["agent_id"]: r["total"] / max_score for r in rows}
+    except Exception:
+        return {}
+
+
+def _load_belief_gap_boosts(db, content: str, agent_ids: list) -> dict:
+    """
+    Belief-gap aware boost (COS-318): agents with low-confidence or stale beliefs
+    on topics relevant to the content get a routing boost.
+
+    Strategy: look for agents whose active beliefs have confidence < 0.6
+    AND whose belief topic keywords overlap with the content tokens.
+    Returns {agent_id: boost_score} normalized to [0, 1].
+    """
+    try:
+        tables = {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "agent_beliefs" not in tables:
+            return {}
+
+        id_placeholders = ",".join("?" * len(agent_ids))
+        # Fetch active low-confidence beliefs for these agents
+        rows = db.execute(
+            f"""
+            SELECT agent_id, topic, confidence
+            FROM agent_beliefs
+            WHERE agent_id IN ({id_placeholders})
+              AND invalidated_at IS NULL
+              AND confidence < 0.6
+            """,
+            agent_ids
+        ).fetchall()
+
+        if not rows:
+            return {}
+
+        # Tokenize content for overlap check
+        content_tokens = set(re.findall(r'[a-z]{3,}', content.lower()))
+        if not content_tokens:
+            return {}
+
+        boosts: dict = {}
+        for r in rows:
+            topic_tokens = set(re.findall(r'[a-z]{3,}', r["topic"].lower()))
+            overlap = content_tokens & topic_tokens
+            if overlap:
+                # Gap fill score: inversely proportional to confidence
+                gap_fill = (1.0 - r["confidence"]) * (len(overlap) / max(len(topic_tokens), 1))
+                agent_id = r["agent_id"]
+                boosts[agent_id] = boosts.get(agent_id, 0.0) + gap_fill
+
+        if not boosts:
+            return {}
+
+        max_boost = max(boosts.values()) or 1.0
+        return {aid: v / max_boost for aid, v in boosts.items()}
+    except Exception:
+        return {}
+
+
+def score_agents_with_expertise(
+    content: str,
+    profiles: dict,
+    db,
+    exclude_ids: set = None,
+    alpha: float = DEFAULT_ALPHA,
+    expertise_weight: float = 0.2,
+    belief_gap_weight: float = 0.05,
+) -> list:
+    """
+    Extended scoring: hybrid (keyword+vector) blended with expertise directory
+    and belief-gap awareness (COS-318).
+
+    expertise_weight controls how much empirical expertise boosts the score.
+    belief_gap_weight controls how much unresolved belief gaps on relevant topics boost routing.
+    Final score = (1 - expertise_weight - belief_gap_weight) * hybrid_score
+                + expertise_weight * expertise_boost
+                + belief_gap_weight * belief_gap_boost
+    """
+    base_scored = score_agents(content, profiles, exclude_ids=exclude_ids, alpha=alpha)
+    if not base_scored:
+        return base_scored
+
+    agent_ids = [aid for aid, _ in base_scored]
+    expertise = _load_expertise_scores(db, content, agent_ids)
+    belief_gaps = _load_belief_gap_boosts(db, content, agent_ids)
+
+    if not expertise and not belief_gaps:
+        return base_scored
+
+    base_weight = 1.0 - expertise_weight - belief_gap_weight
+    blended = []
+    for aid, base_score in base_scored:
+        exp_boost = expertise.get(aid, 0.0)
+        gap_boost = belief_gaps.get(aid, 0.0)
+        combined = base_weight * base_score + expertise_weight * exp_boost + belief_gap_weight * gap_boost
+        blended.append((aid, combined))
+
+    blended.sort(key=lambda x: x[1], reverse=True)
+    return blended
+
+
+# ---------------------------------------------------------------------------
+# Push mechanism
+# ---------------------------------------------------------------------------
+
+def _make_briefing(content: str, profile: dict, score: float,
+                   source_type: str, source_ref: str) -> str:
+    """
+    Level-of-detail adaptation:
+    - Planners/managers → one-paragraph summary with source reference
+    - Engineers/ICs → full content
+    """
+    if profile["is_planner"]:
+        # Truncate to first 400 chars as executive summary
+        snippet = content[:400].rstrip()
+        if len(content) > 400:
+            snippet += "…"
+        return (
+            f"[Routed context — relevance {score:.2f}] "
+            f"From: {source_type}:{source_ref}\n\n{snippet}"
+        )
+    return content
+
+
+def push_to_agents(
+    db: sqlite3.Connection,
+    recipients: list[tuple[str, float]],
+    profiles: dict[str, dict],
+    content: str,
+    source_type: str,
+    source_ref: str,
+    project: str = None,
+    from_agent: str = "weaver",
+    dry_run: bool = False,
+) -> list[dict]:
+    """
+    Write one context row per recipient, tagged with target agent.
+    Returns list of push records for audit.
+    """
+    pushed = []
+    for agent_id, score in recipients:
+        profile = profiles[agent_id]
+        briefing = _make_briefing(content, profile, score, source_type, source_ref)
+        tags = json.dumps([f"target:{agent_id}", f"routed_by:{from_agent}",
+                           f"relevance:{score:.3f}"])
+        token_approx = len(briefing.split())
+
+        if not dry_run:
+            db.execute(
+                "INSERT INTO context (source_type, source_ref, chunk_index, "
+                "content, summary, project, tags, token_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    source_type,
+                    source_ref,
+                    0,
+                    briefing,
+                    f"Routed to {profile['name']} (score={score:.2f})",
+                    project,
+                    tags,
+                    token_approx,
+                )
+            )
+
+        pushed.append({
+            "agent_id": agent_id,
+            "agent_name": profile["name"],
+            "score": round(score, 4),
+            "is_planner": profile["is_planner"],
+            "lod": "summary" if profile["is_planner"] else "full",
+            "dry_run": dry_run,
+        })
+    return pushed
+
+
+# ---------------------------------------------------------------------------
+# Paperclip API client (thin)
+# ---------------------------------------------------------------------------
+
+def fetch_agents(api_url: str, api_key: str, company_id: str) -> list[dict]:
+    """Fetch all agents from Paperclip API."""
+    url = f"{api_url}/api/companies/{company_id}/agents"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Failed to fetch agents: {e}") from e
+
+
+def fetch_agent_me(api_url: str, api_key: str) -> dict:
+    """Fetch own identity from Paperclip API."""
+    url = f"{api_url}/api/agents/me"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode())
+
+
+# ---------------------------------------------------------------------------
+# Profile cache (agent_state in brain.db)
+# ---------------------------------------------------------------------------
+
+PROFILE_CACHE_KEY = "routing_profiles_v1"
+PROFILE_CACHE_KEY_V2 = "routing_profiles_v2"
+PROFILE_CACHE_TTL_HOURS = 6
+
+
+def _load_cache(db: sqlite3.Connection, agent_id: str, key: str) -> dict | None:
+    row = db.execute(
+        "SELECT value, updated_at FROM agent_state WHERE agent_id=? AND key=?",
+        (agent_id, key)
+    ).fetchone()
+    if not row:
+        return None
+    updated_at = row["updated_at"]
+    try:
+        ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+        if age_hours > PROFILE_CACHE_TTL_HOURS:
+            return None
+    except Exception:
+        return None
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return None
+
+
+def _save_cache(db: sqlite3.Connection, agent_id: str, key: str, data: dict):
+    db.execute(
+        "INSERT INTO agent_state (agent_id, key, value, updated_at) "
+        "VALUES (?, ?, ?, datetime('now')) "
+        "ON CONFLICT(agent_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (agent_id, key, json.dumps(data))
+    )
+    db.commit()
+
+
+def load_cached_profiles(db: sqlite3.Connection, agent_id: str,
+                         with_embeddings: bool = False) -> dict | None:
+    key = PROFILE_CACHE_KEY_V2 if with_embeddings else PROFILE_CACHE_KEY
+    return _load_cache(db, agent_id, key)
+
+
+def save_cached_profiles(db: sqlite3.Connection, agent_id: str, profiles: dict,
+                         with_embeddings: bool = False):
+    key = PROFILE_CACHE_KEY_V2 if with_embeddings else PROFILE_CACHE_KEY
+    _save_cache(db, agent_id, key, profiles)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Context Routing Engine — routes knowledge to the right agents"
+    )
+    parser.add_argument("content", nargs="?", help="Content to route (or use --stdin)")
+    parser.add_argument("--stdin", action="store_true", help="Read content from stdin")
+    parser.add_argument("--source-type", default="manual",
+                        help="Source type (e.g. issue, pr, event, decision)")
+    parser.add_argument("--source-ref", default="",
+                        help="Source reference (e.g. COS-83, PR#42)")
+    parser.add_argument("--project", default=None, help="Project scope")
+    parser.add_argument("--from-agent", default=None,
+                        help="Agent ID doing the routing (defaults to $PAPERCLIP_AGENT_ID)")
+    parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N,
+                        help=f"Max recipients (default {DEFAULT_TOP_N})")
+    parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE,
+                        help=f"Min relevance score to include (default {DEFAULT_MIN_SCORE})")
+    parser.add_argument("--alpha", type=float, default=DEFAULT_ALPHA,
+                        help=f"Vector weight [0=keyword-only, 1=vector-only] (default {DEFAULT_ALPHA})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Score and print results without writing to DB")
+    parser.add_argument("--refresh-profiles", action="store_true",
+                        help="Force refresh of agent profile cache")
+    parser.add_argument("--company-id", default=os.environ.get("PAPERCLIP_COMPANY_ID"),
+                        help="Paperclip company ID")
+    parser.add_argument("--api-url", default=os.environ.get("PAPERCLIP_API_URL"),
+                        help="Paperclip API URL")
+    parser.add_argument("--api-key", default=os.environ.get("PAPERCLIP_API_KEY"),
+                        help="Paperclip API key")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument("--expertise", action="store_true",
+                        help="Blend agent_expertise directory scores into routing (20%% weight)")
+    parser.add_argument("--expertise-weight", type=float, default=0.2, dest="expertise_weight",
+                        help="Expertise blend weight [0.0-1.0] (default: 0.2, requires --expertise)")
+    parser.add_argument("--version", action="version", version=f"route-context {VERSION}")
+
+    args = parser.parse_args()
+
+    # Read content
+    if args.stdin or (not args.content):
+        if sys.stdin.isatty() and not args.stdin:
+            parser.error("Provide content as argument or use --stdin")
+        content = sys.stdin.read().strip()
+    else:
+        content = args.content.strip()
+
+    if not content:
+        parser.error("Content cannot be empty")
+
+    from_agent = args.from_agent or os.environ.get("PAPERCLIP_AGENT_ID", "weaver")
+
+    # Connect to DB
+    db = get_db()
+
+    alpha = max(0.0, min(1.0, args.alpha))
+    use_vectors = alpha > 0.0
+
+    # Load or build agent profiles
+    profiles = None
+    if not args.refresh_profiles:
+        profiles = load_cached_profiles(db, from_agent, with_embeddings=use_vectors)
+
+    if profiles is None:
+        if not args.api_url or not args.api_key or not args.company_id:
+            print(
+                "ERROR: Cannot fetch agent profiles — missing PAPERCLIP_API_URL, "
+                "PAPERCLIP_API_KEY, or PAPERCLIP_COMPANY_ID.\n"
+                "Set env vars or pass --api-url/--api-key/--company-id.",
+                file=sys.stderr
+            )
+            sys.exit(1)
+        agents_raw = fetch_agents(args.api_url, args.api_key, args.company_id)
+        profiles = build_agent_profiles(agents_raw)
+        if use_vectors:
+            # Embed all agent profiles (one Ollama call per agent)
+            profiles = embed_profiles(profiles)
+            save_cached_profiles(db, from_agent, profiles, with_embeddings=True)
+        else:
+            save_cached_profiles(db, from_agent, profiles, with_embeddings=False)
+    elif use_vectors and not any(p.get("embedding") for p in profiles.values()):
+        # Have v1 cache but need embeddings — upgrade it
+        profiles = embed_profiles(profiles)
+        save_cached_profiles(db, from_agent, profiles, with_embeddings=True)
+
+    # Score agents (optionally blended with expertise directory)
+    if getattr(args, "expertise", False):
+        scored = score_agents_with_expertise(
+            content, profiles, db,
+            exclude_ids={from_agent},
+            alpha=alpha,
+            expertise_weight=getattr(args, "expertise_weight", 0.2),
+        )
+    else:
+        scored = score_agents(content, profiles, exclude_ids={from_agent}, alpha=alpha)
+
+    # Filter by min score and top-N
+    filtered = [(aid, s) for aid, s in scored if s >= args.min_score][:args.top_n]
+
+    # Push context
+    pushed = push_to_agents(
+        db=db,
+        recipients=filtered,
+        profiles=profiles,
+        content=content,
+        source_type=args.source_type,
+        source_ref=args.source_ref,
+        project=args.project,
+        from_agent=from_agent,
+        dry_run=args.dry_run,
+    )
+
+    # Log the routing event
+    if not args.dry_run and pushed:
+        log_event(
+            db, from_agent,
+            f"Routed context ({args.source_type}:{args.source_ref}) to "
+            f"{len(pushed)} agents: {', '.join(p['agent_name'] for p in pushed[:5])}"
+            + (f" +{len(pushed)-5} more" if len(pushed) > 5 else ""),
+            project=args.project,
+            metadata={
+                "source_type": args.source_type,
+                "source_ref": args.source_ref,
+                "recipient_count": len(pushed),
+                "top_recipients": [p["agent_name"] for p in pushed[:10]],
+            }
+        )
+        db.commit()
+
+    # Output
+    result = {
+        "routed": not args.dry_run,
+        "dry_run": args.dry_run,
+        "content_preview": content[:120] + ("…" if len(content) > 120 else ""),
+        "recipients": pushed,
+        "total_scored": len(scored),
+        "total_above_threshold": len(filtered),
+    }
+
+    mode_str = f"hybrid(α={alpha})" if 0 < alpha < 1 else ("vector" if alpha == 1.0 else "keyword")
+
+    if args.json:
+        result["mode"] = mode_str
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"{'[DRY RUN] ' if args.dry_run else ''}Context routed to {len(pushed)} agents  [{mode_str}]")
+        print(f"  Source:  {args.source_type}:{args.source_ref}")
+        print(f"  Content: {content[:80]}{'…' if len(content) > 80 else ''}")
+        print(f"  Scored {len(scored)} agents, {len(filtered)} above threshold ({args.min_score})")
+        print()
+        if pushed:
+            print(f"  {'Agent':<22} {'Score':>6}  {'LOD':<8}  Role")
+            print(f"  {'-'*22} {'-'*6}  {'-'*8}  {'-'*20}")
+            for p in pushed:
+                profile = profiles[p["agent_id"]]
+                print(f"  {p['agent_name']:<22} {p['score']:>6.3f}  {p['lod']:<8}  {profile['title'][:35]}")
+        else:
+            print("  No agents matched above threshold.")
+
+
+if __name__ == "__main__":
+    main()

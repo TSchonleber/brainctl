@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# paperclip-post-checkout — tiered memory orientation after Paperclip task checkout
+#
+# Usage:
+#   paperclip-post-checkout "<task title or description>" [agent_id] [project]
+#
+# Call immediately after a successful POST /api/issues/{id}/checkout in a heartbeat.
+# Outputs a MEMORY PUSH context block to stdout for inclusion in agent working context.
+#
+# Tier selection (auto-detected from env):
+#   FAST (default):  push run + temporal-context + event tail  (~2K tokens, ~320ms)
+#   FULL (on demand): FAST + search + decision list + world status + lessons
+#
+# FULL tier triggers (any of):
+#   - PAPERCLIP_LINKED_ISSUE_IDS is set (cross-agent dependencies)
+#   - PAPERCLIP_WAKE_REASON=issue_comment_mentioned (coordination request)
+#   - PAPERCLIP_WAKE_REASON=issue_status_changed and previous status was blocked
+#   - PAPERCLIP_FORCE_FULL=1 (explicit override)
+#
+# Tracks utility via push_id → recalled_count delta. Check later with:
+#   brainctl push report <push_id>
+
+set -euo pipefail
+
+TASK_DESC="${1:-}"
+AGENT_ID="${2:-${PAPERCLIP_AGENT_SHORT:-unknown}}"
+PROJECT="${3:-}"
+
+if [[ -z "$TASK_DESC" ]]; then
+    echo "Usage: paperclip-post-checkout <task_description> [agent_id] [project]" >&2
+    exit 1
+fi
+
+BRAINCTL="${HOME}/bin/brainctl"
+
+if [[ ! -x "$BRAINCTL" ]]; then
+    echo "# paperclip-post-checkout: brainctl not found at $BRAINCTL — skipping memory push" >&2
+    exit 0
+fi
+
+# --- Tier selection ---
+TIER="fast"
+TIER_REASON=""
+
+if [[ -n "${PAPERCLIP_FORCE_FULL:-}" ]]; then
+    TIER="full"
+    TIER_REASON="PAPERCLIP_FORCE_FULL set"
+elif [[ -n "${PAPERCLIP_LINKED_ISSUE_IDS:-}" ]]; then
+    TIER="full"
+    TIER_REASON="cross-agent dependencies (PAPERCLIP_LINKED_ISSUE_IDS)"
+elif [[ "${PAPERCLIP_WAKE_REASON:-}" == "issue_comment_mentioned" ]]; then
+    TIER="full"
+    TIER_REASON="coordination mention (PAPERCLIP_WAKE_REASON=issue_comment_mentioned)"
+fi
+
+echo "## MEMORY ORIENTATION — Tier: ${TIER^^}${TIER_REASON:+ ($TIER_REASON)}"
+echo ""
+
+# --- Tier 1 / FAST: always run ---
+
+# Step 1: Pre-scored memories for THIS task (~105 tokens)
+PUSH_ARGS=("push" "run" "$TASK_DESC" "--agent" "$AGENT_ID" "--top-k" "5")
+if [[ -n "$PROJECT" ]]; then
+    PUSH_ARGS+=("--project" "$PROJECT")
+fi
+echo "### Task-Relevant Memories"
+"$BRAINCTL" "${PUSH_ARGS[@]}" 2>/dev/null || true
+echo ""
+
+# Step 2: Temporal anchor — epoch, cadence, active agents (~284 tokens)
+echo "### Temporal Context"
+"$BRAINCTL" temporal-context 2>/dev/null || true
+echo ""
+
+# Step 3: Recent org activity — 10 events (~1,675 tokens)
+echo "### Recent Org Activity"
+"$BRAINCTL" event tail -n 10 2>/dev/null || true
+echo ""
+
+# --- Tier 2 / FULL: cross-agent, complex tasks, blocked recovery ---
+if [[ "$TIER" == "full" ]]; then
+    # Step 4: Task-specific FTS search — always limit + no-graph (~4,800–6,664 tokens)
+    echo "### Task Context Search"
+    TASK_KEYWORDS=$(echo "$TASK_DESC" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9 ' ' ' | xargs)
+    SEARCH_ARGS=("-a" "$AGENT_ID" "search" "$TASK_KEYWORDS" "--limit" "5" "--no-graph")
+    if [[ -n "$PROJECT" ]]; then
+        SEARCH_ARGS+=("--project" "$PROJECT")
+    fi
+    "$BRAINCTL" "${SEARCH_ARGS[@]}" 2>/dev/null || true
+    echo ""
+
+    # Step 5: Org decisions and constraints (~1,715 tokens)
+    echo "### Org Decisions"
+    "$BRAINCTL" decision list 2>/dev/null || true
+    echo ""
+
+    # Step 6: Org snapshot for coordination (~1,508 tokens)
+    echo "### Org Snapshot"
+    "$BRAINCTL" world status 2>/dev/null || true
+    echo ""
+
+    # Step 7: Historical lessons for this area (~106 tokens when present)
+    echo "### Historical Lessons"
+    "$BRAINCTL" -a "$AGENT_ID" search "lessons failures" -c lesson 2>/dev/null || true
+    echo ""
+fi
+
+# --- Global Workspace inject ---
+# Pull active workspace broadcasts relevant to this agent/project and append
+# as a second context block. Agents ack the broadcasts they receive.
+WS_SCOPE_ARGS=()
+if [[ -n "$PROJECT" ]]; then
+    WS_SCOPE_ARGS+=("--scope" "project:${PROJECT}")
+fi
+
+WS_JSON=$("$BRAINCTL" workspace status "${WS_SCOPE_ARGS[@]}" -n 5 2>/dev/null || echo "null")
+if [[ "$WS_JSON" != "null" ]]; then
+    BROADCAST_COUNT=$(echo "$WS_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('active_broadcasts',0))" 2>/dev/null || echo "0")
+    if [[ "$BROADCAST_COUNT" -gt 0 ]]; then
+        echo ""
+        echo "## GLOBAL WORKSPACE — Active Broadcasts (${BROADCAST_COUNT})"
+        echo ""
+        echo "$WS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+threshold = d.get('ignition_threshold', 0.85)
+org_state = d.get('org_state', 'normal')
+print(f'Org state: {org_state}  |  Ignition threshold: {threshold}')
+print()
+for b in d.get('broadcasts', []):
+    scope = b.get('target_scope', 'global')
+    salience = b.get('salience', 0)
+    age = b.get('age', '')
+    agent = b.get('agent_id', '?')
+    summary = b.get('summary', '')[:140]
+    acks = b.get('ack_count', 0)
+    print(f'  [{b[\"id\"]}] salience={salience:.2f} | {age} | from={agent} | scope={scope} | acks={acks}')
+    print(f'       {summary}')
+    print()
+" 2>/dev/null || true
+
+        # Ack received broadcasts for this agent
+        echo "$WS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for b in d.get('broadcasts', []):
+    print(b['id'])
+" 2>/dev/null | while read -r BID; do
+            "$BRAINCTL" workspace ack "$BID" --agent "$AGENT_ID" 2>/dev/null || true
+        done
+    fi
+fi

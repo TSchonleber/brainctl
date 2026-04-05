@@ -1,0 +1,130 @@
+{
+  "timestamp": "2026-03-28T14:24:33.083055",
+  "metadata": {
+    "total_memories": 150,
+    "active_memories": 150,
+    "temporal_classes": [
+      "ephemeral",
+      "long",
+      "medium",
+      "permanent",
+      "short"
+    ]
+  },
+  "model_comparison": [
+    {
+      "temporal_class": "permanent",
+      "power_law_r2": -0.12555931380194707,
+      "exponential_r2": -1.8650075612824626,
+      "better_fit": "power_law",
+      "power_law_gamma": 0.0006056501801158012,
+      "exponential_lambda": 0.0004752430087089931
+    },
+    {
+      "temporal_class": "medium",
+      "power_law_r2": -120.74611976782349,
+      "exponential_r2": -6830.867857517701,
+      "better_fit": "power_law",
+      "power_law_gamma": -9.373464766539483,
+      "exponential_lambda": -10.8953482285582
+    },
+    {
+      "temporal_class": "short",
+      "power_law_r2": -4.558897421924235,
+      "exponential_r2": -70.235010374546,
+      "better_fit": "power_law",
+      "power_law_gamma": -0.030833497297708824,
+      "exponential_lambda": -0.023934758818305736
+    },
+    {
+      "temporal_class": "ephemeral",
+      "power_law_r2": -0.5951509559608035,
+      "exponential_r2": -141.33958114714602,
+      "better_fit": "power_law",
+      "power_law_gamma": -3.131834386085252,
+      "exponential_lambda": -2.8365846432230053
+    }
+  ],
+  "noise_coupling": {
+    "ephemeral": {
+      "mean_confidence": 0.5104963098051757,
+      "mean_trust_score": 1.0,
+      "inferred_lambda_eff": 0.0,
+      "n_samples": 7
+    },
+    "long": {
+      "mean_confidence": 0.958075375,
+      "mean_trust_score": 1.0,
+      "inferred_lambda_eff": 0.0,
+      "n_samples": 2
+    },
+    "medium": {
+      "mean_confidence": 0.5978233983327181,
+      "mean_trust_score": 1.0,
+      "inferred_lambda_eff": 0.0,
+      "n_samples": 129
+    },
+    "permanent": {
+      "mean_confidence": 0.9992922206168832,
+      "mean_trust_score": 0.94525,
+      "inferred_lambda_eff": 0.054749999999999965,
+      "n_samples": 8
+    },
+    "short": {
+      "mean_confidence": 0.9930115464285715,
+      "mean_trust_score": 0.95,
+      "inferred_lambda_eff": 0.050000000000000044,
+      "n_samples": 4
+    }
+  },
+  "pointer_states": {
+    "permanent": {
+      "high_recall_count": 4,
+      "high_recall_avg_confidence": 0.9999528035714286,
+      "high_recall_decay_rate": 4.7196428571427695e-05,
+      "low_recall_count": 4,
+      "low_recall_avg_confidence": 0.9986316376623376,
+      "low_recall_decay_rate": 0.0013683623376623544,
+      "pointer_state_protection": true
+    },
+    "short": {
+      "high_recall_count": 2,
+      "high_recall_avg_confidence": 0.998357792857143,
+      "high_recall_decay_rate": 0.0016422071428570106,
+      "low_recall_count": 2,
+      "low_recall_avg_confidence": 0.9876653,
+      "low_recall_decay_rate": 0.012334700000000032,
+      "pointer_state_protection": true
+    }
+  },
+  "zeno_effect": {
+    "ephemeral": {
+      "correlation": 0.8539320635303213,
+      "interpretation": "zeno_protection",
+      "mean_recall_count": 6.285714285714286,
+      "mean_confidence": 0.5104963098051757,
+      "n_samples": 7
+    },
+    "medium": {
+      "correlation": 0.47977071576109764,
+      "interpretation": "zeno_protection",
+      "mean_recall_count": 0.937984496124031,
+      "mean_confidence": 0.5978233983327181,
+      "n_samples": 129
+    },
+    "permanent": {
+      "correlation": 0.8061359401659985,
+      "interpretation": "zeno_protection",
+      "mean_recall_count": 94.375,
+      "mean_confidence": 0.9992922206168832,
+      "n_samples": 8
+    },
+    "short": {
+      "correlation": 0.9639844311169127,
+      "interpretation": "zeno_protection",
+      "mean_recall_count": 41.0,
+      "mean_confidence": 0.9930115464285715,
+      "n_samples": 4
+    }
+  }
+}
