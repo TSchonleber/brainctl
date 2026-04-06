@@ -213,6 +213,44 @@ CREATE INDEX idx_decisions_project ON decisions(project);
 
 CREATE INDEX idx_decisions_agent ON decisions(agent_id);
 
+CREATE TABLE handoff_packets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    session_id TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    user_id TEXT,
+    project TEXT,
+    scope TEXT NOT NULL DEFAULT 'global',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'consumed', 'expired', 'pinned')),
+    title TEXT,
+    goal TEXT NOT NULL,
+    current_state TEXT NOT NULL,
+    open_loops TEXT NOT NULL,
+    next_step TEXT NOT NULL,
+    recent_tail TEXT,
+    decisions_json TEXT,
+    entities_json TEXT,
+    tasks_json TEXT,
+    facts_json TEXT,
+    source_event_id INTEGER REFERENCES events(id),
+    consumed_at TEXT,
+    expires_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_handoff_status_created ON handoff_packets(status, created_at DESC);
+
+CREATE INDEX idx_handoff_chat_thread_status ON handoff_packets(chat_id, thread_id, status, created_at DESC);
+
+CREATE INDEX idx_handoff_project_status ON handoff_packets(project, status, created_at DESC);
+
+CREATE INDEX idx_handoff_session ON handoff_packets(session_id);
+
+CREATE INDEX idx_handoff_agent_status ON handoff_packets(agent_id, status, created_at DESC);
+
 CREATE TABLE embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_table TEXT NOT NULL,                     -- 'memories', 'context', 'events'

@@ -2740,6 +2740,135 @@ def cmd_decision_list(args):
     json_out(rows_to_list(rows))
 
 # ---------------------------------------------------------------------------
+# HANDOFF commands — temporary working-state continuity across session resets
+# ---------------------------------------------------------------------------
+
+
+def cmd_handoff_add(args):
+    db = get_db()
+    now = _now_ts()
+    cursor = db.execute(
+        """
+        INSERT INTO handoff_packets (
+            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
+            title, goal, current_state, open_loops, next_step, recent_tail,
+            decisions_json, entities_json, tasks_json, facts_json,
+            source_event_id, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            args.agent,
+            args.session,
+            args.chat_id,
+            args.thread_id,
+            args.user_id,
+            args.project,
+            args.scope,
+            args.status,
+            args.title,
+            args.goal,
+            args.current_state,
+            args.open_loops,
+            args.next_step,
+            args.recent_tail,
+            args.decisions_json,
+            args.entities_json,
+            args.tasks_json,
+            args.facts_json,
+            args.source_event,
+            args.expires_at,
+            now,
+            now,
+        ),
+    )
+    handoff_id = cursor.lastrowid
+    log_access(db, args.agent, "write", "handoff_packets", handoff_id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": handoff_id, "status": args.status})
+
+
+def cmd_handoff_list(args):
+    db = get_db()
+    sql = "SELECT * FROM handoff_packets WHERE 1=1"
+    params = []
+    if args.status:
+        sql += " AND status = ?"
+        params.append(args.status)
+    if args.project:
+        sql += " AND project = ?"
+        params.append(args.project)
+    if args.chat_id:
+        sql += " AND chat_id = ?"
+        params.append(args.chat_id)
+    if args.thread_id:
+        sql += " AND thread_id = ?"
+        params.append(args.thread_id)
+    if args.user_id:
+        sql += " AND user_id = ?"
+        params.append(args.user_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(args.limit or 20)
+    rows = db.execute(sql, params).fetchall()
+    json_out(rows_to_list(rows))
+
+
+def cmd_handoff_latest(args):
+    db = get_db()
+    status = args.status or "pending"
+    candidates = []
+
+    if args.chat_id and args.thread_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (args.chat_id, args.thread_id, status),
+        ))
+    if args.chat_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (args.chat_id, status),
+        ))
+    if args.project:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (args.project, status),
+        ))
+    if args.user_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (args.user_id, args.agent, status),
+        ))
+
+    candidates.append((
+        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+        (args.agent, status),
+    ))
+
+    row = None
+    for sql, params in candidates:
+        row = db.execute(sql, params).fetchone()
+        if row:
+            break
+
+    json_out(row_to_dict(row) or {})
+
+
+def cmd_handoff_consume(args):
+    db = get_db()
+    row = db.execute("SELECT id, status FROM handoff_packets WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {args.id} not found"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "consumed", "consumed_at": now})
+
+# ---------------------------------------------------------------------------
 # STATE commands — per-agent key/value store
 # ---------------------------------------------------------------------------
 
@@ -11949,6 +12078,49 @@ def build_parser():
     dec_list.add_argument("--project", "-p")
     dec_list.add_argument("--limit", "-l", type=int)
 
+    # --- handoff ---
+    hof = sub.add_parser("handoff", help="Temporary handoff packets for session continuity")
+    hof_sub = hof.add_subparsers(dest="handoff_cmd")
+
+    hof_add = hof_sub.add_parser("add", help="Create a handoff packet")
+    hof_add.add_argument("--title")
+    hof_add.add_argument("--goal", required=True)
+    hof_add.add_argument("--current-state", required=True, dest="current_state")
+    hof_add.add_argument("--open-loops", required=True, dest="open_loops")
+    hof_add.add_argument("--next-step", required=True, dest="next_step")
+    hof_add.add_argument("--recent-tail", dest="recent_tail")
+    hof_add.add_argument("--session")
+    hof_add.add_argument("--chat-id")
+    hof_add.add_argument("--thread-id")
+    hof_add.add_argument("--user-id")
+    hof_add.add_argument("--project", "-p")
+    hof_add.add_argument("--scope", "-s", default="global")
+    hof_add.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"], default="pending")
+    hof_add.add_argument("--decisions-json")
+    hof_add.add_argument("--entities-json")
+    hof_add.add_argument("--tasks-json")
+    hof_add.add_argument("--facts-json")
+    hof_add.add_argument("--source-event", type=int)
+    hof_add.add_argument("--expires-at")
+
+    hof_list = hof_sub.add_parser("list", help="List handoff packets")
+    hof_list.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"])
+    hof_list.add_argument("--project", "-p")
+    hof_list.add_argument("--chat-id")
+    hof_list.add_argument("--thread-id")
+    hof_list.add_argument("--user-id")
+    hof_list.add_argument("--limit", "-l", type=int, default=20)
+
+    hof_latest = hof_sub.add_parser("latest", help="Fetch the latest matching handoff packet")
+    hof_latest.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"], default="pending")
+    hof_latest.add_argument("--project", "-p")
+    hof_latest.add_argument("--chat-id")
+    hof_latest.add_argument("--thread-id")
+    hof_latest.add_argument("--user-id")
+
+    hof_consume = hof_sub.add_parser("consume", help="Mark a handoff packet consumed")
+    hof_consume.add_argument("id", type=int)
+
     # --- state ---
     st = sub.add_parser("state", help="Per-agent key/value state")
     st_sub = st.add_subparsers(dest="state_cmd")
@@ -12856,6 +13028,14 @@ def main():
     elif args.command == "decision":
         dispatch = {"add": cmd_decision_add, "list": cmd_decision_list}
         fn = dispatch.get(args.dec_cmd)
+    elif args.command == "handoff":
+        dispatch = {
+            "add": cmd_handoff_add,
+            "list": cmd_handoff_list,
+            "latest": cmd_handoff_latest,
+            "consume": cmd_handoff_consume,
+        }
+        fn = dispatch.get(args.handoff_cmd)
     elif args.command == "state":
         dispatch = {"get": cmd_state_get, "set": cmd_state_set}
         fn = dispatch.get(args.state_cmd)
