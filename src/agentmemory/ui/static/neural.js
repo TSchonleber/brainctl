@@ -367,9 +367,10 @@ function buildScene() {
     glow.scale.set(sn.size * (sn.isOrphan ? 3 : 5), sn.size * (sn.isOrphan ? 3 : 5), 1);
     mesh.add(glow);
 
-    // Label — skip for orphans and tiny narrative nodes
-    if (!sn.isOrphan && (sn.size > 1.8 || !isNarrative(sn))) {
-      const label = makeLabel(sn.label || sn.id, color);
+    // Label — show on all non-orphan nodes
+    if (!sn.isOrphan) {
+      const labelText = (sn.label || sn.id).substring(0, 60);
+      const label = makeLabel(labelText, color);
       label.position.set(0, -(sn.size + 2.5), 0);
       mesh.add(label);
     }

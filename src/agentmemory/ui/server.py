@@ -692,12 +692,13 @@ def api_graph(params, db):
     ).fetchall()
     for r in recent_events:
         node_id = f"event_{r['id']}"
+        summary = r["summary"] or r["event_type"] or "event"
         _append_node(
             nodes,
             node_index,
             {
                 "id": node_id,
-                "label": (r["summary"] or r["event_type"] or "event")[:80],
+                "label": summary[:80],
                 "type": "event",
                 "kind": "event",
                 "confidence": r["importance"] or 0.3,
@@ -706,7 +707,7 @@ def api_graph(params, db):
                 "event_type": r["event_type"],
                 "project": r["project"],
                 "created_at": r["created_at"],
-                "detail": r["detail"],
+                "detail": r["detail"] or summary,
             },
         )
         _append_edge(edges, edge_index, node_id, name_to_node_id.get((r["agent_id"] or "").lower()), r["event_type"] or "thought", 0.6, "authored_by")

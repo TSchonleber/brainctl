@@ -1,0 +1,635 @@
+{
+  "timestamp": "2026-04-02T18:03:48.624088",
+  "classical_p5": 0.2,
+  "quantum_p5": 0.2,
+  "blended_p5": 0.2,
+  "quantum_improvement": 0,
+  "improvement_pct": 0.0,
+  "details": [
+    {
+      "query_id": "Q01",
+      "query": "hippocampus module interface apply_decay consolidate",
+      "expected_ids": [
+        67
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        743,
+        804,
+        130,
+        1176,
+        410
+      ],
+      "quantum_top5": [
+        743,
+        804,
+        130,
+        1176,
+        1181
+      ],
+      "blended_top5": [
+        743,
+        804,
+        130,
+        1176,
+        410
+      ]
+    },
+    {
+      "query_id": "Q02",
+      "query": "CostClock time tracking invoicing SaaS Next.js",
+      "expected_ids": [
+        89,
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        78,
+        1176,
+        1181,
+        106
+      ],
+      "quantum_top5": [
+        130,
+        78,
+        1176,
+        1181,
+        106
+      ],
+      "blended_top5": [
+        130,
+        78,
+        1176,
+        1181,
+        106
+      ]
+    },
+    {
+      "query_id": "Q03",
+      "query": "invoice lifecycle draft sent paid overdue",
+      "expected_ids": [
+        78
+      ],
+      "classical_hit": true,
+      "quantum_hit": true,
+      "blended_hit": true,
+      "classical_top5": [
+        78,
+        106,
+        130,
+        1183,
+        1176
+      ],
+      "quantum_top5": [
+        78,
+        106,
+        130,
+        1183,
+        1176
+      ],
+      "blended_top5": [
+        78,
+        106,
+        130,
+        1183,
+        1176
+      ]
+    },
+    {
+      "query_id": "Q04",
+      "query": "PAPERCLIP_AGENT_ID identity mismatch auth guardrail",
+      "expected_ids": [
+        91,
+        85
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        86,
+        376,
+        1315,
+        1155
+      ],
+      "quantum_top5": [
+        130,
+        86,
+        1315,
+        376,
+        1155
+      ],
+      "blended_top5": [
+        130,
+        86,
+        1315,
+        376,
+        1155
+      ]
+    },
+    {
+      "query_id": "Q05",
+      "query": "Hermes core identity master prompt reshape",
+      "expected_ids": [
+        86
+      ],
+      "classical_hit": true,
+      "quantum_hit": true,
+      "blended_hit": true,
+      "classical_top5": [
+        86,
+        1315,
+        1155,
+        1154,
+        125
+      ],
+      "quantum_top5": [
+        86,
+        1315,
+        1155,
+        1154,
+        804
+      ],
+      "blended_top5": [
+        86,
+        1315,
+        1155,
+        1154,
+        804
+      ]
+    },
+    {
+      "query_id": "Q06",
+      "query": "CostClock security hardening test coverage production readiness issues",
+      "expected_ids": [
+        89
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        106,
+        804,
+        1176,
+        1180
+      ],
+      "quantum_top5": [
+        130,
+        106,
+        1176,
+        804,
+        1181
+      ],
+      "blended_top5": [
+        130,
+        106,
+        1176,
+        804,
+        1181
+      ]
+    },
+    {
+      "query_id": "Q07",
+      "query": "Nexus heartbeat Kokoro token checkout fails",
+      "expected_ids": [
+        91,
+        85
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        376,
+        125,
+        1188,
+        407
+      ],
+      "quantum_top5": [
+        130,
+        376,
+        1188,
+        125,
+        1233
+      ],
+      "blended_top5": [
+        130,
+        376,
+        125,
+        1188,
+        1233
+      ]
+    },
+    {
+      "query_id": "Q08",
+      "query": "Memory Intelligence Division staffed agents registered brain.db",
+      "expected_ids": [
+        92,
+        93
+      ],
+      "classical_hit": true,
+      "quantum_hit": true,
+      "blended_hit": true,
+      "classical_top5": [
+        376,
+        93,
+        1176,
+        130,
+        1181
+      ],
+      "quantum_top5": [
+        376,
+        93,
+        1176,
+        1181,
+        1294
+      ],
+      "blended_top5": [
+        376,
+        93,
+        1176,
+        1181,
+        130
+      ]
+    },
+    {
+      "query_id": "Q09",
+      "query": "brainctl version coherence-check sentinel maintenance cron",
+      "expected_ids": [
+        93
+      ],
+      "classical_hit": true,
+      "quantum_hit": true,
+      "blended_hit": true,
+      "classical_top5": [
+        93,
+        300,
+        532,
+        130,
+        376
+      ],
+      "quantum_top5": [
+        93,
+        300,
+        532,
+        130,
+        376
+      ],
+      "blended_top5": [
+        93,
+        300,
+        532,
+        130,
+        376
+      ]
+    },
+    {
+      "query_id": "Q10",
+      "query": "hippocampus decay rate temporal class permanent medium short",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        804,
+        743,
+        1176,
+        1181
+      ],
+      "quantum_top5": [
+        130,
+        804,
+        743,
+        1176,
+        1181
+      ],
+      "blended_top5": [
+        130,
+        804,
+        743,
+        1176,
+        1181
+      ]
+    },
+    {
+      "query_id": "Q11",
+      "query": "cadence metrics pipeline agent_state hippocampus cron",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        410,
+        804,
+        743,
+        93
+      ],
+      "quantum_top5": [
+        130,
+        410,
+        804,
+        743,
+        93
+      ],
+      "blended_top5": [
+        130,
+        410,
+        804,
+        743,
+        93
+      ]
+    },
+    {
+      "query_id": "Q12",
+      "query": "epoch detect create backfill memory event range",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        804,
+        407,
+        743,
+        1176
+      ],
+      "quantum_top5": [
+        130,
+        804,
+        407,
+        743,
+        1176
+      ],
+      "blended_top5": [
+        130,
+        804,
+        407,
+        743,
+        1176
+      ]
+    },
+    {
+      "query_id": "Q13",
+      "query": "CostClock cron endpoint daily cleanup authorization bearer secret",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        802,
+        1268,
+        743,
+        93
+      ],
+      "quantum_top5": [
+        130,
+        802,
+        1268,
+        1213,
+        1221
+      ],
+      "blended_top5": [
+        130,
+        802,
+        1268,
+        1213,
+        1221
+      ]
+    },
+    {
+      "query_id": "Q14",
+      "query": "branch policy feature branches PR main direct push forbidden",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        127,
+        130,
+        1235,
+        376,
+        383
+      ],
+      "quantum_top5": [
+        127,
+        130,
+        1235,
+        376,
+        383
+      ],
+      "blended_top5": [
+        127,
+        130,
+        1235,
+        376,
+        383
+      ]
+    },
+    {
+      "query_id": "Q15",
+      "query": "Claude Code IDE extensions local adapters claude_local VS Code",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        1316,
+        130,
+        1188,
+        86,
+        1176
+      ],
+      "quantum_top5": [
+        1316,
+        130,
+        1188,
+        1176,
+        1245
+      ],
+      "blended_top5": [
+        1316,
+        130,
+        1188,
+        1176,
+        1245
+      ]
+    },
+    {
+      "query_id": "Q16",
+      "query": "Hermes scheduler hourly periodic task background job monitoring",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        1180,
+        1155,
+        1228,
+        743,
+        1177
+      ],
+      "quantum_top5": [
+        1180,
+        1155,
+        1228,
+        743,
+        1177
+      ],
+      "blended_top5": [
+        1180,
+        1155,
+        1228,
+        743,
+        1177
+      ]
+    },
+    {
+      "query_id": "Q17",
+      "query": "OpenClaw AI agent framework local execution deployment pattern",
+      "expected_ids": [
+        92
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        1180,
+        1176,
+        1315,
+        1179
+      ],
+      "quantum_top5": [
+        130,
+        1180,
+        1176,
+        1315,
+        1179
+      ],
+      "blended_top5": [
+        130,
+        1180,
+        1176,
+        1315,
+        1179
+      ]
+    },
+    {
+      "query_id": "Q18",
+      "query": "Paperclip task heartbeat assignment checkout workflow status",
+      "expected_ids": [
+        93
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        1233,
+        1266,
+        1241,
+        1244
+      ],
+      "quantum_top5": [
+        1233,
+        130,
+        1266,
+        1241,
+        1244
+      ],
+      "blended_top5": [
+        1233,
+        130,
+        1266,
+        1241,
+        1244
+      ]
+    },
+    {
+      "query_id": "Q19",
+      "query": "Nara external data integration REST API polling synchronization",
+      "expected_ids": [
+        92,
+        93
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        130,
+        1282,
+        1244,
+        1247,
+        1251
+      ],
+      "quantum_top5": [
+        130,
+        1282,
+        1244,
+        1247,
+        1251
+      ],
+      "blended_top5": [
+        130,
+        1282,
+        1244,
+        1247,
+        1251
+      ]
+    },
+    {
+      "query_id": "Q20",
+      "query": "brain.db schema memory relationships confidence consolidation epochs",
+      "expected_ids": [
+        77
+      ],
+      "classical_hit": false,
+      "quantum_hit": false,
+      "blended_hit": false,
+      "classical_top5": [
+        804,
+        130,
+        743,
+        300,
+        532
+      ],
+      "quantum_top5": [
+        804,
+        130,
+        743,
+        300,
+        1176
+      ],
+      "blended_top5": [
+        804,
+        130,
+        743,
+        300,
+        532
+      ]
+    }
+  ]
+}

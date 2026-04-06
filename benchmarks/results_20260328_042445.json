@@ -1,0 +1,349 @@
+{
+  "run_at": "2026-03-28T04:24:45.628868Z",
+  "version": "v1",
+  "n_queries": 20,
+  "hits_at_5": 19,
+  "hit_rate": 0.95,
+  "mean_precision_at_5": 0.22000000000000006,
+  "mean_recall_at_5": 0.925,
+  "results": [
+    {
+      "query_id": "Q01",
+      "query": "hippocampus module interface apply_decay consolidate",
+      "expected_ids": [
+        67
+      ],
+      "retrieved_ids": [
+        67,
+        77,
+        93,
+        86,
+        92
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q02",
+      "query": "CostClock time tracking invoicing SaaS Next.js",
+      "expected_ids": [
+        77,
+        89
+      ],
+      "retrieved_ids": [
+        77,
+        91,
+        78,
+        85,
+        87
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 0.5
+    },
+    {
+      "query_id": "Q03",
+      "query": "invoice lifecycle draft sent paid overdue",
+      "expected_ids": [
+        78
+      ],
+      "retrieved_ids": [
+        78,
+        77,
+        87,
+        89,
+        92
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q04",
+      "query": "PAPERCLIP_AGENT_ID identity mismatch auth guardrail",
+      "expected_ids": [
+        85,
+        91
+      ],
+      "retrieved_ids": [
+        85,
+        86,
+        91,
+        89,
+        77
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.4,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q05",
+      "query": "Hermes core identity master prompt reshape",
+      "expected_ids": [
+        86
+      ],
+      "retrieved_ids": [
+        86,
+        67,
+        85,
+        90,
+        77
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q06",
+      "query": "CostClock security hardening test coverage production readiness issues",
+      "expected_ids": [
+        89
+      ],
+      "retrieved_ids": [
+        89,
+        67,
+        87,
+        85,
+        91
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q07",
+      "query": "Nexus heartbeat Kokoro token checkout fails",
+      "expected_ids": [
+        91,
+        85
+      ],
+      "retrieved_ids": [
+        91,
+        85,
+        87,
+        77,
+        89
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.4,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q08",
+      "query": "Memory Intelligence Division staffed agents registered brain.db",
+      "expected_ids": [
+        92,
+        93
+      ],
+      "retrieved_ids": [
+        92,
+        93,
+        90,
+        87,
+        77
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.4,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q09",
+      "query": "brainctl version coherence-check sentinel maintenance cron",
+      "expected_ids": [
+        93
+      ],
+      "retrieved_ids": [],
+      "hit_at_5": false,
+      "precision_at_5": 0.0,
+      "recall_at_5": 0.0
+    },
+    {
+      "query_id": "Q10",
+      "query": "hippocampus decay rate temporal class permanent medium short",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        67,
+        93,
+        92,
+        90
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q11",
+      "query": "cadence metrics pipeline agent_state hippocampus cron",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        93,
+        67,
+        92,
+        90
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q12",
+      "query": "epoch detect create backfill memory event range",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        93,
+        67,
+        86,
+        91
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q13",
+      "query": "CostClock cron endpoint daily cleanup authorization bearer secret",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        93,
+        89,
+        90,
+        86
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q14",
+      "query": "branch policy feature branches PR main direct push forbidden",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        85,
+        67,
+        91,
+        87
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q15",
+      "query": "22 agents M&I division hermes openclaw nara codex",
+      "expected_ids": [
+        92
+      ],
+      "retrieved_ids": [
+        92,
+        87,
+        93,
+        77,
+        67
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q16",
+      "query": "memory spine backup iCloud maintenance nightly",
+      "expected_ids": [
+        93
+      ],
+      "retrieved_ids": [
+        93,
+        90,
+        77,
+        67,
+        92
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q17",
+      "query": "should_accept_memory resolve_contradictions search_memories tests",
+      "expected_ids": [
+        67
+      ],
+      "retrieved_ids": [
+        67,
+        93,
+        85,
+        89,
+        91
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q18",
+      "query": "Stripe Supabase Vercel Tailwind TypeScript stack",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        87,
+        89,
+        86,
+        93
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q19",
+      "query": "rate limiting CSV export SSE notifications eslint",
+      "expected_ids": [
+        89
+      ],
+      "retrieved_ids": [
+        89,
+        78,
+        77,
+        87,
+        67
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "Q20",
+      "query": "compression permanent temporal class hippocampus compressed memory IDs",
+      "expected_ids": [
+        77
+      ],
+      "retrieved_ids": [
+        77,
+        67,
+        93,
+        92,
+        90
+      ],
+      "hit_at_5": true,
+      "precision_at_5": 0.2,
+      "recall_at_5": 1.0
+    }
+  ]
+}

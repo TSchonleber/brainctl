@@ -1366,8 +1366,6 @@ TOOLS = [
             "required": ["task_id", "outcome"],
         },
     ),
-]
-    ),
     # --- Affect tools ---
     Tool(
         name="affect_classify",

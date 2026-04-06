@@ -1,0 +1,554 @@
+{
+  "cross_agent_edges": [
+    {
+      "id": 4618,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 5,
+      "agent_a": "hermes",
+      "conf_a": 0.999999149484536,
+      "content_a": "Agent memory spine current state (2026-03-28): 22 active age",
+      "agent_b": "openclaw",
+      "conf_b": 0.9999999291280148,
+      "content_b": "brainctl push gate threshold: originally 50 active memories,"
+    },
+    {
+      "id": 4633,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 5,
+      "agent_a": "hermes",
+      "conf_a": 1.0,
+      "content_a": "Kernel (COS-207) integrated brainctl as Hermes tools: brain_",
+      "agent_b": "openclaw",
+      "conf_b": 0.9999999291280148,
+      "content_b": "brainctl push gate threshold: originally 50 active memories,"
+    },
+    {
+      "id": 4637,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 5,
+      "agent_a": "openclaw",
+      "conf_a": 0.9999999291280148,
+      "content_a": "brainctl push gate threshold: originally 50 active memories,",
+      "agent_b": "hermes",
+      "conf_b": 1.0,
+      "content_b": "CostClock AI: Next.js SaaS for financial ops \u2014 time tracking"
+    },
+    {
+      "id": 4615,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 4,
+      "agent_a": "hermes",
+      "conf_a": 0.999999149484536,
+      "content_a": "Agent memory spine current state (2026-03-28): 22 active age",
+      "agent_b": "paperclip-lattice",
+      "conf_b": 0.9987106596638656,
+      "content_b": "Compressed 15 memories in scope project:costclock-ai:invoice"
+    },
+    {
+      "id": 4623,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "hermes",
+      "conf_b": 1.0,
+      "content_b": "Kernel (COS-207) integrated brainctl as Hermes tools: brain_"
+    },
+    {
+      "id": 4624,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "openclaw",
+      "conf_b": 0.9999999291280148,
+      "content_b": "brainctl push gate threshold: originally 50 active memories,"
+    },
+    {
+      "id": 4625,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "hermes",
+      "conf_b": 1.0,
+      "content_b": "CostClock AI: Next.js SaaS for financial ops \u2014 time tracking"
+    },
+    {
+      "id": 4598,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 0.999835,
+      "content_b": "NEXT SESSION: Chief is delivering a master prompt that will "
+    },
+    {
+      "id": 4599,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 0.999999149484536,
+      "content_b": "Agent memory spine current state (2026-03-28): 22 active age"
+    },
+    {
+      "id": 4608,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "hermes",
+      "conf_a": 0.999835,
+      "content_a": "NEXT SESSION: Chief is delivering a master prompt that will ",
+      "agent_b": "paperclip-lattice",
+      "conf_b": 0.9987106596638656,
+      "content_b": "Compressed 15 memories in scope project:costclock-ai:invoice"
+    },
+    {
+      "id": 4602,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 1.0,
+      "content_b": "Kernel (COS-207) integrated brainctl as Hermes tools: brain_"
+    },
+    {
+      "id": 4603,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "openclaw",
+      "conf_b": 0.9999999291280148,
+      "content_b": "brainctl push gate threshold: originally 50 active memories,"
+    },
+    {
+      "id": 4611,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "hermes",
+      "conf_a": 0.999835,
+      "content_a": "NEXT SESSION: Chief is delivering a master prompt that will ",
+      "agent_b": "openclaw",
+      "conf_b": 0.9999999291280148,
+      "content_b": "brainctl push gate threshold: originally 50 active memories,"
+    },
+    {
+      "id": 4604,
+      "relation_type": "co_referenced",
+      "weight": 1.0,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 1.0,
+      "content_b": "CostClock AI: Next.js SaaS for financial ops \u2014 time tracking"
+    },
+    {
+      "id": 4923,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "hermes",
+      "conf_b": 0.9979906188389923,
+      "content_b": "brain_tool.py integration complete for COS-207"
+    },
+    {
+      "id": 4928,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "openclaw",
+      "conf_a": 0.9999999291280148,
+      "content_a": "brainctl push gate threshold: originally 50 active memories,",
+      "agent_b": "hermes",
+      "conf_b": 0.9979906188389923,
+      "content_b": "brain_tool.py integration complete for COS-207"
+    },
+    {
+      "id": 4921,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "hermes",
+      "conf_a": 0.999999149484536,
+      "content_a": "Agent memory spine current state (2026-03-28): 22 active age",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4924,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4926,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "hermes",
+      "conf_a": 1.0,
+      "content_a": "Kernel (COS-207) integrated brainctl as Hermes tools: brain_",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4929,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "openclaw",
+      "conf_a": 0.9999999291280148,
+      "content_a": "brainctl push gate threshold: originally 50 active memories,",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4932,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "hermes",
+      "conf_a": 1.0,
+      "content_a": "CostClock AI: Next.js SaaS for financial ops \u2014 time tracking",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4934,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "hermes",
+      "conf_a": 0.9979906188389923,
+      "content_a": "brain_tool.py integration complete for COS-207",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4925,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.9987106596638656,
+      "content_a": "Compressed 15 memories in scope project:costclock-ai:invoice",
+      "agent_b": "hermes",
+      "conf_b": 0.9998140151874703,
+      "content_b": "Implemented COS-221 causal event graph: auto-detection pipel"
+    },
+    {
+      "id": 4930,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "openclaw",
+      "conf_a": 0.9999999291280148,
+      "content_a": "brainctl push gate threshold: originally 50 active memories,",
+      "agent_b": "hermes",
+      "conf_b": 0.9998140151874703,
+      "content_b": "Implemented COS-221 causal event graph: auto-detection pipel"
+    },
+    {
+      "id": 4936,
+      "relation_type": "co_referenced",
+      "weight": 0.8,
+      "co_activation_count": 4,
+      "agent_a": "paperclip-recall",
+      "conf_a": 0.9979047956674473,
+      "content_a": "COS-269 done: implemented brainctl reason (L1+L2) and brainc",
+      "agent_b": "hermes",
+      "conf_b": 0.9998140151874703,
+      "content_b": "Implemented COS-221 causal event graph: auto-detection pipel"
+    },
+    {
+      "id": 4914,
+      "relation_type": "co_referenced",
+      "weight": 0.6000000000000001,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 0.9979906188389923,
+      "content_b": "brain_tool.py integration complete for COS-207"
+    },
+    {
+      "id": 4915,
+      "relation_type": "co_referenced",
+      "weight": 0.6000000000000001,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4918,
+      "relation_type": "co_referenced",
+      "weight": 0.6000000000000001,
+      "co_activation_count": 3,
+      "agent_a": "hermes",
+      "conf_a": 0.999835,
+      "content_a": "NEXT SESSION: Chief is delivering a master prompt that will ",
+      "agent_b": "paperclip-recall",
+      "conf_b": 0.9979047956674473,
+      "content_b": "COS-269 done: implemented brainctl reason (L1+L2) and brainc"
+    },
+    {
+      "id": 4916,
+      "relation_type": "co_referenced",
+      "weight": 0.6000000000000001,
+      "co_activation_count": 3,
+      "agent_a": "paperclip-lattice",
+      "conf_a": 0.981671,
+      "content_a": "CostClock invoice subsystem note 1: invoice lifecycle includ",
+      "agent_b": "hermes",
+      "conf_b": 0.9998140151874703,
+      "content_b": "Implemented COS-221 causal event graph: auto-detection pipel"
+    }
+  ],
+  "top_recalled_memories": [
+    {
+      "id": 93,
+      "agent_id": "hermes",
+      "category": "environment",
+      "content": "Agent memory spine current state (2026-03-28): 22 active agents in brain.db, 9 active memories, 84+ ",
+      "confidence": 0.999999149484536,
+      "recalled_count": 127,
+      "ewc_importance": 0.8002
+    },
+    {
+      "id": 127,
+      "agent_id": "openclaw",
+      "category": "decision",
+      "content": "brainctl push gate threshold: originally 50 active memories, lowered to 40 by Chief on 2026-03-28 af",
+      "confidence": 0.9999999291280148,
+      "recalled_count": 126,
+      "ewc_importance": 0.8001
+    },
+    {
+      "id": 130,
+      "agent_id": "hermes",
+      "category": "environment",
+      "content": "CostClock AI: Next.js SaaS for financial ops \u2014 time tracking, invoicing, collections automation. Rep",
+      "confidence": 1.0,
+      "recalled_count": 119,
+      "ewc_importance": 0.8002
+    },
+    {
+      "id": 407,
+      "agent_id": "hermes",
+      "category": "lesson",
+      "content": "Implemented COS-221 causal event graph: auto-detection pipeline (1683 edges from 222 events), brainc",
+      "confidence": 0.9998140151874703,
+      "recalled_count": 98,
+      "ewc_importance": 0.7881
+    },
+    {
+      "id": 125,
+      "agent_id": "hermes",
+      "category": "decision",
+      "content": "Kernel (COS-207) integrated brainctl as Hermes tools: brain_search, brain_remember, brain_graph, bra",
+      "confidence": 1.0,
+      "recalled_count": 84,
+      "ewc_importance": 0.7322
+    },
+    {
+      "id": 383,
+      "agent_id": "paperclip-recall",
+      "category": "decision",
+      "content": "COS-269 done: implemented brainctl reason (L1+L2) and brainctl infer (L1+L2+L3) \u2014 neuro-symbolic rea",
+      "confidence": 0.9979047956674473,
+      "recalled_count": 79,
+      "ewc_importance": 0.712
+    },
+    {
+      "id": 106,
+      "agent_id": "paperclip-lattice",
+      "category": "environment",
+      "content": "Compressed 15 memories in scope project:costclock-ai:invoice-compression-test-1774662366 into 5 memo",
+      "confidence": 0.9987106596638656,
+      "recalled_count": 77,
+      "ewc_importance": 0.6162
+    },
+    {
+      "id": 192,
+      "agent_id": "hermes",
+      "category": "project",
+      "content": "brain_tool.py integration complete for COS-207",
+      "confidence": 0.9979906188389923,
+      "recalled_count": 53,
+      "ewc_importance": 0.5209
+    },
+    {
+      "id": 376,
+      "agent_id": "hermes",
+      "category": "environment",
+      "content": "MASSIVE SESSION: Built CKO identity, created COG+BRN projects (76 issues total), hired/woke/managed ",
+      "confidence": 0.9984451533742331,
+      "recalled_count": 52,
+      "ewc_importance": 0.604
+    },
+    {
+      "id": 410,
+      "agent_id": "paperclip-engram",
+      "category": "environment",
+      "content": "COS-319 filed: hippocampus compression discards source_event_id links \u2192 distillation ratio drops to ",
+      "confidence": 0.9983312883435582,
+      "recalled_count": 52,
+      "ewc_importance": 0.604
+    },
+    {
+      "id": 300,
+      "agent_id": "hermes",
+      "category": "environment",
+      "content": "[ToM inject -> hermes] Topic: global:memory_spine:schema_version\nSchema is v12. Migration 012 applie",
+      "confidence": 0.99366,
+      "recalled_count": 37,
+      "ewc_importance": 0.5481
+    },
+    {
+      "id": 86,
+      "agent_id": "hermes",
+      "category": "identity",
+      "content": "NEXT SESSION: Chief is delivering a master prompt that will reshape Hermes core identity. Must bake ",
+      "confidence": 0.999835,
+      "recalled_count": 34,
+      "ewc_importance": 0.5363
+    },
+    {
+      "id": 532,
+      "agent_id": "paperclip-engram",
+      "category": "lesson",
+      "content": "LESSON: never run brainctl distill below threshold 0.7. Low-threshold distillation floods store with",
+      "confidence": 0.989009,
+      "recalled_count": 34,
+      "ewc_importance": 0.536
+    },
+    {
+      "id": 558,
+      "agent_id": "openclaw",
+      "category": "decision",
+      "content": "COS-323 executed: memory health rescue. Retired 50 operational noise memories (hippocampus reclassif",
+      "confidence": 0.993188,
+      "recalled_count": 30,
+      "ewc_importance": 0.52
+    },
+    {
+      "id": 78,
+      "agent_id": "paperclip-lattice",
+      "category": "project",
+      "content": "CostClock invoice subsystem note 1: invoice lifecycle includes draft, sent, paid, overdue state hand",
+      "confidence": 0.981671,
+      "recalled_count": 25,
+      "ewc_importance": 0.4204
+    },
+    {
+      "id": 743,
+      "agent_id": "hermes",
+      "category": "environment",
+      "content": "COS-81 complete: Epoch implemented analyze_access_patterns and consolidation-cycle batch command in ",
+      "confidence": 0.974265,
+      "recalled_count": 21,
+      "ewc_importance": 0.484
+    }
+  ],
+  "chsh_results": [
+    {
+      "pair": "hermes \u2194 openclaw",
+      "topic": "T2",
+      "S": 1.9995,
+      "class": "classical-saturated"
+    },
+    {
+      "pair": "hermes \u2194 openclaw",
+      "topic": "T3",
+      "S": 1.9648,
+      "class": "classical"
+    },
+    {
+      "pair": "hermes \u2194 paperclip-recall",
+      "topic": "T3",
+      "S": 1.9891,
+      "class": "classical-saturated"
+    },
+    {
+      "pair": "hermes \u2194 hippocampus",
+      "topic": "T2",
+      "S": 1.4615,
+      "class": "classical"
+    },
+    {
+      "pair": "hippocampus \u2194 paperclip-cortex",
+      "topic": "T2",
+      "S": 1.1252,
+      "class": "classical"
+    },
+    {
+      "pair": "paperclip-cortex \u2194 paperclip-sentinel-2",
+      "topic": "T2",
+      "S": 0.96,
+      "class": "classical"
+    },
+    {
+      "pair": "paperclip-cortex \u2194 paperclip-sentinel-2",
+      "topic": "T3",
+      "S": 0.4588,
+      "class": "classical"
+    }
+  ],
+  "ghz_result": {
+    "triad": [
+      "hermes",
+      "hippocampus",
+      "paperclip-cortex"
+    ],
+    "topic": "T2_memory_ops",
+    "I_ABC": 0.3092,
+    "sum_pairwise": 1.0561,
+    "ghz_ratio": 0.2927,
+    "ghz_detected": false
+  }
+}
