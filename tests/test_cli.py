@@ -221,6 +221,45 @@ class TestCLIHandoff:
         assert consume_data["ok"] is True
         assert consume_data["status"] == "consumed"
 
+    def test_pin_and_expire_handoff(self, cli_db):
+        add = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "Keep this around",
+            "--current-state", "Pinned state candidate",
+            "--open-loops", "Need later review",
+            "--next-step", "Pin then expire",
+            db_path=cli_db,
+        )
+        handoff_id = json.loads(add.stdout)["handoff_id"]
+
+        pin = run_brainctl(
+            "--agent", "tester",
+            "handoff", "pin", str(handoff_id),
+            db_path=cli_db,
+        )
+        pin_data = json.loads(pin.stdout)
+        assert pin_data["ok"] is True
+        assert pin_data["status"] == "pinned"
+
+        listed = run_brainctl(
+            "--agent", "tester",
+            "handoff", "list",
+            "--status", "pinned",
+            db_path=cli_db,
+        )
+        listed_data = json.loads(listed.stdout)
+        assert any(item["id"] == handoff_id for item in listed_data)
+
+        expire = run_brainctl(
+            "--agent", "tester",
+            "handoff", "expire", str(handoff_id),
+            db_path=cli_db,
+        )
+        expire_data = json.loads(expire.stdout)
+        assert expire_data["ok"] is True
+        assert expire_data["status"] == "expired"
+
 
 # ── output format flags ────────────────────────────────────────────────────
 

@@ -2868,6 +2868,40 @@ def cmd_handoff_consume(args):
     db.commit()
     json_out({"ok": True, "handoff_id": args.id, "status": "consumed", "consumed_at": now})
 
+
+def cmd_handoff_pin(args):
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {args.id} not found"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'pinned', expires_at = NULL, updated_at = ? WHERE id = ?",
+        (now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "pinned"})
+
+
+def cmd_handoff_expire(args):
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {args.id} not found"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'expired', updated_at = ? WHERE id = ?",
+        (now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "expired"})
+
 # ---------------------------------------------------------------------------
 # STATE commands — per-agent key/value store
 # ---------------------------------------------------------------------------
@@ -12121,6 +12155,12 @@ def build_parser():
     hof_consume = hof_sub.add_parser("consume", help="Mark a handoff packet consumed")
     hof_consume.add_argument("id", type=int)
 
+    hof_pin = hof_sub.add_parser("pin", help="Pin a handoff packet so it does not expire")
+    hof_pin.add_argument("id", type=int)
+
+    hof_expire = hof_sub.add_parser("expire", help="Mark a handoff packet expired")
+    hof_expire.add_argument("id", type=int)
+
     # --- state ---
     st = sub.add_parser("state", help="Per-agent key/value state")
     st_sub = st.add_subparsers(dest="state_cmd")
@@ -13034,6 +13074,8 @@ def main():
             "list": cmd_handoff_list,
             "latest": cmd_handoff_latest,
             "consume": cmd_handoff_consume,
+            "pin": cmd_handoff_pin,
+            "expire": cmd_handoff_expire,
         }
         fn = dispatch.get(args.handoff_cmd)
     elif args.command == "state":
