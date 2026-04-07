@@ -768,6 +768,125 @@ def tool_decision_add(agent_id: str, title: str, rationale: str, project: str = 
     return {"ok": True, "decision_id": did}
 
 
+def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: str,
+                     next_step: str, title: str = None, session_id: str = None,
+                     chat_id: str = None, thread_id: str = None, user_id: str = None,
+                     project: str = None, scope: str = "global", status: str = "pending",
+                     recent_tail: str = None, decisions_json: str = None,
+                     entities_json: str = None, tasks_json: str = None,
+                     facts_json: str = None, source_event_id: int = None,
+                     expires_at: str = None, **kw) -> dict:
+    db = get_db()
+    ensure_agent(db, agent_id)
+    now = _now_ts()
+    cursor = db.execute(
+        """
+        INSERT INTO handoff_packets (
+            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
+            title, goal, current_state, open_loops, next_step, recent_tail,
+            decisions_json, entities_json, tasks_json, facts_json,
+            source_event_id, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
+            title, goal, current_state, open_loops, next_step, recent_tail,
+            decisions_json, entities_json, tasks_json, facts_json,
+            source_event_id, expires_at, now, now,
+        ),
+    )
+    handoff_id = cursor.lastrowid
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": status}
+
+
+def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = None,
+                        chat_id: str = None, thread_id: str = None, user_id: str = None,
+                        **kw) -> dict:
+    db = get_db()
+    candidates = []
+    if chat_id and thread_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (chat_id, thread_id, status),
+        ))
+    if chat_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (chat_id, status),
+        ))
+    if project:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (project, status),
+        ))
+    if user_id:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id, agent_id, status),
+        ))
+    candidates.append((
+        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+        (agent_id, status),
+    ))
+    row = None
+    for sql, params in candidates:
+        row = db.execute(sql, params).fetchone()
+        if row:
+            break
+    db.close()
+    return row_to_dict(row) or {}
+
+
+def tool_handoff_consume(agent_id: str, handoff_id: int, **kw) -> dict:
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "consumed", "consumed_at": now}
+
+
+def tool_handoff_pin(agent_id: str, handoff_id: int, **kw) -> dict:
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'pinned', expires_at = NULL, updated_at = ? WHERE id = ?",
+        (now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "pinned"}
+
+
+def tool_handoff_expire(agent_id: str, handoff_id: int, **kw) -> dict:
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'expired', updated_at = ? WHERE id = ?",
+        (now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "expired"}
+
+
 def tool_search(agent_id: str, query: str, limit: int = 20) -> dict:
     """Cross-table search: memories + events + entities. Intent-aware routing."""
     db = get_db()
@@ -1291,6 +1410,82 @@ TOOLS = [
         },
     ),
     Tool(
+        name="handoff_add",
+        description="Create a structured handoff packet for continuity across session resets.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "goal": {"type": "string"},
+                "current_state": {"type": "string"},
+                "open_loops": {"type": "string"},
+                "next_step": {"type": "string"},
+                "session_id": {"type": "string"},
+                "chat_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "user_id": {"type": "string"},
+                "project": {"type": "string"},
+                "scope": {"type": "string", "default": "global"},
+                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "recent_tail": {"type": "string"},
+                "decisions_json": {"type": "string"},
+                "entities_json": {"type": "string"},
+                "tasks_json": {"type": "string"},
+                "facts_json": {"type": "string"},
+                "source_event_id": {"type": "integer"},
+                "expires_at": {"type": "string"}
+            },
+            "required": ["goal", "current_state", "open_loops", "next_step"],
+        },
+    ),
+    Tool(
+        name="handoff_latest",
+        description="Fetch the latest matching handoff packet, preferring thread, then chat, then project, then user scope.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "project": {"type": "string"},
+                "chat_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "user_id": {"type": "string"}
+            },
+        },
+    ),
+    Tool(
+        name="handoff_consume",
+        description="Mark a handoff packet consumed after successful restore.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="handoff_pin",
+        description="Pin a handoff packet so it is preserved intentionally.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="handoff_expire",
+        description="Mark a handoff packet expired so it is no longer used for resume.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
         name="search",
         description="Cross-table search across memories, events, and entities simultaneously. Best for broad queries.",
         inputSchema={
@@ -1576,6 +1771,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "trigger_list": tool_trigger_list,
         "trigger_check": tool_trigger_check,
         "decision_add": tool_decision_add,
+        "handoff_add": tool_handoff_add,
+        "handoff_latest": tool_handoff_latest,
+        "handoff_consume": tool_handoff_consume,
+        "handoff_pin": tool_handoff_pin,
+        "handoff_expire": tool_handoff_expire,
         "search": tool_search,
         "stats": tool_stats,
         "resolve_conflict": tool_resolve_conflict,
