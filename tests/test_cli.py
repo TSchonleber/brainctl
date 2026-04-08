@@ -260,6 +260,40 @@ class TestCLIHandoff:
         assert expire_data["ok"] is True
         assert expire_data["status"] == "expired"
 
+    def test_handoff_ownership_is_enforced(self, cli_db):
+        add = run_brainctl(
+            "--agent", "owner",
+            "handoff", "add",
+            "--goal", "Owner only",
+            "--current-state", "Private state",
+            "--open-loops", "None",
+            "--next-step", "Keep private",
+            db_path=cli_db,
+        )
+        handoff_id = json.loads(add.stdout)["handoff_id"]
+
+        consume = run_brainctl(
+            "--agent", "other",
+            "handoff", "consume", str(handoff_id),
+            db_path=cli_db,
+        )
+        consume_data = json.loads(consume.stdout)
+        assert consume_data["ok"] is False
+        assert "not found for agent other" in consume_data["error"]
+
+    def test_handoff_add_rejects_blank_goal(self, cli_db):
+        result = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "   ",
+            "--current-state", "State",
+            "--open-loops", "Loops",
+            "--next-step", "Next",
+            db_path=cli_db,
+            expect_ok=False,
+        )
+        assert result.returncode != 0 or result.stdout
+
 
 # ── output format flags ────────────────────────────────────────────────────
 

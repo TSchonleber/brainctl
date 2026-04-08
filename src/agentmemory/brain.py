@@ -26,11 +26,15 @@ from typing import Any, Dict, List, Optional, Union
 from agentmemory.affect import classify_affect
 from agentmemory.paths import get_db_path
 
-_INIT_SQL_PATH = Path(__file__).parent.parent.parent / "db" / "init_schema.sql"
+_INIT_SQL_PATH = Path(__file__).parent / "db" / "init_schema.sql"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
 def _now_ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return _utc_now_iso()
 
 
 class Brain:
@@ -78,9 +82,9 @@ class Brain:
             """
             INSERT OR IGNORE INTO agents (
                 id, display_name, agent_type, status, created_at, updated_at
-            ) VALUES (?, ?, 'api', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+            ) VALUES (?, ?, 'api', 'active', ?, ?)
             """,
-            (self.agent_id, self.agent_id),
+            (self.agent_id, self.agent_id, _now_ts(), _now_ts()),
         )
         conn.commit()
         conn.close()
@@ -95,9 +99,9 @@ class Brain:
                 """
                 INSERT OR IGNORE INTO agents (
                     id, display_name, agent_type, status, created_at, updated_at
-                ) VALUES (?, ?, 'api', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+                ) VALUES (?, ?, 'api', 'active', ?, ?)
                 """,
-                (self.agent_id, self.agent_id),
+                (self.agent_id, self.agent_id, _now_ts(), _now_ts()),
             )
             conn.commit()
         except Exception:
@@ -227,7 +231,7 @@ class Brain:
     def affect_log(self, text: str, source: str = "observation") -> Dict[str, Any]:
         """Classify affect from text and store in affect_log table. Returns the affect result with stored ID."""
         result = classify_affect(text)
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        now = _now_ts()
         db = self._db()
         cur = db.execute(
             "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "

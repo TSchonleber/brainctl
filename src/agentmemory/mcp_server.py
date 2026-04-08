@@ -125,8 +125,12 @@ VALID_ENTITY_TYPES = [
 # DB helpers
 # ---------------------------------------------------------------------------
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
 def _now_ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    return _utc_now_iso()
 
 
 def get_db() -> sqlite3.Connection:
@@ -146,9 +150,9 @@ def ensure_agent(conn, agent_id: str) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO agents (id, display_name, agent_type, status, created_at, updated_at)
-        VALUES (?, ?, 'mcp', 'active', strftime('%Y-%m-%dT%H:%M:%S','now'), strftime('%Y-%m-%dT%H:%M:%S','now'))
+        VALUES (?, ?, 'mcp', 'active', ?, ?)
         """,
-        (agent_id, agent_id),
+        (agent_id, agent_id, _now_ts(), _now_ts()),
     )
 
 
@@ -190,6 +194,96 @@ def row_to_dict(row):
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
+
+
+def _require_nonempty_str(value, field: str, max_len: int | None = None) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_str(value, field: str, max_len: int | None = None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        return None
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_json_string(value, field: str) -> str | None:
+    text = _optional_str(value, field, 20000)
+    if text is None:
+        return None
+    json.loads(text)
+    return text
+
+
+def _optional_int(value, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    try:
+        return int(value)
+    except Exception as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+
+
+def _validate_handoff_fields(*, agent_id: str, goal: str | None = None, current_state: str | None = None,
+                             open_loops: str | None = None, next_step: str | None = None,
+                             title: str | None = None, session_id: str | None = None,
+                             chat_id: str | None = None, thread_id: str | None = None,
+                             user_id: str | None = None, project: str | None = None,
+                             scope: str | None = None, status: str | None = None,
+                             recent_tail: str | None = None, decisions_json: str | None = None,
+                             entities_json: str | None = None, tasks_json: str | None = None,
+                             facts_json: str | None = None, source_event_id=None,
+                             expires_at: str | None = None) -> dict:
+    allowed_status = {"pending", "consumed", "pinned", "expired"}
+    data = {
+        "agent_id": _require_nonempty_str(agent_id, "agent_id", 255),
+        "goal": _require_nonempty_str(goal, "goal", 4000) if goal is not None else None,
+        "current_state": _require_nonempty_str(current_state, "current_state", 8000) if current_state is not None else None,
+        "open_loops": _require_nonempty_str(open_loops, "open_loops", 8000) if open_loops is not None else None,
+        "next_step": _require_nonempty_str(next_step, "next_step", 4000) if next_step is not None else None,
+        "title": _optional_str(title, "title", 255),
+        "session_id": _optional_str(session_id, "session_id", 255),
+        "chat_id": _optional_str(chat_id, "chat_id", 255),
+        "thread_id": _optional_str(thread_id, "thread_id", 255),
+        "user_id": _optional_str(user_id, "user_id", 255),
+        "project": _optional_str(project, "project", 255),
+        "scope": _optional_str(scope, "scope", 255) or "global",
+        "status": _optional_str(status, "status", 32) or "pending",
+        "recent_tail": _optional_str(recent_tail, "recent_tail", 12000),
+        "decisions_json": _optional_json_string(decisions_json, "decisions_json"),
+        "entities_json": _optional_json_string(entities_json, "entities_json"),
+        "tasks_json": _optional_json_string(tasks_json, "tasks_json"),
+        "facts_json": _optional_json_string(facts_json, "facts_json"),
+        "source_event_id": _optional_int(source_event_id, "source_event_id"),
+        "expires_at": _optional_str(expires_at, "expires_at", 64),
+    }
+    if data["status"] not in allowed_status:
+        raise ValueError("status must be one of: pending, consumed, pinned, expired")
+    if data["expires_at"] is not None:
+        datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+    return data
+
+
+def _require_owned_handoff(db, agent_id: str, handoff_id: int):
+    return db.execute(
+        "SELECT id, status, agent_id FROM handoff_packets WHERE id = ? AND agent_id = ?",
+        (handoff_id, agent_id),
+    ).fetchone()
 
 
 def _safe_fts(query: str) -> str:
@@ -776,8 +870,16 @@ def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: s
                      entities_json: str = None, tasks_json: str = None,
                      facts_json: str = None, source_event_id: int = None,
                      expires_at: str = None, **kw) -> dict:
+    validated = _validate_handoff_fields(
+        agent_id=agent_id, goal=goal, current_state=current_state, open_loops=open_loops,
+        next_step=next_step, title=title, session_id=session_id, chat_id=chat_id,
+        thread_id=thread_id, user_id=user_id, project=project, scope=scope, status=status,
+        recent_tail=recent_tail, decisions_json=decisions_json, entities_json=entities_json,
+        tasks_json=tasks_json, facts_json=facts_json, source_event_id=source_event_id,
+        expires_at=expires_at,
+    )
     db = get_db()
-    ensure_agent(db, agent_id)
+    ensure_agent(db, validated["agent_id"])
     now = _now_ts()
     cursor = db.execute(
         """
@@ -789,46 +891,50 @@ def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: s
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
-            title, goal, current_state, open_loops, next_step, recent_tail,
-            decisions_json, entities_json, tasks_json, facts_json,
-            source_event_id, expires_at, now, now,
+            validated["agent_id"], validated["session_id"], validated["chat_id"], validated["thread_id"], validated["user_id"], validated["project"], validated["scope"], validated["status"],
+            validated["title"], validated["goal"], validated["current_state"], validated["open_loops"], validated["next_step"], validated["recent_tail"],
+            validated["decisions_json"], validated["entities_json"], validated["tasks_json"], validated["facts_json"],
+            validated["source_event_id"], validated["expires_at"], now, now,
         ),
     )
     handoff_id = cursor.lastrowid
     log_access(db, agent_id, "write", "handoff_packets", handoff_id)
     db.commit(); db.close()
-    return {"ok": True, "handoff_id": handoff_id, "status": status}
+    return {"ok": True, "handoff_id": handoff_id, "status": validated["status"]}
 
 
 def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = None,
                         chat_id: str = None, thread_id: str = None, user_id: str = None,
                         **kw) -> dict:
+    validated = _validate_handoff_fields(
+        agent_id=agent_id, project=project, chat_id=chat_id,
+        thread_id=thread_id, user_id=user_id, status=status,
+    )
     db = get_db()
     candidates = []
-    if chat_id and thread_id:
+    if validated["chat_id"] and validated["thread_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (chat_id, thread_id, status),
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], validated["thread_id"], validated["status"], validated["agent_id"]),
         ))
-    if chat_id:
+    if validated["chat_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (chat_id, status),
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], validated["status"], validated["agent_id"]),
         ))
-    if project:
+    if validated["project"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (project, status),
+            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["project"], validated["status"], validated["agent_id"]),
         ))
-    if user_id:
+    if validated["user_id"]:
         candidates.append((
             "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (user_id, agent_id, status),
+            (validated["user_id"], validated["agent_id"], validated["status"]),
         ))
     candidates.append((
         "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-        (agent_id, status),
+        (validated["agent_id"], validated["status"]),
     ))
     row = None
     for sql, params in candidates:
@@ -840,11 +946,13 @@ def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = N
 
 
 def tool_handoff_consume(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
     db = get_db()
-    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
     if not row:
         db.close()
-        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
     now = _now_ts()
     db.execute(
         "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
@@ -856,11 +964,13 @@ def tool_handoff_consume(agent_id: str, handoff_id: int, **kw) -> dict:
 
 
 def tool_handoff_pin(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
     db = get_db()
-    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
     if not row:
         db.close()
-        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
     now = _now_ts()
     db.execute(
         "UPDATE handoff_packets SET status = 'pinned', expires_at = NULL, updated_at = ? WHERE id = ?",
@@ -872,11 +982,13 @@ def tool_handoff_pin(agent_id: str, handoff_id: int, **kw) -> dict:
 
 
 def tool_handoff_expire(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
     db = get_db()
-    row = db.execute("SELECT id FROM handoff_packets WHERE id = ?", (handoff_id,)).fetchone()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
     if not row:
         db.close()
-        return {"ok": False, "error": f"handoff {handoff_id} not found"}
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
     now = _now_ts()
     db.execute(
         "UPDATE handoff_packets SET status = 'expired', updated_at = ? WHERE id = ?",
@@ -1667,15 +1779,17 @@ def tool_affect_log(agent_id="mcp-client", text="", source="observation", **kw):
     from agentmemory.affect import classify_affect
     result = classify_affect(text)
     db = get_db()
-    safety = result["safety_flags"][0]["severity"] if result["safety_flags"] else None
+    metadata_json = json.dumps({
+        "emotions": result.get("emotions", []),
+        "safety_flags": result.get("safety_flags", []),
+    })
     db.execute(
         "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
         "cluster, functional_state, safety_flag, trigger, source, metadata, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%S','now'))",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, result["valence"], result["arousal"], result["dominance"],
          result["affect_label"], result["cluster"], result["functional_state"],
-         safety, text[:200], source,
-         json.dumps({"emotions": result["emotions"], "safety_flags": result["safety_flags"]}))
+         result.get("safety_flag"), text, source, metadata_json, _now_ts())
     )
     db.commit()
     return result

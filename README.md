@@ -17,10 +17,14 @@ brain.relate("Alice", "works_at", "Acme")
 brain.log("Deployed v2.0")
 ```
 
-By default, Brain and the CLI should point at the same database:
+By default, Brain and the CLI point at the same database:
 - $BRAIN_DB, if set
 - otherwise $BRAINCTL_HOME/db/brain.db
 - otherwise ~/agentmemory/db/brain.db
+
+Default agent behavior:
+- Brain and the CLI default to agent id `default` when you do not pass `-a/--agent`
+- use `-a my-agent` for explicit attribution and multi-agent separation
 
 ## Install
 
@@ -57,9 +61,18 @@ brainctl ships an MCP server for Claude Desktop, VS Code, Cursor, OpenClaw, and 
 }
 ```
 
-16 tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_create`, `entity_get`, `entity_search`, `entity_observe`, `entity_relate`, `decision_add`, `search`, `stats`, `affect_classify`, `affect_log`, `affect_check`, `affect_monitor`
+MCP tools include memory, event, entity, decision, affect, trigger, conflict-resolution, and handoff operations.
 
 The CLI and MCP server read and write the same `brain.db` — use whichever fits your workflow.
+
+## Handoff Migration
+
+Older `brain.db` files may not have the `handoff_packets` table yet.
+
+Current guidance:
+- fresh databases created with `brainctl init` include the handoff table
+- existing databases should be migrated before using handoff commands
+- if you want the simplest safe path, initialize a fresh database and import or re-seed what you need
 
 ## Core Concepts
 
