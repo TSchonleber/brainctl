@@ -52,6 +52,10 @@ CREATE INDEX idx_memories_active ON memories(retired_at) WHERE retired_at IS NUL
 
 CREATE INDEX idx_memories_confidence ON memories(confidence DESC);
 
+CREATE INDEX idx_memories_agent_active_cat ON memories(agent_id, category) WHERE retired_at IS NULL;
+
+CREATE INDEX idx_memories_agent_time ON memories(agent_id, created_at DESC) WHERE retired_at IS NULL;
+
 CREATE VIRTUAL TABLE memories_fts USING fts5(
     content,
     category,

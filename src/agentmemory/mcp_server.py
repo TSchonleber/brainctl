@@ -11,6 +11,8 @@ Usage:
 """
 
 import json
+import logging
+import os
 import re
 import sqlite3
 import struct
@@ -22,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from agentmemory.paths import get_db_path
+logger = logging.getLogger(__name__)
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -100,9 +103,9 @@ def _find_vec_dylib():
     return None
 
 VEC_DYLIB = _find_vec_dylib()
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
-EMBED_MODEL = "nomic-embed-text"
-DIMENSIONS = 768
+OLLAMA_EMBED_URL = os.environ.get("BRAINCTL_OLLAMA_URL", "http://localhost:11434/api/embed")
+EMBED_MODEL = os.environ.get("BRAINCTL_EMBED_MODEL", "nomic-embed-text")
+DIMENSIONS = int(os.environ.get("BRAINCTL_EMBED_DIMENSIONS", "768"))
 
 VALID_MEMORY_CATEGORIES = [
     "convention", "decision", "environment", "identity",
@@ -400,6 +403,14 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                     confidence: float = 1.0, tags: str = None, memory_type: str = "episodic",
                     force: bool = False, supersedes_id: int = None) -> dict:
     """Add a memory with W(m) worthiness gate and PII recency gate."""
+    if category not in VALID_MEMORY_CATEGORIES:
+        return {"ok": False, "error": f"Invalid category: {category}. Must be one of: {', '.join(VALID_MEMORY_CATEGORIES)}"}
+    if not (0.0 <= confidence <= 1.0):
+        return {"ok": False, "error": "confidence must be between 0.0 and 1.0"}
+    if memory_type not in ("episodic", "semantic"):
+        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+    if scope != "global" and not scope.startswith("project:") and not scope.startswith("agent:"):
+        return {"ok": False, "error": "scope must be 'global', 'project:<name>', or 'agent:<id>'"}
     db = get_db()
     ensure_agent(db, agent_id)
     tags_json = json.dumps(tags.split(",")) if tags else None
@@ -477,8 +488,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                     )
                 finally:
                     vdb_gate.close()
-    except Exception:
-        pass  # gate failure is non-fatal
+    except Exception as exc:
+        logger.debug("W(m) gate failed (non-fatal): %s", exc)
 
     if worthiness_reason and not force:
         # Log rejection event
@@ -526,11 +537,12 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             "alpha_floor": alpha_floor,
         }
 
+    created_at = _now_ts()
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha) VALUES (?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor))
+         supersedes_id, float(alpha_floor), created_at, created_at)
     )
     mid = cur.lastrowid
 
@@ -604,6 +616,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 
 def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = None,
                    project: str = None, importance: float = 0.5) -> dict:
+    if event_type not in VALID_EVENT_TYPES:
+        return {"ok": False, "error": f"Invalid event_type: {event_type}. Must be one of: {', '.join(VALID_EVENT_TYPES)}"}
+    if not (0.0 <= importance <= 1.0):
+        return {"ok": False, "error": "importance must be between 0.0 and 1.0"}
     db = get_db()
     ensure_agent(db, agent_id)
     cur = db.execute(
@@ -648,6 +664,8 @@ def tool_event_search(agent_id: str, query: str = None, event_type: str = None,
 
 def tool_entity_create(agent_id: str, name: str, entity_type: str, properties: str = None,
                        observations: str = None, scope: str = "global") -> dict:
+    if entity_type not in VALID_ENTITY_TYPES:
+        return {"ok": False, "error": f"Invalid entity_type: {entity_type}. Must be one of: {', '.join(VALID_ENTITY_TYPES)}"}
     db = get_db()
     ensure_agent(db, agent_id)
     props_json = "{}"
@@ -822,6 +840,59 @@ def tool_trigger_check(agent_id: str, query: str) -> dict:
     matches.sort(key=lambda t: prio_order.get(t.get("priority", "medium"), 2))
     db.commit(); db.close()
     return {"ok": True, "query": query, "matched_triggers": matches, "count": len(matches)}
+
+
+def tool_trigger_update(agent_id: str, trigger_id: int, condition: str = None,
+                        keywords: str = None, action: str = None,
+                        priority: str = None, status: str = None,
+                        expires: str = None) -> dict:
+    """Update fields on an existing trigger."""
+    db = get_db()
+    row = db.execute("SELECT * FROM memory_triggers WHERE id=?", (trigger_id,)).fetchone()
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"Trigger {trigger_id} not found"}
+    updates = []
+    params = []
+    if condition is not None:
+        updates.append("trigger_condition=?"); params.append(condition)
+    if keywords is not None:
+        updates.append("trigger_keywords=?"); params.append(keywords)
+    if action is not None:
+        updates.append("action=?"); params.append(action)
+    if priority is not None:
+        if priority not in ("low", "medium", "high", "critical"):
+            db.close()
+            return {"ok": False, "error": f"Invalid priority: {priority}"}
+        updates.append("priority=?"); params.append(priority)
+    if status is not None:
+        if status not in ("active", "fired", "expired", "cancelled"):
+            db.close()
+            return {"ok": False, "error": f"Invalid status: {status}"}
+        updates.append("status=?"); params.append(status)
+    if expires is not None:
+        updates.append("expires_at=?"); params.append(expires)
+    if not updates:
+        db.close()
+        return {"ok": False, "error": "No fields to update"}
+    params.append(trigger_id)
+    db.execute(f"UPDATE memory_triggers SET {', '.join(updates)} WHERE id=?", params)
+    log_access(db, agent_id, "write", "memory_triggers", trigger_id)
+    db.commit(); db.close()
+    return {"ok": True, "trigger_id": trigger_id, "updated_fields": [u.split("=")[0] for u in updates]}
+
+
+def tool_trigger_delete(agent_id: str, trigger_id: int) -> dict:
+    """Cancel a trigger."""
+    db = get_db()
+    row = db.execute("SELECT * FROM memory_triggers WHERE id=?", (trigger_id,)).fetchone()
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"Trigger {trigger_id} not found"}
+    db.execute("UPDATE memory_triggers SET status='cancelled' WHERE id=?", (trigger_id,))
+    log_access(db, agent_id, "write", "memory_triggers", trigger_id)
+    db.commit(); db.close()
+    return {"ok": True, "trigger_id": trigger_id, "status": "cancelled"}
 
 
 def tool_entity_relate(agent_id: str, from_entity: str, relation: str, to_entity: str) -> dict:
@@ -1509,6 +1580,34 @@ TOOLS = [
         },
     ),
     Tool(
+        name="trigger_update",
+        description="Update fields on an existing prospective memory trigger.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "trigger_id": {"type": "integer", "description": "Trigger ID to update"},
+                "condition": {"type": "string", "description": "New trigger condition"},
+                "keywords": {"type": "string", "description": "New comma-separated keywords"},
+                "action": {"type": "string", "description": "New action text"},
+                "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                "status": {"type": "string", "enum": ["active", "fired", "expired", "cancelled"]},
+                "expires": {"type": "string", "description": "New expiry datetime (ISO format)"},
+            },
+            "required": ["trigger_id"],
+        },
+    ),
+    Tool(
+        name="trigger_delete",
+        description="Cancel/delete a prospective memory trigger by ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "trigger_id": {"type": "integer", "description": "Trigger ID to cancel"},
+            },
+            "required": ["trigger_id"],
+        },
+    ),
+    Tool(
         name="decision_add",
         description="Record a decision with its rationale. Useful for tracking why choices were made.",
         inputSchema={
@@ -1884,6 +1983,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "trigger_create": tool_trigger_create,
         "trigger_list": tool_trigger_list,
         "trigger_check": tool_trigger_check,
+        "trigger_update": tool_trigger_update,
+        "trigger_delete": tool_trigger_delete,
         "decision_add": tool_decision_add,
         "handoff_add": tool_handoff_add,
         "handoff_latest": tool_handoff_latest,

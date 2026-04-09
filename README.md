@@ -281,7 +281,7 @@ For automated agents, `--output oneline` is the single biggest cost reduction av
 ## Reports & Health
 
 ```bash
-brainctl report                    # compile knowledge into markdown
+brainctl report                    # compile knowledge into markdown (via _impl)
 brainctl report --topic "deploy"   # topic-focused
 brainctl report --entity "Alice"   # entity deep-dive
 brainctl lint                      # health check
@@ -296,8 +296,16 @@ brainctl works without embeddings. For semantic similarity search:
 
 ```bash
 pip install brainctl[vec]
-brainctl-embed                     # backfill embeddings
+brainctl embed populate            # backfill embeddings for existing memories
 brainctl vsearch "semantic query"  # vector similarity search
+```
+
+Configure the embedding backend with environment variables:
+
+```bash
+export BRAINCTL_OLLAMA_URL="http://localhost:11434/api/embed"
+export BRAINCTL_EMBED_MODEL="nomic-embed-text"
+export BRAINCTL_EMBED_DIMENSIONS=768
 ```
 
 ## Docker

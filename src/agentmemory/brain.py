@@ -89,7 +89,10 @@ class Brain:
         )
         conn.commit()
         conn.close()
-    
+        # Secure file permissions — only owner can read/write
+        import stat
+        self.db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
     def _db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
@@ -214,13 +217,13 @@ class Brain:
         for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges", "affect_log"]:
             try:
                 stats[tbl] = db.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
-            except:
+            except Exception:
                 stats[tbl] = 0
         try:
             stats["active_memories"] = db.execute(
                 "SELECT count(*) FROM memories WHERE retired_at IS NULL"
             ).fetchone()[0]
-        except:
+        except Exception:
             stats["active_memories"] = 0
         db.close()
         return stats

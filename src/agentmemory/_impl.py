@@ -10,6 +10,7 @@ Database: $BRAIN_DB or $BRAINCTL_HOME/db/brain.db (default: ~/agentmemory/db/bra
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 from textwrap import dedent
 
 from agentmemory.paths import get_backups_dir, get_blobs_dir, get_brain_home, get_db_path
+
+logger = logging.getLogger(__name__)
 
 # Adaptive salience routing
 try:
@@ -1103,8 +1106,8 @@ def cmd_memory_add(args):
                     )
                 finally:
                     db_vec_gate.close()
-    except Exception:
-        pass  # gate failure is non-fatal; proceed with write
+    except Exception as exc:
+        logger.debug("W(m) gate failed (non-fatal): %s", exc)
 
     # --dry-run-worthiness: print score and exit without writing
     if dry_run_worthiness:
@@ -1200,8 +1203,8 @@ def cmd_memory_add(args):
                             "new_confidence": round(new_conf, 4),
                         })
                         return
-        except Exception:
-            pass  # dedup failure is non-fatal; proceed with insert
+        except Exception as exc:
+            logger.debug("Dedup check failed (non-fatal): %s", exc)
 
     # ── Hard memory cap check (TORMENT-inspired) ─────────────────────
     # If this agent has exceeded the hard cap, force-compress before inserting.
@@ -1235,8 +1238,8 @@ def cmd_memory_add(args):
                          _now_ts())
                     )
                     db.commit()
-        except Exception:
-            pass  # cap check failure is non-fatal
+        except Exception as exc:
+            logger.debug("Cap check failed (non-fatal): %s", exc)
 
     file_path = getattr(args, "file_path", None)
     file_line = getattr(args, "file_line", None)
@@ -1306,8 +1309,8 @@ def cmd_memory_add(args):
                 pass
         if auto_linked:
             db.commit()
-    except Exception:
-        pass  # auto-linking failure is non-fatal
+    except Exception as exc:
+        logger.debug("Auto-linking failed (non-fatal): %s", exc)
 
     # Conflict preservation: --attribute mode
     # If --attribute is set, scan for memories from other agents that cover the same
