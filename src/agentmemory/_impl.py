@@ -5,7 +5,7 @@ brainctl v3 — Unified agent memory CLI
 The single interface for agent memory across runtimes and frameworks
 to read, write, search, and maintain the shared memory spine.
 
-Database: ~/agentmemory/db/brain.db
+Database: $BRAIN_DB or $BRAINCTL_HOME/db/brain.db (default: ~/agentmemory/db/brain.db)
 """
 
 import argparse
@@ -21,6 +21,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from textwrap import dedent
+
+from agentmemory.paths import get_backups_dir, get_blobs_dir, get_brain_home, get_db_path
 
 # Adaptive salience routing
 try:
@@ -87,9 +89,9 @@ except Exception:
 # Constants
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
-BLOBS_DIR = Path.home() / "agentmemory" / "blobs"
-BACKUPS_DIR = Path.home() / "agentmemory" / "backups"
+DB_PATH = get_db_path()
+BLOBS_DIR = get_blobs_dir()
+BACKUPS_DIR = get_backups_dir()
 VERSION = "1.0.1"
 
 VALID_MEMORY_CATEGORIES = {
@@ -170,9 +172,13 @@ def _scope_lambda(scope):
         return RECENCY_LAMBDA["agent"]
     return RECENCY_LAMBDA["global"]
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
 def _now_ts() -> str:
-    """Return current UTC time as ISO 8601 string (YYYY-MM-DDTHH:MM:SS)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    """Return current UTC time as ISO 8601 string."""
+    return _utc_now_iso()
 
 
 def _days_since(created_at_str):
@@ -285,6 +291,11 @@ def _age_str(created_at_str):
 # ---------------------------------------------------------------------------
 
 def get_db() -> sqlite3.Connection:
+    global DB_PATH, BLOBS_DIR, BACKUPS_DIR
+    if os.environ.get("BRAIN_DB") or os.environ.get("BRAINCTL_HOME"):
+        DB_PATH = get_db_path()
+        BLOBS_DIR = get_blobs_dir()
+        BACKUPS_DIR = get_backups_dir()
     if not DB_PATH.exists():
         json_out({"error": f"Database not found at {DB_PATH}",
                   "hint": "Run 'brainctl init' to create a new database, or set BRAIN_DB env var."})
@@ -367,6 +378,89 @@ def row_to_dict(row):
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
+
+
+def _require_nonempty_str(value, field: str, max_len: int | None = None) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_str(value, field: str, max_len: int | None = None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        return None
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_json_string(value, field: str) -> str | None:
+    text = _optional_str(value, field, 20000)
+    if text is None:
+        return None
+    json.loads(text)
+    return text
+
+
+def _optional_int(value, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    try:
+        return int(value)
+    except Exception as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+
+
+def _validate_handoff_fields(*, agent_id: str, goal: str | None = None, current_state: str | None = None,
+                             open_loops: str | None = None, next_step: str | None = None,
+                             title: str | None = None, session_id: str | None = None,
+                             chat_id: str | None = None, thread_id: str | None = None,
+                             user_id: str | None = None, project: str | None = None,
+                             scope: str | None = None, status: str | None = None,
+                             recent_tail: str | None = None, decisions_json: str | None = None,
+                             entities_json: str | None = None, tasks_json: str | None = None,
+                             facts_json: str | None = None, source_event_id=None,
+                             expires_at: str | None = None) -> dict:
+    allowed_status = {"pending", "consumed", "pinned", "expired"}
+    data = {
+        "agent_id": _require_nonempty_str(agent_id, "agent_id", 255),
+        "goal": _require_nonempty_str(goal, "goal", 4000) if goal is not None else None,
+        "current_state": _require_nonempty_str(current_state, "current_state", 8000) if current_state is not None else None,
+        "open_loops": _require_nonempty_str(open_loops, "open_loops", 8000) if open_loops is not None else None,
+        "next_step": _require_nonempty_str(next_step, "next_step", 4000) if next_step is not None else None,
+        "title": _optional_str(title, "title", 255),
+        "session_id": _optional_str(session_id, "session_id", 255),
+        "chat_id": _optional_str(chat_id, "chat_id", 255),
+        "thread_id": _optional_str(thread_id, "thread_id", 255),
+        "user_id": _optional_str(user_id, "user_id", 255),
+        "project": _optional_str(project, "project", 255),
+        "scope": _optional_str(scope, "scope", 255) or "global",
+        "status": _optional_str(status, "status", 32) or "pending",
+        "recent_tail": _optional_str(recent_tail, "recent_tail", 12000),
+        "decisions_json": _optional_json_string(decisions_json, "decisions_json"),
+        "entities_json": _optional_json_string(entities_json, "entities_json"),
+        "tasks_json": _optional_json_string(tasks_json, "tasks_json"),
+        "facts_json": _optional_json_string(facts_json, "facts_json"),
+        "source_event_id": _optional_int(source_event_id, "source_event_id"),
+        "expires_at": _optional_str(expires_at, "expires_at", 64),
+    }
+    if data["status"] not in allowed_status:
+        raise ValueError("status must be one of: pending, consumed, pinned, expired")
+    if data["expires_at"] is not None:
+        datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+    return data
 
 # ---------------------------------------------------------------------------
 # AGENT commands
@@ -2731,6 +2825,187 @@ def cmd_decision_list(args):
         sql += f" LIMIT {args.limit}"
     rows = db.execute(sql, params).fetchall()
     json_out(rows_to_list(rows))
+
+# ---------------------------------------------------------------------------
+# HANDOFF commands — temporary working-state continuity across session resets
+# ---------------------------------------------------------------------------
+
+
+def cmd_handoff_add(args):
+    validated = _validate_handoff_fields(
+        agent_id=args.agent, goal=args.goal, current_state=args.current_state, open_loops=args.open_loops,
+        next_step=args.next_step, title=args.title, session_id=args.session, chat_id=args.chat_id,
+        thread_id=args.thread_id, user_id=args.user_id, project=args.project, scope=args.scope,
+        status=args.status, recent_tail=args.recent_tail, decisions_json=args.decisions_json,
+        entities_json=args.entities_json, tasks_json=args.tasks_json, facts_json=args.facts_json,
+        source_event_id=args.source_event, expires_at=args.expires_at,
+    )
+    db = get_db()
+    now = _now_ts()
+    cursor = db.execute(
+        """
+        INSERT INTO handoff_packets (
+            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
+            title, goal, current_state, open_loops, next_step, recent_tail,
+            decisions_json, entities_json, tasks_json, facts_json,
+            source_event_id, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            validated["agent_id"],
+            validated["session_id"],
+            validated["chat_id"],
+            validated["thread_id"],
+            validated["user_id"],
+            validated["project"],
+            validated["scope"],
+            validated["status"],
+            validated["title"],
+            validated["goal"],
+            validated["current_state"],
+            validated["open_loops"],
+            validated["next_step"],
+            validated["recent_tail"],
+            validated["decisions_json"],
+            validated["entities_json"],
+            validated["tasks_json"],
+            validated["facts_json"],
+            validated["source_event_id"],
+            validated["expires_at"],
+            now,
+            now,
+        ),
+    )
+    handoff_id = cursor.lastrowid
+    log_access(db, args.agent, "write", "handoff_packets", handoff_id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": handoff_id, "status": validated["status"]})
+
+
+def cmd_handoff_list(args):
+    db = get_db()
+    sql = "SELECT * FROM handoff_packets WHERE 1=1"
+    params = []
+    if args.status:
+        sql += " AND status = ?"
+        params.append(args.status)
+    if args.project:
+        sql += " AND project = ?"
+        params.append(args.project)
+    if args.chat_id:
+        sql += " AND chat_id = ?"
+        params.append(args.chat_id)
+    if args.thread_id:
+        sql += " AND thread_id = ?"
+        params.append(args.thread_id)
+    if args.user_id:
+        sql += " AND user_id = ?"
+        params.append(args.user_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(args.limit or 20)
+    rows = db.execute(sql, params).fetchall()
+    json_out(rows_to_list(rows))
+
+
+def cmd_handoff_latest(args):
+    validated = _validate_handoff_fields(
+        agent_id=args.agent, project=args.project, chat_id=args.chat_id,
+        thread_id=args.thread_id, user_id=args.user_id, status=args.status or "pending",
+    )
+    db = get_db()
+    status = validated["status"]
+    candidates = []
+
+    if validated["chat_id"] and validated["thread_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], validated["thread_id"], status, validated["agent_id"]),
+        ))
+    if validated["chat_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], status, validated["agent_id"]),
+        ))
+    if validated["project"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["project"], status, validated["agent_id"]),
+        ))
+    if validated["user_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["user_id"], validated["agent_id"], status),
+        ))
+
+    candidates.append((
+        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+        (validated["agent_id"], status),
+    ))
+
+    row = None
+    for sql, params in candidates:
+        row = db.execute(sql, params).fetchone()
+        if row:
+            break
+
+    json_out(row_to_dict(row) or {})
+
+
+def cmd_handoff_consume(args):
+    _validate_handoff_fields(agent_id=args.agent)
+    handoff_id = _optional_int(args.id, "handoff_id")
+    db = get_db()
+    row = db.execute("SELECT id, status FROM handoff_packets WHERE id = ? AND agent_id = ?", (handoff_id, args.agent)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {handoff_id} not found for agent {args.agent}"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "consumed", "consumed_at": now})
+
+
+def cmd_handoff_pin(args):
+    _validate_handoff_fields(agent_id=args.agent)
+    handoff_id = _optional_int(args.id, "handoff_id")
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ? AND agent_id = ?", (handoff_id, args.agent)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {handoff_id} not found for agent {args.agent}"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'pinned', expires_at = NULL, updated_at = ? WHERE id = ?",
+        (now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "pinned"})
+
+
+def cmd_handoff_expire(args):
+    _validate_handoff_fields(agent_id=args.agent)
+    handoff_id = _optional_int(args.id, "handoff_id")
+    db = get_db()
+    row = db.execute("SELECT id FROM handoff_packets WHERE id = ? AND agent_id = ?", (handoff_id, args.agent)).fetchone()
+    if not row:
+        json_out({"ok": False, "error": f"handoff {handoff_id} not found for agent {args.agent}"})
+        return
+
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'expired', updated_at = ? WHERE id = ?",
+        (now, args.id),
+    )
+    log_access(db, args.agent, "write", "handoff_packets", args.id)
+    db.commit()
+    json_out({"ok": True, "handoff_id": args.id, "status": "expired"})
 
 # ---------------------------------------------------------------------------
 # STATE commands — per-agent key/value store
@@ -11570,7 +11845,7 @@ def build_parser():
                     "  ui            Web dashboard (port 3939)\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--agent", "-a", help="Agent ID for attribution (default: unknown)")
+    p.add_argument("--agent", "-a", default=os.environ.get("AGENT_ID", "default"), help="Agent ID for attribution (default: $AGENT_ID or 'default')")
     sub = p.add_subparsers(dest="command")
 
     # --- version ---
@@ -11941,6 +12216,55 @@ def build_parser():
     dec_list = dec_sub.add_parser("list", help="List decisions")
     dec_list.add_argument("--project", "-p")
     dec_list.add_argument("--limit", "-l", type=int)
+
+    # --- handoff ---
+    hof = sub.add_parser("handoff", help="Temporary handoff packets for session continuity")
+    hof_sub = hof.add_subparsers(dest="handoff_cmd")
+
+    hof_add = hof_sub.add_parser("add", help="Create a handoff packet")
+    hof_add.add_argument("--title")
+    hof_add.add_argument("--goal", required=True)
+    hof_add.add_argument("--current-state", required=True, dest="current_state")
+    hof_add.add_argument("--open-loops", required=True, dest="open_loops")
+    hof_add.add_argument("--next-step", required=True, dest="next_step")
+    hof_add.add_argument("--recent-tail", dest="recent_tail")
+    hof_add.add_argument("--session")
+    hof_add.add_argument("--chat-id")
+    hof_add.add_argument("--thread-id")
+    hof_add.add_argument("--user-id")
+    hof_add.add_argument("--project", "-p")
+    hof_add.add_argument("--scope", "-s", default="global")
+    hof_add.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"], default="pending")
+    hof_add.add_argument("--decisions-json")
+    hof_add.add_argument("--entities-json")
+    hof_add.add_argument("--tasks-json")
+    hof_add.add_argument("--facts-json")
+    hof_add.add_argument("--source-event", type=int)
+    hof_add.add_argument("--expires-at")
+
+    hof_list = hof_sub.add_parser("list", help="List handoff packets")
+    hof_list.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"])
+    hof_list.add_argument("--project", "-p")
+    hof_list.add_argument("--chat-id")
+    hof_list.add_argument("--thread-id")
+    hof_list.add_argument("--user-id")
+    hof_list.add_argument("--limit", "-l", type=int, default=20)
+
+    hof_latest = hof_sub.add_parser("latest", help="Fetch the latest matching handoff packet")
+    hof_latest.add_argument("--status", choices=["pending", "consumed", "expired", "pinned"], default="pending")
+    hof_latest.add_argument("--project", "-p")
+    hof_latest.add_argument("--chat-id")
+    hof_latest.add_argument("--thread-id")
+    hof_latest.add_argument("--user-id")
+
+    hof_consume = hof_sub.add_parser("consume", help="Mark a handoff packet consumed")
+    hof_consume.add_argument("id", type=int)
+
+    hof_pin = hof_sub.add_parser("pin", help="Pin a handoff packet so it does not expire")
+    hof_pin.add_argument("id", type=int)
+
+    hof_expire = hof_sub.add_parser("expire", help="Mark a handoff packet expired")
+    hof_expire.add_argument("id", type=int)
 
     # --- state ---
     st = sub.add_parser("state", help="Per-agent key/value state")
@@ -12849,6 +13173,16 @@ def main():
     elif args.command == "decision":
         dispatch = {"add": cmd_decision_add, "list": cmd_decision_list}
         fn = dispatch.get(args.dec_cmd)
+    elif args.command == "handoff":
+        dispatch = {
+            "add": cmd_handoff_add,
+            "list": cmd_handoff_list,
+            "latest": cmd_handoff_latest,
+            "consume": cmd_handoff_consume,
+            "pin": cmd_handoff_pin,
+            "expire": cmd_handoff_expire,
+        }
+        fn = dispatch.get(args.handoff_cmd)
     elif args.command == "state":
         dispatch = {"get": cmd_state_get, "set": cmd_state_set}
         fn = dispatch.get(args.state_cmd)

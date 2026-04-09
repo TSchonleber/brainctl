@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentmemory.paths import get_db_path
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -81,7 +82,8 @@ except Exception:
 # Constants (same as brainctl)
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+DB_PATH = get_db_path()
+
 def _find_vec_dylib():
     """Auto-discover the sqlite-vec loadable extension path."""
     try:
@@ -123,12 +125,35 @@ VALID_ENTITY_TYPES = [
 # DB helpers
 # ---------------------------------------------------------------------------
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+def _now_ts() -> str:
+    return _utc_now_iso()
+
+
 def get_db() -> sqlite3.Connection:
+    global DB_PATH
+    if os.environ.get("BRAIN_DB") or os.environ.get("BRAINCTL_HOME"):
+        DB_PATH = get_db_path()
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def ensure_agent(conn, agent_id: str) -> None:
+    if not agent_id:
+        return
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO agents (id, display_name, agent_type, status, created_at, updated_at)
+        VALUES (?, ?, 'mcp', 'active', ?, ?)
+        """,
+        (agent_id, agent_id, _now_ts(), _now_ts()),
+    )
 
 
 def log_access(conn, agent_id, action, target_table=None, target_id=None, query=None, result_count=None):
@@ -169,6 +194,96 @@ def row_to_dict(row):
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
+
+
+def _require_nonempty_str(value, field: str, max_len: int | None = None) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_str(value, field: str, max_len: int | None = None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not value:
+        return None
+    if max_len is not None and len(value) > max_len:
+        raise ValueError(f"{field} exceeds max length {max_len}")
+    return value
+
+
+def _optional_json_string(value, field: str) -> str | None:
+    text = _optional_str(value, field, 20000)
+    if text is None:
+        return None
+    json.loads(text)
+    return text
+
+
+def _optional_int(value, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    try:
+        return int(value)
+    except Exception as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+
+
+def _validate_handoff_fields(*, agent_id: str, goal: str | None = None, current_state: str | None = None,
+                             open_loops: str | None = None, next_step: str | None = None,
+                             title: str | None = None, session_id: str | None = None,
+                             chat_id: str | None = None, thread_id: str | None = None,
+                             user_id: str | None = None, project: str | None = None,
+                             scope: str | None = None, status: str | None = None,
+                             recent_tail: str | None = None, decisions_json: str | None = None,
+                             entities_json: str | None = None, tasks_json: str | None = None,
+                             facts_json: str | None = None, source_event_id=None,
+                             expires_at: str | None = None) -> dict:
+    allowed_status = {"pending", "consumed", "pinned", "expired"}
+    data = {
+        "agent_id": _require_nonempty_str(agent_id, "agent_id", 255),
+        "goal": _require_nonempty_str(goal, "goal", 4000) if goal is not None else None,
+        "current_state": _require_nonempty_str(current_state, "current_state", 8000) if current_state is not None else None,
+        "open_loops": _require_nonempty_str(open_loops, "open_loops", 8000) if open_loops is not None else None,
+        "next_step": _require_nonempty_str(next_step, "next_step", 4000) if next_step is not None else None,
+        "title": _optional_str(title, "title", 255),
+        "session_id": _optional_str(session_id, "session_id", 255),
+        "chat_id": _optional_str(chat_id, "chat_id", 255),
+        "thread_id": _optional_str(thread_id, "thread_id", 255),
+        "user_id": _optional_str(user_id, "user_id", 255),
+        "project": _optional_str(project, "project", 255),
+        "scope": _optional_str(scope, "scope", 255) or "global",
+        "status": _optional_str(status, "status", 32) or "pending",
+        "recent_tail": _optional_str(recent_tail, "recent_tail", 12000),
+        "decisions_json": _optional_json_string(decisions_json, "decisions_json"),
+        "entities_json": _optional_json_string(entities_json, "entities_json"),
+        "tasks_json": _optional_json_string(tasks_json, "tasks_json"),
+        "facts_json": _optional_json_string(facts_json, "facts_json"),
+        "source_event_id": _optional_int(source_event_id, "source_event_id"),
+        "expires_at": _optional_str(expires_at, "expires_at", 64),
+    }
+    if data["status"] not in allowed_status:
+        raise ValueError("status must be one of: pending, consumed, pinned, expired")
+    if data["expires_at"] is not None:
+        datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+    return data
+
+
+def _require_owned_handoff(db, agent_id: str, handoff_id: int):
+    return db.execute(
+        "SELECT id, status, agent_id FROM handoff_packets WHERE id = ? AND agent_id = ?",
+        (handoff_id, agent_id),
+    ).fetchone()
 
 
 def _safe_fts(query: str) -> str:
@@ -286,6 +401,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                     force: bool = False, supersedes_id: int = None) -> dict:
     """Add a memory with W(m) worthiness gate and PII recency gate."""
     db = get_db()
+    ensure_agent(db, agent_id)
     tags_json = json.dumps(tags.split(",")) if tags else None
 
     # Surprise scoring — lightweight novelty check
@@ -307,7 +423,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'observation', ?, ?, datetime('now'))",
+                "VALUES (?, 'observation', ?, ?, ?)",
                 (agent_id,
                  f"Memory rejected by W(m) gate: {content[:60]}",
                  json.dumps({
@@ -318,7 +434,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "pre_worthiness": round(_pre_worthiness, 4),
                      "category": category,
                      "scope": scope,
-                 }))
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -368,7 +485,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'write_rejected', ?, ?, datetime('now'))",
+                "VALUES (?, 'write_rejected', ?, ?, ?)",
                 (agent_id,
                  f"W(m) gate rejected: {worthiness_reason} (score={worthiness_score})",
                  json.dumps({
@@ -377,7 +494,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "scope": scope,
                      "score": worthiness_score,
                      "reason": worthiness_reason,
-                 }))
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -487,6 +605,7 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = None,
                    project: str = None, importance: float = 0.5) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     cur = db.execute(
         "INSERT INTO events (agent_id, event_type, summary, detail, project, importance) VALUES (?,?,?,?,?,?)",
         (agent_id, event_type, summary, detail, project, importance)
@@ -530,6 +649,7 @@ def tool_event_search(agent_id: str, query: str = None, event_type: str = None,
 def tool_entity_create(agent_id: str, name: str, entity_type: str, properties: str = None,
                        observations: str = None, scope: str = "global") -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     props_json = "{}"
     if properties:
         try:
@@ -652,6 +772,7 @@ def tool_trigger_create(agent_id: str, condition: str, keywords: str, action: st
                         entity: str = None, memory_id: int = None,
                         priority: str = "medium", expires: str = None) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     entity_id = None
     if entity:
         if entity.isdigit():
@@ -730,6 +851,7 @@ def tool_entity_relate(agent_id: str, from_entity: str, relation: str, to_entity
 
 def tool_decision_add(agent_id: str, title: str, rationale: str, project: str = None) -> dict:
     db = get_db()
+    ensure_agent(db, agent_id)
     cur = db.execute(
         "INSERT INTO decisions (agent_id, title, rationale, project) VALUES (?,?,?,?)",
         (agent_id, title, rationale, project)
@@ -738,6 +860,143 @@ def tool_decision_add(agent_id: str, title: str, rationale: str, project: str = 
     log_access(db, agent_id, "write", "decisions", did)
     db.commit(); db.close()
     return {"ok": True, "decision_id": did}
+
+
+def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: str,
+                     next_step: str, title: str = None, session_id: str = None,
+                     chat_id: str = None, thread_id: str = None, user_id: str = None,
+                     project: str = None, scope: str = "global", status: str = "pending",
+                     recent_tail: str = None, decisions_json: str = None,
+                     entities_json: str = None, tasks_json: str = None,
+                     facts_json: str = None, source_event_id: int = None,
+                     expires_at: str = None, **kw) -> dict:
+    validated = _validate_handoff_fields(
+        agent_id=agent_id, goal=goal, current_state=current_state, open_loops=open_loops,
+        next_step=next_step, title=title, session_id=session_id, chat_id=chat_id,
+        thread_id=thread_id, user_id=user_id, project=project, scope=scope, status=status,
+        recent_tail=recent_tail, decisions_json=decisions_json, entities_json=entities_json,
+        tasks_json=tasks_json, facts_json=facts_json, source_event_id=source_event_id,
+        expires_at=expires_at,
+    )
+    db = get_db()
+    ensure_agent(db, validated["agent_id"])
+    now = _now_ts()
+    cursor = db.execute(
+        """
+        INSERT INTO handoff_packets (
+            agent_id, session_id, chat_id, thread_id, user_id, project, scope, status,
+            title, goal, current_state, open_loops, next_step, recent_tail,
+            decisions_json, entities_json, tasks_json, facts_json,
+            source_event_id, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            validated["agent_id"], validated["session_id"], validated["chat_id"], validated["thread_id"], validated["user_id"], validated["project"], validated["scope"], validated["status"],
+            validated["title"], validated["goal"], validated["current_state"], validated["open_loops"], validated["next_step"], validated["recent_tail"],
+            validated["decisions_json"], validated["entities_json"], validated["tasks_json"], validated["facts_json"],
+            validated["source_event_id"], validated["expires_at"], now, now,
+        ),
+    )
+    handoff_id = cursor.lastrowid
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": validated["status"]}
+
+
+def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = None,
+                        chat_id: str = None, thread_id: str = None, user_id: str = None,
+                        **kw) -> dict:
+    validated = _validate_handoff_fields(
+        agent_id=agent_id, project=project, chat_id=chat_id,
+        thread_id=thread_id, user_id=user_id, status=status,
+    )
+    db = get_db()
+    candidates = []
+    if validated["chat_id"] and validated["thread_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], validated["thread_id"], validated["status"], validated["agent_id"]),
+        ))
+    if validated["chat_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["chat_id"], validated["status"], validated["agent_id"]),
+        ))
+    if validated["project"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["project"], validated["status"], validated["agent_id"]),
+        ))
+    if validated["user_id"]:
+        candidates.append((
+            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+            (validated["user_id"], validated["agent_id"], validated["status"]),
+        ))
+    candidates.append((
+        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+        (validated["agent_id"], validated["status"]),
+    ))
+    row = None
+    for sql, params in candidates:
+        row = db.execute(sql, params).fetchone()
+        if row:
+            break
+    db.close()
+    return row_to_dict(row) or {}
+
+
+def tool_handoff_consume(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
+    db = get_db()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "consumed", "consumed_at": now}
+
+
+def tool_handoff_pin(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
+    db = get_db()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'pinned', expires_at = NULL, updated_at = ? WHERE id = ?",
+        (now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "pinned"}
+
+
+def tool_handoff_expire(agent_id: str, handoff_id: int, **kw) -> dict:
+    validated = _validate_handoff_fields(agent_id=agent_id)
+    handoff_id = _optional_int(handoff_id, "handoff_id")
+    db = get_db()
+    row = _require_owned_handoff(db, validated["agent_id"], handoff_id)
+    if not row:
+        db.close()
+        return {"ok": False, "error": f"handoff {handoff_id} not found for agent {validated['agent_id']}"}
+    now = _now_ts()
+    db.execute(
+        "UPDATE handoff_packets SET status = 'expired', updated_at = ? WHERE id = ?",
+        (now, handoff_id),
+    )
+    log_access(db, agent_id, "write", "handoff_packets", handoff_id)
+    db.commit(); db.close()
+    return {"ok": True, "handoff_id": handoff_id, "status": "expired"}
 
 
 def tool_search(agent_id: str, query: str, limit: int = 20) -> dict:
@@ -1263,6 +1522,82 @@ TOOLS = [
         },
     ),
     Tool(
+        name="handoff_add",
+        description="Create a structured handoff packet for continuity across session resets.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "goal": {"type": "string"},
+                "current_state": {"type": "string"},
+                "open_loops": {"type": "string"},
+                "next_step": {"type": "string"},
+                "session_id": {"type": "string"},
+                "chat_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "user_id": {"type": "string"},
+                "project": {"type": "string"},
+                "scope": {"type": "string", "default": "global"},
+                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "recent_tail": {"type": "string"},
+                "decisions_json": {"type": "string"},
+                "entities_json": {"type": "string"},
+                "tasks_json": {"type": "string"},
+                "facts_json": {"type": "string"},
+                "source_event_id": {"type": "integer"},
+                "expires_at": {"type": "string"}
+            },
+            "required": ["goal", "current_state", "open_loops", "next_step"],
+        },
+    ),
+    Tool(
+        name="handoff_latest",
+        description="Fetch the latest matching handoff packet, preferring thread, then chat, then project, then user scope.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "project": {"type": "string"},
+                "chat_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "user_id": {"type": "string"}
+            },
+        },
+    ),
+    Tool(
+        name="handoff_consume",
+        description="Mark a handoff packet consumed after successful restore.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="handoff_pin",
+        description="Pin a handoff packet so it is preserved intentionally.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
+        name="handoff_expire",
+        description="Mark a handoff packet expired so it is no longer used for resume.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "handoff_id": {"type": "integer", "description": "Handoff packet ID"}
+            },
+            "required": ["handoff_id"],
+        },
+    ),
+    Tool(
         name="search",
         description="Cross-table search across memories, events, and entities simultaneously. Best for broad queries.",
         inputSchema={
@@ -1444,15 +1779,17 @@ def tool_affect_log(agent_id="mcp-client", text="", source="observation", **kw):
     from agentmemory.affect import classify_affect
     result = classify_affect(text)
     db = get_db()
-    safety = result["safety_flags"][0]["severity"] if result["safety_flags"] else None
+    metadata_json = json.dumps({
+        "emotions": result.get("emotions", []),
+        "safety_flags": result.get("safety_flags", []),
+    })
     db.execute(
         "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
         "cluster, functional_state, safety_flag, trigger, source, metadata, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%S','now'))",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, result["valence"], result["arousal"], result["dominance"],
          result["affect_label"], result["cluster"], result["functional_state"],
-         safety, text[:200], source,
-         json.dumps({"emotions": result["emotions"], "safety_flags": result["safety_flags"]}))
+         result.get("safety_flag"), text, source, metadata_json, _now_ts())
     )
     db.commit()
     return result
@@ -1548,6 +1885,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "trigger_list": tool_trigger_list,
         "trigger_check": tool_trigger_check,
         "decision_add": tool_decision_add,
+        "handoff_add": tool_handoff_add,
+        "handoff_latest": tool_handoff_latest,
+        "handoff_consume": tool_handoff_consume,
+        "handoff_pin": tool_handoff_pin,
+        "handoff_expire": tool_handoff_expire,
         "search": tool_search,
         "stats": tool_stats,
         "resolve_conflict": tool_resolve_conflict,

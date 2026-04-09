@@ -4,15 +4,17 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
-DB_PATH = os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db"))
+from agentmemory.paths import get_brain_home, get_db_path
+
+DB_PATH = str(get_db_path())
 STATIC = Path(__file__).parent / "static"
 DEFAULT_AGENT_ROSTER_URL = os.environ.get("BRAINCTL_AGENT_ROSTER_URL")
 DEFAULT_AGENT_ROSTER_FILE = os.environ.get("BRAINCTL_AGENT_ROSTER_FILE")
 DEFAULT_AGENT_ROSTER_TOKEN = os.environ.get("BRAINCTL_AGENT_ROSTER_TOKEN")
 # External agent registry (optional — set env vars to enable)
 DEFAULT_EXTERNAL_API_URL = os.environ.get("BRAINCTL_EXTERNAL_API_URL", "")
-DEFAULT_EXTERNAL_KEY_FILE = Path(os.environ.get("BRAINCTL_EXTERNAL_KEY_FILE", str(Path.home() / ".agentmemory" / "api-key.json")))
-DEFAULT_QUIET_HOURS_SCRIPT = Path.home() / "agentmemory" / "bin" / "quiet-hours-start.py"
+DEFAULT_EXTERNAL_KEY_FILE = Path(os.environ.get("BRAINCTL_EXTERNAL_KEY_FILE", str(get_brain_home() / "api-key.json")))
+DEFAULT_QUIET_HOURS_SCRIPT = get_brain_home() / "bin" / "quiet-hours-start.py"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UPDATE_CACHE = {"checked_at": 0.0, "payload": None}
 UPDATE_TTL_SECONDS = 300

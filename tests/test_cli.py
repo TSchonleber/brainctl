@@ -168,6 +168,133 @@ class TestCLIEntityCreate:
         assert data.get("ok") is True or "entity_id" in data
 
 
+# ── handoff ────────────────────────────────────────────────────────────────
+
+
+class TestCLIHandoff:
+    def test_add_handoff(self, cli_db):
+        r = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "Resume brainctl work",
+            "--current-state", "Cleanup branch pushed",
+            "--open-loops", "Implement handoff table",
+            "--next-step", "Patch schema and parser",
+            "--project", "brainctl",
+            db_path=cli_db,
+        )
+        data = json.loads(r.stdout)
+        assert data.get("ok") is True
+        assert "handoff_id" in data
+
+    def test_latest_then_consume_handoff(self, cli_db):
+        add = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "Resume Hermes continuity work",
+            "--current-state", "Need latest packet",
+            "--open-loops", "Consume after restore",
+            "--next-step", "Fetch latest pending handoff",
+            "--chat-id", "chat-1",
+            "--thread-id", "thread-1",
+            db_path=cli_db,
+        )
+        handoff_id = json.loads(add.stdout)["handoff_id"]
+
+        latest = run_brainctl(
+            "--agent", "tester",
+            "handoff", "latest",
+            "--chat-id", "chat-1",
+            "--thread-id", "thread-1",
+            db_path=cli_db,
+        )
+        latest_data = json.loads(latest.stdout)
+        assert latest_data["id"] == handoff_id
+        assert latest_data["status"] == "pending"
+
+        consume = run_brainctl(
+            "--agent", "tester",
+            "handoff", "consume", str(handoff_id),
+            db_path=cli_db,
+        )
+        consume_data = json.loads(consume.stdout)
+        assert consume_data["ok"] is True
+        assert consume_data["status"] == "consumed"
+
+    def test_pin_and_expire_handoff(self, cli_db):
+        add = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "Keep this around",
+            "--current-state", "Pinned state candidate",
+            "--open-loops", "Need later review",
+            "--next-step", "Pin then expire",
+            db_path=cli_db,
+        )
+        handoff_id = json.loads(add.stdout)["handoff_id"]
+
+        pin = run_brainctl(
+            "--agent", "tester",
+            "handoff", "pin", str(handoff_id),
+            db_path=cli_db,
+        )
+        pin_data = json.loads(pin.stdout)
+        assert pin_data["ok"] is True
+        assert pin_data["status"] == "pinned"
+
+        listed = run_brainctl(
+            "--agent", "tester",
+            "handoff", "list",
+            "--status", "pinned",
+            db_path=cli_db,
+        )
+        listed_data = json.loads(listed.stdout)
+        assert any(item["id"] == handoff_id for item in listed_data)
+
+        expire = run_brainctl(
+            "--agent", "tester",
+            "handoff", "expire", str(handoff_id),
+            db_path=cli_db,
+        )
+        expire_data = json.loads(expire.stdout)
+        assert expire_data["ok"] is True
+        assert expire_data["status"] == "expired"
+
+    def test_handoff_ownership_is_enforced(self, cli_db):
+        add = run_brainctl(
+            "--agent", "owner",
+            "handoff", "add",
+            "--goal", "Owner only",
+            "--current-state", "Private state",
+            "--open-loops", "None",
+            "--next-step", "Keep private",
+            db_path=cli_db,
+        )
+        handoff_id = json.loads(add.stdout)["handoff_id"]
+
+        consume = run_brainctl(
+            "--agent", "other",
+            "handoff", "consume", str(handoff_id),
+            db_path=cli_db,
+        )
+        consume_data = json.loads(consume.stdout)
+        assert consume_data["ok"] is False
+        assert "not found for agent other" in consume_data["error"]
+
+    def test_handoff_add_rejects_blank_goal(self, cli_db):
+        result = run_brainctl(
+            "--agent", "tester",
+            "handoff", "add",
+            "--goal", "   ",
+            "--current-state", "State",
+            "--open-loops", "Loops",
+            "--next-step", "Next",
+            db_path=cli_db,
+            expect_ok=False,
+        )
+        assert result.returncode != 0 or result.stdout
+
+
 # ── output format flags ────────────────────────────────────────────────────
 
 

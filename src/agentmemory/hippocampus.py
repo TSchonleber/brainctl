@@ -18,7 +18,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
+from agentmemory.paths import get_db_path
+
+DB_PATH = get_db_path()
 
 DECAY_RATES = {
     "long": 0.01,
@@ -36,6 +38,9 @@ COMPRESS_PROMPT = (
 
 
 def get_db() -> sqlite3.Connection:
+    global DB_PATH
+    if os.environ.get("BRAIN_DB") or os.environ.get("BRAINCTL_HOME"):
+        DB_PATH = get_db_path()
     if not DB_PATH.exists():
         print(f"ERROR: Database not found at {DB_PATH}", file=sys.stderr)
         sys.exit(1)
