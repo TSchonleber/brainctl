@@ -109,7 +109,7 @@ class Brain:
             )
             conn.commit()
         except Exception as exc:
-            logging.getLogger(__name__).debug("agent auto-register failed: %s", exc)
+            logging.getLogger(__name__).warning("agent auto-register failed: %s", exc)
         return conn
     
     def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:

@@ -622,14 +622,15 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
         return {"ok": False, "error": "importance must be between 0.0 and 1.0"}
     db = get_db()
     ensure_agent(db, agent_id)
+    created_at = _now_ts()
     cur = db.execute(
-        "INSERT INTO events (agent_id, event_type, summary, detail, project, importance) VALUES (?,?,?,?,?,?)",
-        (agent_id, event_type, summary, detail, project, importance)
+        "INSERT INTO events (agent_id, event_type, summary, detail, project, importance, created_at) VALUES (?,?,?,?,?,?,?)",
+        (agent_id, event_type, summary, detail, project, importance, created_at)
     )
     eid = cur.lastrowid
     log_access(db, agent_id, "write", "events", eid)
     db.commit(); db.close()
-    return {"ok": True, "event_id": eid}
+    return {"ok": True, "event_id": eid, "created_at": created_at}
 
 
 def tool_event_search(agent_id: str, query: str = None, event_type: str = None,
