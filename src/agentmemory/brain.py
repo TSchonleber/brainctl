@@ -16,6 +16,7 @@ Quick start:
 """
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -104,8 +105,8 @@ class Brain:
                 (self.agent_id, self.agent_id, _now_ts(), _now_ts()),
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("agent auto-register failed: %s", exc)
         return conn
     
     def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:
