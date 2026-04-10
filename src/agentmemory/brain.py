@@ -24,6 +24,10 @@ Quick start:
 
     # Diagnostics
     brain.doctor()
+
+    # Drop-in session bookends (one call to start, one to finish)
+    context = brain.orient()          # returns handoff + recent events + active triggers
+    brain.wrap_up("summary of work")  # logs session_end + creates handoff
 """
 
 import json
@@ -327,6 +331,136 @@ class Brain:
         db.close()
         packet["status"] = "consumed"
         return packet
+
+    # ------------------------------------------------------------------
+    # Drop-in session bookends: orient / wrap_up
+    # ------------------------------------------------------------------
+
+    def orient(self, project: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:
+        """One-call session start. Returns everything an agent needs to begin working.
+
+        Gathers: pending handoff, recent events, active triggers, and optionally
+        searches for relevant memories. Call this at the start of every session.
+
+        Returns dict with keys: handoff, recent_events, triggers, memories, stats.
+        """
+        db = self._db()
+        now = _now_ts()
+        result: Dict[str, Any] = {"agent_id": self.agent_id}
+
+        # 1. Check for pending handoff (don't consume yet — agent decides)
+        try:
+            hq = "SELECT id, goal, current_state, open_loops, next_step, project, title, created_at FROM handoff_packets WHERE agent_id = ? AND status = 'pending'"
+            hp: list = [self.agent_id]
+            if project:
+                hq += " AND project = ?"
+                hp.append(project)
+            hq += " ORDER BY created_at DESC LIMIT 1"
+            hrow = db.execute(hq, hp).fetchone()
+            result["handoff"] = dict(hrow) if hrow else None
+        except sqlite3.OperationalError:
+            result["handoff"] = None
+
+        # 2. Recent events (last 10)
+        try:
+            eq = "SELECT id, event_type, summary, project, created_at FROM events WHERE agent_id = ?"
+            ep: list = [self.agent_id]
+            if project:
+                eq += " AND project = ?"
+                ep.append(project)
+            eq += " ORDER BY created_at DESC LIMIT 10"
+            result["recent_events"] = [dict(r) for r in db.execute(eq, ep).fetchall()]
+        except sqlite3.OperationalError:
+            result["recent_events"] = []
+
+        # 3. Active triggers
+        try:
+            # Expire overdue
+            db.execute(
+                "UPDATE memory_triggers SET status = 'expired' "
+                "WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < ?",
+                (now,)
+            )
+            db.commit()
+            trows = db.execute(
+                "SELECT id, trigger_condition, trigger_keywords, action, priority "
+                "FROM memory_triggers WHERE status = 'active' AND agent_id = ? "
+                "ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+                "WHEN 'medium' THEN 2 ELSE 3 END",
+                (self.agent_id,)
+            ).fetchall()
+            result["triggers"] = [dict(r) for r in trows]
+        except sqlite3.OperationalError:
+            result["triggers"] = []
+
+        # 4. Search for relevant memories (if query or project given)
+        search_q = query or project
+        if search_q:
+            try:
+                fts_q = _safe_fts(search_q)
+                if fts_q:
+                    mrows = db.execute(
+                        "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
+                        "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
+                        "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+                        "ORDER BY fts.rank LIMIT 10",
+                        (fts_q,)
+                    ).fetchall()
+                    result["memories"] = [dict(r) for r in mrows]
+                else:
+                    result["memories"] = []
+            except sqlite3.OperationalError:
+                result["memories"] = []
+        else:
+            result["memories"] = []
+
+        # 5. Quick stats
+        try:
+            result["stats"] = {
+                "active_memories": db.execute(
+                    "SELECT count(*) FROM memories WHERE retired_at IS NULL"
+                ).fetchone()[0],
+                "total_events": db.execute("SELECT count(*) FROM events").fetchone()[0],
+                "total_entities": db.execute("SELECT count(*) FROM entities").fetchone()[0],
+            }
+        except Exception:
+            result["stats"] = {}
+
+        db.close()
+
+        # Log session start
+        self.log("Session started", event_type="session_start", project=project)
+
+        return result
+
+    def wrap_up(self, summary: str, goal: Optional[str] = None,
+                open_loops: Optional[str] = None, next_step: Optional[str] = None,
+                project: Optional[str] = None) -> Dict[str, Any]:
+        """One-call session end. Logs session_end event and creates a handoff.
+
+        Args:
+            summary: What was accomplished this session.
+            goal: Ongoing goal (defaults to summary).
+            open_loops: Unfinished work (defaults to "none").
+            next_step: What should happen next (defaults to "continue from summary").
+            project: Optional project scope.
+
+        Returns dict with keys: event_id, handoff_id.
+        """
+        event_id = self.log(
+            f"Session ended: {summary}",
+            event_type="session_end",
+            project=project,
+            importance=0.7,
+        )
+        handoff_id = self.handoff(
+            goal=goal or summary,
+            current_state=summary,
+            open_loops=open_loops or "none noted",
+            next_step=next_step or f"Continue from: {summary}",
+            project=project,
+        )
+        return {"event_id": event_id, "handoff_id": handoff_id}
 
     # ------------------------------------------------------------------
     # Prospective memory: triggers
