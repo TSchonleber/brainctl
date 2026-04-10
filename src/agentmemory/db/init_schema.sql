@@ -1577,3 +1577,20 @@ CREATE TABLE IF NOT EXISTS agent_budget (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
 );
 
+-- -------------------------------------------------------------------------
+-- Neuroscience-inspired memory columns (replay priority + reconsolidation)
+-- -------------------------------------------------------------------------
+-- replay_priority: accumulated salience score; higher = earlier consolidation
+-- ripple_tags: count of high-salience (SWR-like) retrieval events
+-- labile_until: ISO datetime when reconsolidation window closes (NULL = stable)
+-- labile_agent_id: agent that opened the lability window (agent-scoped)
+-- retrieval_prediction_error: cosine distance at lability-opening retrieval
+ALTER TABLE memories ADD COLUMN replay_priority REAL NOT NULL DEFAULT 0.0;
+ALTER TABLE memories ADD COLUMN ripple_tags INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN labile_until TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN labile_agent_id TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN retrieval_prediction_error REAL DEFAULT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memories_replay ON memories(replay_priority DESC) WHERE retired_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_labile ON memories(labile_until) WHERE labile_until IS NOT NULL;
+

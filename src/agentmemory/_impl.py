@@ -1104,6 +1104,7 @@ def cmd_memory_add(args):
                         scope=args.scope or "global",
                         db_vec=db_vec_gate,
                         force=False,
+                        arousal_gain=_arousal_boost,
                     )
                 finally:
                     db_vec_gate.close()

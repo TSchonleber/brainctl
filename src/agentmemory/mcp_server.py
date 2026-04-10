@@ -36,6 +36,7 @@ try:
         mcp_tools_analytics,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
+        mcp_tools_consolidation,
         mcp_tools_expertise,
         mcp_tools_federation,
         mcp_tools_health,
@@ -62,6 +63,7 @@ try:
         mcp_tools_analytics,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
+        mcp_tools_consolidation,
         mcp_tools_expertise,
         mcp_tools_federation,
         mcp_tools_health,
@@ -486,10 +488,20 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         surprise, surprise_method = 0.7, "error"
 
-    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy)
+    # Arousal-precision coupling (Free Energy Principle: arousal = global precision gain)
+    # Grounded in McGaugh 2004 emotional modulation of memory consolidation
+    _arousal_gain = 1.0
+    try:
+        from agentmemory.affect import classify_affect, arousal_write_boost
+        _affect = classify_affect(content)
+        _arousal_gain = arousal_write_boost(_affect.get("arousal", 0.0))
+    except Exception:
+        pass
+
+    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy) * arousal
     importance_estimate = confidence
     _pre_redundancy = 0.5 if (surprise is not None and surprise < 0.2) else 0.0
-    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy)
+    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _arousal_gain
     if _pre_worthiness < 0.3 and not force:
         try:
             db.execute(
@@ -545,6 +557,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                         scope=scope,
                         db_vec=vdb_gate,
                         force=False,
+                        arousal_gain=_arousal_gain,
                     )
                 finally:
                     vdb_gate.close()
