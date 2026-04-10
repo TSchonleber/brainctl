@@ -742,14 +742,20 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 
     # Ebbinghaus retrieval strengthening — each recalled memory gets a confidence
     # boost via apply_recall_boost (diminishing-returns Bayesian formula).
-    # This records the retrieval event and resets the forgetting curve clock.
+    # 60-second cooldown prevents runaway inflation on rapid repeated searches.
     if results:
         try:
             from agentmemory.hippocampus import apply_recall_boost as _recall_boost
+            from datetime import timedelta as _td
+            _sixty_secs_ago = (datetime.now() - _td(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S")
             for r in results:
                 mid = r.get("id")
-                if mid:
-                    _recall_boost(db, mid)
+                if not mid:
+                    continue
+                last_recalled = r.get("last_recalled_at")
+                if last_recalled and last_recalled > _sixty_secs_ago:
+                    continue  # cooldown: boosted within last 60s
+                _recall_boost(db, mid)
         except Exception:
             pass
 
