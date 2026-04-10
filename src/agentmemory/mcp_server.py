@@ -651,8 +651,14 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     return result
 
 
+_SEMANTIC_CONFIDENCE_BONUS = 1.1  # CLS: semantic memories get a mild ranking boost when no type filter is applied
+
+
 def tool_memory_search(agent_id: str, query: str, category: str = None,
-                       scope: str = None, limit: int = 20) -> dict:
+                       scope: str = None, limit: int = 20,
+                       memory_type: str = None) -> dict:
+    if memory_type and memory_type not in ("episodic", "semantic"):
+        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     db = get_db()
     fts_q = _safe_fts(query)
     if not fts_q:
@@ -676,6 +682,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     if scope:
         conditions.append("m.scope = ?")
         params.append(scope)
+    if memory_type:
+        # CLS: explicit type filter — caller wants only episodic or only semantic
+        conditions.append("m.memory_type = ?")
+        params.append(memory_type)
     params.append(limit)
     where = " AND ".join(conditions)
 
@@ -684,6 +694,15 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
         f"WHERE memories_fts MATCH ? AND {where} ORDER BY rank LIMIT ?", params
     ).fetchall()
     results = rows_to_list(rows)
+
+    # CLS semantic bonus: when no type filter is set, apply a mild confidence
+    # multiplier to semantic memories so they score slightly above equivalent
+    # episodic memories. Semantic memories are higher-quality consolidated
+    # representations and should rank ahead when confidence is otherwise equal.
+    if not memory_type:
+        for r in results:
+            if r.get("memory_type") == "semantic":
+                r["confidence"] = min(1.0, (r.get("confidence") or 1.0) * _SEMANTIC_CONFIDENCE_BONUS)
 
     # Quantum amplitude re-ranking — transparent to callers
     if _QUANTUM_AVAILABLE and results:
@@ -1557,7 +1576,7 @@ TOOLS = [
     ),
     Tool(
         name="memory_search",
-        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling: tier 1 → 7 slots, tier 2 → 14, tier 3 → 21).",
+        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling). Set memory_type to filter to one store; unset applies a 1.1x CLS confidence bonus to semantic memories.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1565,6 +1584,7 @@ TOOLS = [
                 "category": {"type": "string", "enum": VALID_MEMORY_CATEGORIES},
                 "scope": {"type": "string"},
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
+                "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
             },
             "required": ["query"],
         },
