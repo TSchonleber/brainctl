@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (180)
+## Available Tools (183)
 
 | Tool | Description |
 |------|-------------|
@@ -85,6 +85,9 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `attention_snapshot` | Synthesize agent attention state from recent searches and events |
 | `consolidation_run` | Run SWR-driven consolidation pass: promote episodic→semantic, mine causal chains |
 | `free_energy_check` | Epistemic drive and knowledge gap summary from agent_uncertainty_log |
+| `quarantine_list` | List memories under immunity review with reason and contradiction evidence |
+| `quarantine_review` | Mark a quarantined memory safe, malicious, or uncertain |
+| `quarantine_purge` | Permanently delete a malicious memory and retract derived beliefs |
 
 ## Environment Variables
 
