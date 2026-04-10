@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "brainctl"
 version = "1.0.1"
-description = "A cognitive memory system for AI agents — episodic, semantic, and procedural memory with FTS5 search, vector embeddings, neuromodulation, and MCP server integration."
+description = "Persistent memory for AI agents. One SQLite file. No server, no API keys, no LLM calls. MCP server included."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
@@ -38,7 +38,7 @@ brainctl-consolidate = "agentmemory.hippocampus:main"
 [project.urls]
 Homepage = "https://github.com/TSchonleber/brainctl"
 Repository = "https://github.com/TSchonleber/brainctl"
-Documentation = "https://github.com/TSchonleber/brainctl/blob/main/ARCHITECTURE.md"
+Documentation = "https://github.com/TSchonleber/brainctl/blob/main/docs/AGENT_ONBOARDING.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
