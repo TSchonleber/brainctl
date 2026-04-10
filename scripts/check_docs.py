@@ -17,16 +17,23 @@ SRC = ROOT / "src" / "agentmemory"
 
 
 def count_mcp_tools() -> int:
-    """Count Tool() entries in mcp_server.py TOOLS list."""
-    text = (SRC / "mcp_server.py").read_text()
-    # Count Tool( entries within the TOOLS list
-    # Find TOOLS = [ ... ] block
-    m = re.search(r'^TOOLS\s*=\s*\[(.+?)^\]', text, re.MULTILINE | re.DOTALL)
-    if not m:
-        print("ERROR: Could not find TOOLS list in mcp_server.py", file=sys.stderr)
-        sys.exit(2)
-    tools_block = m.group(1)
-    return len(re.findall(r'\bTool\s*\(', tools_block))
+    """Count tools in the fully-merged TOOLS list (including extension modules)."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0,'src'); "
+         "import agentmemory.mcp_server as ms; print(len(ms.TOOLS))"],
+        capture_output=True, text=True, cwd=ROOT,
+    )
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
+        # Fallback: parse source for Tool( entries in TOOLS block
+        text = (SRC / "mcp_server.py").read_text()
+        m = re.search(r'^TOOLS\s*=\s*\[(.+?)^\]', text, re.MULTILINE | re.DOTALL)
+        if not m:
+            print("ERROR: Could not find TOOLS list in mcp_server.py", file=sys.stderr)
+            sys.exit(2)
+        return len(re.findall(r'\bTool\s*\(', m.group(1)))
+    return int(result.stdout.strip())
 
 
 def count_in_doc(path: Path, pattern: str) -> int | None:

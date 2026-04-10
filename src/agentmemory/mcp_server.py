@@ -28,6 +28,46 @@ from typing import Any
 from agentmemory.paths import get_db_path
 logger = logging.getLogger(__name__)
 from mcp.server import Server
+
+# Extension tool modules — each exports TOOLS: list[Tool] and DISPATCH: dict
+try:
+    from agentmemory import (
+        mcp_tools_agents,
+        mcp_tools_beliefs,
+        mcp_tools_expertise,
+        mcp_tools_health,
+        mcp_tools_knowledge,
+        mcp_tools_meb,
+        mcp_tools_neuro,
+        mcp_tools_policy,
+        mcp_tools_reasoning,
+        mcp_tools_reflexion,
+        mcp_tools_temporal,
+        mcp_tools_tom,
+        mcp_tools_trust,
+        mcp_tools_workspace,
+        mcp_tools_world,
+    )
+    _EXT_MODULES = [
+        mcp_tools_agents,
+        mcp_tools_beliefs,
+        mcp_tools_expertise,
+        mcp_tools_health,
+        mcp_tools_knowledge,
+        mcp_tools_meb,
+        mcp_tools_neuro,
+        mcp_tools_policy,
+        mcp_tools_reasoning,
+        mcp_tools_reflexion,
+        mcp_tools_temporal,
+        mcp_tools_tom,
+        mcp_tools_trust,
+        mcp_tools_workspace,
+        mcp_tools_world,
+    ]
+except ImportError as _e:
+    logger.warning("Some extension tool modules failed to import: %s", _e)
+    _EXT_MODULES = []
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
@@ -1868,6 +1908,10 @@ TOOLS = [
     ),
 ]
 
+# Merge extension module tools into the master list
+for _m in _EXT_MODULES:
+    TOOLS.extend(_m.TOOLS)
+
 # ---------------------------------------------------------------------------
 # Affect tools
 # ---------------------------------------------------------------------------
@@ -2003,6 +2047,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "affect_check": tool_affect_check,
         "affect_monitor": tool_affect_monitor,
     }
+
+    # Merge extension module dispatchers
+    for _m in _EXT_MODULES:
+        dispatch.update(_m.DISPATCH)
 
     fn = dispatch.get(name)
     if not fn:
