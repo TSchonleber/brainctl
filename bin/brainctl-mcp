@@ -632,6 +632,15 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
     result = {"ok": True, "event_id": eid}
     if labile_rescued:
         result["labile_rescued"] = labile_rescued
+
+    # Proactive surfacing — auto-check triggers against the new event summary.
+    try:
+        trigger_result = tool_trigger_check(agent_id, summary)
+        if trigger_result.get("ok") and trigger_result.get("count", 0) > 0:
+            result["triggered"] = trigger_result["triggers"]
+    except Exception:
+        pass
+
     return result
 
 
@@ -1261,7 +1270,7 @@ TOOLS = [
     ),
     Tool(
         name="event_add",
-        description="Log an event to brain.db. Events are timestamped records of what happened. If importance >= 0.8, retroactively tags memories written in the prior 2 hours with a labile window (behavioral tagging rescue), protecting them from decay until 2 hours after this event.",
+        description="Log an event to brain.db. Events are timestamped records of what happened. If importance >= 0.8, retroactively tags memories written in the prior 2 hours with a labile window (behavioral tagging rescue). Auto-checks all agent triggers against the event summary — any matching triggers are returned in the response as 'triggered' list.",
         inputSchema={
             "type": "object",
             "properties": {
