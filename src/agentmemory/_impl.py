@@ -1476,6 +1476,9 @@ def cmd_memory_search(args):
         results = [r for r in results if r["scope"] == args.scope]
     if args.category:
         results = [r for r in results if r["category"] == args.category]
+    _prof_cats = getattr(args, "_profile_categories", None)
+    if _prof_cats and not getattr(args, "category", None):
+        results = [r for r in results if r.get("category") in _prof_cats]
 
     # Epistemic foraging mode: re-rank by (1-confidence)*importance — high uncertainty first
     if getattr(args, "epistemic", False):
@@ -3885,6 +3888,11 @@ def cmd_search(args):
     _nm_breadth = _nm.get("retrieval_breadth_multiplier", 1.0) if _nm else 1.0
     _nm_exploit = _nm.get("exploitation_bias", 0.0) if _nm else 0.0
 
+    # Profile: resolve and apply task-scoped constraints before table routing
+    if getattr(args, "profile", None):
+        from agentmemory.profiles import apply_profile as _apply_profile
+        _apply_profile(args, DB_PATH)
+
     # Intent-aware table routing: when --tables not specified, classify query intent
     # and route to the most relevant tables for that intent type.
     _intent_result = None
@@ -4177,6 +4185,11 @@ def cmd_search(args):
                 trimmed = _quantum_rerank(trimmed, db_path=str(DB_PATH), benchmark=_bench)
             except Exception:
                 pass  # quantum re-ranking is optional; never break search
+
+        # Profile category filter — applied after all re-ranking so scoring isn't affected
+        _prof_cats = getattr(args, "_profile_categories", None)
+        if _prof_cats:
+            trimmed = [r for r in trimmed if r.get("category") in _prof_cats]
 
         results["memories"] = trimmed
 
@@ -5544,13 +5557,16 @@ def cmd_doctor(args):
 
     # DB existence
     if not DB_PATH.exists():
-        print(fail(f"  brain.db not found at {DB_PATH}"))
-        print(f"  Run: brainctl init")
+        if not getattr(args, "json", False):
+            print(fail(f"  brain.db not found at {DB_PATH}"))
+            print(f"  Run: brainctl init")
         json_out({"ok": False, "error": f"brain.db not found at {DB_PATH}"})
         return
-    print(ok(f"  database: {DB_PATH}"))
+    if not getattr(args, "json", False):
+        print(ok(f"  database: {DB_PATH}"))
     db_size = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
-    print(f"  size: {db_size} MB")
+    if not getattr(args, "json", False):
+        print(f"  size: {db_size} MB")
 
     db = get_db()
 
@@ -5564,19 +5580,23 @@ def cmd_doctor(args):
 
     # FTS5
     if "memories_fts" in existing:
-        print(ok("  FTS5 search: available"))
+        if not getattr(args, "json", False):
+            print(ok("  FTS5 search: available"))
     else:
         issues.append("Missing FTS5 table: memories_fts")
-        print(fail("  FTS5 search: missing"))
+        if not getattr(args, "json", False):
+            print(fail("  FTS5 search: missing"))
 
     # Integrity
     try:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity == "ok":
-            print(ok("  integrity: ok"))
+            if not getattr(args, "json", False):
+                print(ok("  integrity: ok"))
         else:
             issues.append(f"Integrity check: {integrity}")
-            print(fail(f"  integrity: {integrity}"))
+            if not getattr(args, "json", False):
+                print(fail(f"  integrity: {integrity}"))
     except Exception as e:
         issues.append(f"Integrity error: {e}")
 
@@ -5585,37 +5605,41 @@ def cmd_doctor(args):
         active = db.execute("SELECT count(*) FROM memories WHERE retired_at IS NULL").fetchone()[0]
         events = db.execute("SELECT count(*) FROM events").fetchone()[0]
         entities = db.execute("SELECT count(*) FROM entities WHERE retired_at IS NULL").fetchone()[0]
-        print(f"  memories: {active} active | events: {events} | entities: {entities}")
+        if not getattr(args, "json", False):
+            print(f"  memories: {active} active | events: {events} | entities: {entities}")
     except Exception:
         pass
 
     # Vec
+    vec_available = False
     try:
         import sqlite_vec  # noqa: F401
-        print(ok("  vector search: available (sqlite-vec installed)"))
+        if not getattr(args, "json", False):
+            print(ok("  vector search: available (sqlite-vec installed)"))
         vec_available = True
     except ImportError:
-        print(info("  vector search: not available (pip install brainctl[vec])"))
-        vec_available = False
+        if not getattr(args, "json", False):
+            print(info("  vector search: not available (pip install brainctl[vec])"))
 
     # Ollama
     try:
         import urllib.request
         req = urllib.request.Request(OLLAMA_EMBED_URL.replace("/api/embed", "/api/tags"), method="GET")
         with urllib.request.urlopen(req, timeout=3):
-            print(ok("  Ollama: reachable"))
+            if not getattr(args, "json", False):
+                print(ok("  Ollama: reachable"))
     except Exception:
-        print(info("  Ollama: not reachable (optional — needed for vector search)"))
-
-    db.close()
+        if not getattr(args, "json", False):
+            print(info("  Ollama: not reachable (optional — needed for vector search)"))
 
     # Verdict
-    if issues:
-        print(fail(f"\n  {len(issues)} issue(s) found:"))
-        for i in issues:
-            print(fail(f"    - {i}"))
-    else:
-        print(ok("\n  All checks passed."))
+    if not getattr(args, "json", False):
+        if issues:
+            print(fail(f"\n  {len(issues)} issue(s) found:"))
+            for i in issues:
+                print(fail(f"    - {i}"))
+        else:
+            print(ok("\n  All checks passed."))
 
     if getattr(args, "json", False):
         json_out({
@@ -5626,6 +5650,57 @@ def cmd_doctor(args):
             "db_size_mb": db_size,
             "vec_available": vec_available,
         })
+
+
+def cmd_profile_list(args):
+    from agentmemory.profiles import list_profiles
+    profiles = list_profiles(DB_PATH)
+    _col = lambda w, s: str(s)[:w].ljust(w)
+    print(f"{'NAME':<16} {'TABLES':<30} {'CATEGORIES':<40} {'DESCRIPTION'}")
+    print("-" * 100)
+    for p in profiles:
+        tables = ",".join(p.get("tables") or [])
+        cats = ",".join(p.get("categories") or [])
+        tag = " (builtin)" if p.get("builtin") else " (custom)"
+        print(f"{_col(16, p['name'] + tag):<16} {_col(30, tables):<30} {_col(40, cats):<40} {p.get('description', '')}")
+
+
+def cmd_profile_show(args):
+    from agentmemory.profiles import resolve_profile
+    profile = resolve_profile(args.name, DB_PATH)
+    if not profile:
+        json_out({"ok": False, "error": f"Profile not found: {args.name}"})
+        sys.exit(1)
+    json_out({"ok": True, "profile": profile})
+
+
+def cmd_profile_create(args):
+    from agentmemory.profiles import create_profile
+    categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+    tables = [t.strip() for t in args.tables.split(",") if t.strip()]
+    entity_types = [e.strip() for e in (args.entity_types or "").split(",") if e.strip()]
+    ok = create_profile(
+        name=args.name,
+        categories=categories,
+        tables=tables,
+        entity_types=entity_types,
+        description=args.description or "",
+        db_path=DB_PATH,
+    )
+    json_out({"ok": ok, "name": args.name, "categories": categories,
+              "tables": tables, "entity_types": entity_types})
+    if not ok:
+        sys.exit(1)
+
+
+def cmd_profile_delete(args):
+    from agentmemory.profiles import delete_profile
+    ok = delete_profile(args.name, DB_PATH)
+    json_out({"ok": ok, "name": args.name,
+              "deleted": ok,
+              "error": None if ok else f"Profile '{args.name}' not found or is a built-in"})
+    if not ok:
+        sys.exit(1)
 
 
 def cmd_stats(args):
@@ -12107,6 +12182,8 @@ def build_parser():
                              help="Output format: json (default), compact (minified), oneline (ID|type|text)")
     mem_search.add_argument("--file", dest="file_path",
                              help="Boost memories anchored to this file path (substring match)")
+    mem_search.add_argument("--profile",
+                             help="Task-scoped preset: writing, meeting, research, ops, networking, review")
 
     mem_list = mem_sub.add_parser("list", help="List memories")
     mem_list.add_argument("--category", "-c")
@@ -12520,6 +12597,8 @@ def build_parser():
                        help="Compare classical vs quantum scores side-by-side; implies --quantum")
     srch.add_argument("--output", "-o", choices=["json", "compact", "oneline"], default="json",
                        help="Output format: json (default, pretty), compact (minified JSON), oneline (ID|type|text per line)")
+    srch.add_argument("--profile",
+                       help="Task-scoped preset: writing, meeting, research, ops, networking, review")
 
     # --- promote ---
     prom = sub.add_parser("promote", help="Promote an event to a durable memory")
@@ -12558,6 +12637,29 @@ def build_parser():
     # --- diagnostics ---
     doc_p = sub.add_parser("doctor", help="Quick diagnostic — is the brain working?")
     doc_p.add_argument("--json", action="store_true", help="Output JSON")
+
+    # --- profiles ---
+    prof = sub.add_parser("profile", help="Manage context profiles — task-scoped search presets")
+    prof_sub = prof.add_subparsers(dest="prof_cmd")
+
+    prof_sub.add_parser("list", help="List all profiles (built-in + user-defined)")
+
+    prof_show = prof_sub.add_parser("show", help="Show details for a profile")
+    prof_show.add_argument("name", help="Profile name")
+
+    prof_create = prof_sub.add_parser("create", help="Create a custom profile")
+    prof_create.add_argument("name", help="Profile name (cannot shadow a built-in)")
+    prof_create.add_argument("--categories", "-c", required=True,
+                              help="Comma-separated memory categories to scope to")
+    prof_create.add_argument("--tables", "-t", default="memories",
+                              help="Comma-separated tables: memories,events,entities,decisions (default: memories)")
+    prof_create.add_argument("--entity-types", dest="entity_types", default="",
+                              help="Comma-separated entity types to filter (optional)")
+    prof_create.add_argument("--description", "-d", default="",
+                              help="Human-readable description of this profile")
+
+    prof_delete = prof_sub.add_parser("delete", help="Delete a user-defined profile")
+    prof_delete.add_argument("name", help="Profile name to delete")
 
     # --- maintenance ---
     sub.add_parser("backup", help="Backup database")
@@ -13980,6 +14082,19 @@ def main():
         return
     elif args.command == "schedule":
         cmd_schedule(args)
+        return
+    elif args.command == "profile":
+        prof_dispatch = {
+            "list":   cmd_profile_list,
+            "show":   cmd_profile_show,
+            "create": cmd_profile_create,
+            "delete": cmd_profile_delete,
+        }
+        fn = prof_dispatch.get(args.prof_cmd)
+        if fn:
+            fn(args)
+        else:
+            parser.print_help()
         return
     elif args.command == "obsidian":
         from agentmemory.commands.obsidian import (

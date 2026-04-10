@@ -1663,3 +1663,15 @@ ALTER TABLE memories ADD COLUMN temporal_level TEXT NOT NULL DEFAULT 'moment'
     CHECK(temporal_level IN ('moment','session','day','week','month','quarter'));
 
 CREATE INDEX IF NOT EXISTS idx_memories_temporal_level ON memories(temporal_level, agent_id);
+
+-- -------------------------------------------------------------------------
+-- Context profiles — task-scoped search presets (brainctl profile)
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS context_profiles (
+    name         TEXT PRIMARY KEY,
+    description  TEXT,
+    categories   TEXT,
+    tables       TEXT,
+    entity_types TEXT,
+    created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);

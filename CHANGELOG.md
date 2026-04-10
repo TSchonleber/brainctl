@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased] — 2026-04-10
 
 ### Added
+- **Context profiles** — task-scoped search presets via `--profile NAME` on `search` and `memory search`
+  - 6 built-in profiles: `writing`, `meeting`, `research`, `ops`, `networking`, `review`
+  - Each profile scopes tables + categories to what's relevant for that task mode (inspired by Koylan's progressive disclosure pattern)
+  - User-defined profiles stored in brain.db: `brainctl profile create/list/show/delete`
+  - MCP: `profile` param on `memory_search` and `search` tools — `{"tool":"memory_search","query":"voice","profile":"writing"}`
+  - Explicit `--tables` / `--category` flags always win over profile defaults
 - **`brainctl obsidian`** — bidirectional sync with Obsidian vaults
   - `export <vault>` — dumps active memories, entities, and events to markdown with YAML frontmatter; follows Karpathy LLM-wiki 3-layer pattern
   - `import <vault>` — ingests new vault notes (no `brainctl_id`) through `Brain.remember()` / W(m) gate; `--dry-run` supported

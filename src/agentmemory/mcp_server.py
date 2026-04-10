@@ -803,9 +803,24 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
                        pagerank_boost: float = 0.0,
                        borrow_from: str = None,
                        multi_pass: bool = False,
-                       temporal_expand_hours: int = 0) -> dict:
+                       temporal_expand_hours: int = 0,
+                       profile: str = None) -> dict:
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+
+    # Profile: resolve task-scoped constraints; explicit args win over profile defaults
+    _profile_categories = None
+    if profile:
+        try:
+            from agentmemory.profiles import resolve_profile as _resolve_profile
+            _prof = _resolve_profile(profile, DB_PATH)
+            if _prof is None:
+                return {"ok": False, "error": f"Unknown profile '{profile}'"}
+            if not category and _prof.get("categories"):
+                _profile_categories = _prof["categories"]
+        except Exception:
+            pass
+
     db = get_db()
     fts_q = _safe_fts(query)
     if not fts_q:
@@ -831,6 +846,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     if category:
         conditions.append("m.category = ?")
         params.append(category)
+    elif _profile_categories:
+        ph = ",".join("?" * len(_profile_categories))
+        conditions.append(f"m.category IN ({ph})")
+        params.extend(_profile_categories)
     if scope:
         conditions.append("m.scope = ?")
         params.append(scope)
@@ -1483,12 +1502,29 @@ def tool_handoff_expire(agent_id: str, handoff_id: int, **kw) -> dict:
     return {"ok": True, "handoff_id": handoff_id, "status": "expired"}
 
 
-def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False) -> dict:
+def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False,
+                profile: str = None) -> dict:
     """Cross-table search: memories + events + entities. Intent-aware routing."""
     db = get_db()
     fts_q = _safe_fts(query)
     if not fts_q:
         return {"ok": False, "error": "Empty query"}
+
+    # Profile: resolve task-scoped table constraints before intent routing
+    _profile_tables = None
+    _profile_categories = None
+    if profile:
+        try:
+            from agentmemory.profiles import resolve_profile as _resolve_profile
+            _prof = _resolve_profile(profile, DB_PATH)
+            if _prof is None:
+                return {"ok": False, "error": f"Unknown profile '{profile}'"}
+            if _prof.get("tables"):
+                _profile_tables = set(_prof["tables"])
+            if _prof.get("categories"):
+                _profile_categories = _prof["categories"]
+        except Exception:
+            pass
 
     # Classify intent and route to appropriate tables
     intent_meta = {}
@@ -1521,14 +1557,28 @@ def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False
         if not intent_tables:
             intent_tables = {"memories", "events", "entities"}
 
+    # Profile table override: if profile specifies tables, intersect with intent routing
+    if _profile_tables:
+        intent_tables = intent_tables & _profile_tables
+        if not intent_tables:
+            intent_tables = _profile_tables  # use profile tables if intersection is empty
+
     results = []
 
     if "memories" in intent_tables:
+        _mem_conditions = ["m.retired_at IS NULL"]
+        _mem_params: list = [fts_q]
+        if _profile_categories:
+            ph = ",".join("?" * len(_profile_categories))
+            _mem_conditions.append(f"m.category IN ({ph})")
+            _mem_params.extend(_profile_categories)
+        _mem_params.append(limit)
+        _mem_where = " AND ".join(_mem_conditions)
         memories = rows_to_list(db.execute(
-            "SELECT m.id, 'memory' as type, m.content as text, m.category, m.confidence, m.created_at "
-            "FROM memories_fts fts JOIN memories m ON m.id=fts.rowid "
-            "WHERE memories_fts MATCH ? AND m.retired_at IS NULL ORDER BY rank LIMIT ?",
-            (fts_q, limit)
+            f"SELECT m.id, 'memory' as type, m.content as text, m.category, m.confidence, m.created_at "
+            f"FROM memories_fts fts JOIN memories m ON m.id=fts.rowid "
+            f"WHERE memories_fts MATCH ? AND {_mem_where} ORDER BY rank LIMIT ?",
+            _mem_params
         ).fetchall())
         # Quantum amplitude re-ranking — transparent to callers
         if _QUANTUM_AVAILABLE and memories:
