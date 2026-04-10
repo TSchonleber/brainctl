@@ -214,6 +214,49 @@ researcher.remember("Auth uses bcrypt cost=12", category="convention")
 deployer.search("bcrypt")  # finds researcher's memory
 ```
 
+## Context Profiles
+
+Context profiles are task-scoped search presets. Instead of manually specifying `--tables` and `--category` on every query, name the task and brainctl loads only what's relevant.
+
+```bash
+brainctl search "voice" --profile writing     # memories: preference, convention, lesson
+brainctl search "Sarah" --profile meeting     # contacts + interaction history + project context
+brainctl search "JWT" --profile research      # technical knowledge + integrations
+brainctl search "deploys" --profile ops       # events + decisions + project memories
+brainctl search "founders" --profile networking  # entities (person, org) only
+brainctl search "Q1" --profile review         # retrospective: lessons, decisions, projects
+```
+
+Works in MCP too:
+```json
+{ "tool": "memory_search", "query": "tone of voice", "profile": "writing" }
+{ "tool": "search", "query": "auth system", "profile": "research" }
+```
+
+List all profiles, create your own, or delete custom ones:
+```bash
+brainctl profile list
+brainctl profile show writing
+brainctl profile create coderev \
+  --categories convention,lesson \
+  --tables memories,events \
+  --description "Code review context"
+brainctl profile delete coderev
+```
+
+Built-in profiles:
+
+| Profile | Tables | Categories |
+|---------|--------|------------|
+| `writing` | memories, entities | preference, convention, lesson |
+| `meeting` | memories, events, entities | user, project, preference |
+| `research` | memories, entities | integration, convention, lesson, environment |
+| `ops` | memories, events, decisions | project, decision, lesson |
+| `networking` | entities, memories | user |
+| `review` | memories, events, decisions | lesson, decision, project |
+
+Profiles never override explicit `--tables` or `--category` flags — they're defaults, not locks.
+
 ## Obsidian Integration
 
 Bidirectional sync between brain.db and an [Obsidian](https://obsidian.md) vault:
