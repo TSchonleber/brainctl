@@ -645,6 +645,16 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     if not fts_q:
         return {"ok": False, "error": "Empty query"}
 
+    # Theta-gamma slot cap — enforce 7*tier max slots per retrieval cycle.
+    # Tier 1 (default) → 7 slots, tier 2 → 14, tier 3 → 21.
+    # Mirrors the theta-nested gamma coupling constraint (Lisman & Jensen 2013).
+    tier_row = db.execute(
+        "SELECT attention_budget_tier FROM agents WHERE id = ?", (agent_id,)
+    ).fetchone()
+    tier = (tier_row[0] if tier_row and tier_row[0] else 1)
+    max_slots = 7 * tier
+    limit = min(limit, max_slots)
+
     conditions = ["m.retired_at IS NULL"]
     params = [fts_q]
     if category:
@@ -671,7 +681,8 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 
     log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
     db.commit(); db.close()
-    return {"ok": True, "count": len(results), "memories": results}
+    return {"ok": True, "count": len(results), "memories": results,
+            "slot_cap": max_slots, "tier": tier}
 
 
 def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = None,
@@ -1497,14 +1508,14 @@ TOOLS = [
     ),
     Tool(
         name="memory_search",
-        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance.",
+        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling: tier 1 → 7 slots, tier 2 → 14, tier 3 → 21).",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "category": {"type": "string", "enum": VALID_MEMORY_CATEGORIES},
                 "scope": {"type": "string"},
-                "limit": {"type": "integer", "default": 20},
+                "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
             },
             "required": ["query"],
         },
