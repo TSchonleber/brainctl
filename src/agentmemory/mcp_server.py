@@ -614,6 +614,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                         db_vec=vdb_gate,
                         force=False,
                         arousal_gain=_arousal_gain,
+                        db_stats=db,
+                        agent_id=agent_id,
                     )
                 finally:
                     vdb_gate.close()
