@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainctl"
-version = "1.1.0"
+version = "1.1.1"
 description = "Persistent memory for AI agents. One SQLite file. No server, no API keys, no LLM calls. MCP server included."
 readme = "README.md"
 license = {text = "MIT"}
