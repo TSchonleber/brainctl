@@ -529,6 +529,41 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             r.pop("_sr_score", None)
 
     log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
+
+    # Ebbinghaus retrieval strengthening — record recall event, reset forgetting curve.
+    # Uses the same Bayesian diminishing-returns formula as apply_recall_boost():
+    #   alpha = BASE_ALPHA / (1 + ALPHA_DAMPING * recalled_count)
+    #   new_confidence = min(1.0, confidence + alpha * (1 - confidence))
+    # 60-second cooldown prevents runaway inflation on rapid repeated searches.
+    _BASE_ALPHA, _ALPHA_DAMPING = 0.3, 0.1
+    if results:
+        from datetime import timedelta as _td
+        now_recall = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _sixty_secs_ago = (datetime.now() - _td(seconds=60)).strftime("%Y-%m-%dT%H:%M:%S")
+        for r in results:
+            mid = r.get("id")
+            if not mid:
+                continue
+            last_recalled = r.get("last_recalled_at")
+            if last_recalled and last_recalled > _sixty_secs_ago:
+                continue  # cooldown: boosted within last 60s
+            try:
+                row = db.execute(
+                    "SELECT confidence, recalled_count FROM memories WHERE id = ? AND retired_at IS NULL",
+                    (mid,)
+                ).fetchone()
+                if row:
+                    conf = float(row["confidence"])
+                    rc = int(row["recalled_count"] or 0)
+                    alpha = _BASE_ALPHA / (1.0 + _ALPHA_DAMPING * rc)
+                    new_conf = min(1.0, conf + alpha * (1.0 - conf))
+                    db.execute(
+                        "UPDATE memories SET confidence=?, recalled_count=recalled_count+1, last_recalled_at=?, updated_at=? WHERE id=?",
+                        (new_conf, now_recall, now_recall, mid)
+                    )
+            except Exception:
+                pass
+
     db.commit(); db.close()
     return {"ok": True, "count": len(results), "memories": results,
             "slot_cap": max_slots, "tier": tier}
