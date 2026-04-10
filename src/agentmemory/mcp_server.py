@@ -660,6 +660,66 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             "alpha_floor": alpha_floor,
         }
 
+    # Schema resonance check (issue #33): VTA fast-track for congruent memories.
+    # If the new content has cosine similarity > 0.85 to ≥3 existing same-category
+    # memories, it fits an existing schema — write it as 'semantic' immediately,
+    # bypassing the episodic consolidation queue.
+    # Grounded in Sekeres et al. 2024: schema-congruent traces are rapidly integrated
+    # via mPFC→hippocampus pathway without multi-day systems consolidation.
+    _schema_resonance = 0.0
+    _schema_resonance_hit = False
+    if blob and memory_type == "episodic" and not force:
+        try:
+            _vdb_sr = _get_vec_db()
+            if _vdb_sr:
+                try:
+                    sr_rows = _vdb_sr.execute(
+                        "SELECT rowid, distance FROM vec_memories WHERE embedding MATCH ? AND k=?",
+                        (blob, 10)
+                    ).fetchall()
+                    if sr_rows:
+                        import struct as _sr_struct
+                        cand_n = len(blob) // 4
+                        cand_vec = list(_sr_struct.unpack(f"{cand_n}f", blob[:cand_n * 4]))
+                        high_sim_count = 0
+                        sim_scores = []
+                        for sr_row in sr_rows:
+                            sr_id = sr_row[0] if isinstance(sr_row, tuple) else sr_row["rowid"]
+                            # Filter to same category + agent
+                            m_row = db.execute(
+                                "SELECT category FROM memories WHERE id = ? AND retired_at IS NULL "
+                                "AND agent_id = ? AND category = ?",
+                                (sr_id, agent_id, category)
+                            ).fetchone()
+                            if not m_row:
+                                continue
+                            e_row = _vdb_sr.execute(
+                                "SELECT vector FROM embeddings WHERE source_table='memories' AND source_id=?",
+                                (sr_id,)
+                            ).fetchone()
+                            if not e_row:
+                                continue
+                            v_bytes = bytes(e_row[0] if isinstance(e_row, tuple) else e_row["vector"])
+                            n2 = len(v_bytes) // 4
+                            v2 = list(_sr_struct.unpack(f"{n2}f", v_bytes[:n2 * 4]))
+                            dot = sum(a * b for a, b in zip(cand_vec, v2))
+                            import math as _sr_math
+                            na = _sr_math.sqrt(sum(x * x for x in cand_vec))
+                            nb = _sr_math.sqrt(sum(x * x for x in v2))
+                            if na > 0 and nb > 0:
+                                sim = max(-1.0, min(1.0, dot / (na * nb)))
+                                sim_scores.append(sim)
+                                if sim > 0.85:
+                                    high_sim_count += 1
+                        if high_sim_count >= 3:
+                            memory_type = "semantic"
+                            _schema_resonance_hit = True
+                        _schema_resonance = round(max(sim_scores), 4) if sim_scores else 0.0
+                finally:
+                    _vdb_sr.close()
+        except Exception:
+            pass
+
     created_at = _now_ts()
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
@@ -697,7 +757,11 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     db.commit(); db.close()
     result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score,
               "surprise_score": surprise, "surprise_method": surprise_method,
-              "source": source, "trust_score": source_trust}
+              "source": source, "trust_score": source_trust,
+              "memory_type": memory_type}
+    if _schema_resonance_hit:
+        result["schema_resonance"] = _schema_resonance
+        result["schema_resonance_fast_track"] = True
     if _valence_scale != 1.0:
         result["valence_scale"] = round(_valence_scale, 4)
     if pii_gate_info:
