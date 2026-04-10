@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (176)
+## Available Tools (177)
 
 | Tool | Description |
 |------|-------------|
@@ -81,6 +81,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `reconsolidation_check` | Check if a memory is in its lability window (opened by high-PE retrieval) |
 | `reconsolidate` | Merge new content into a labile memory (agent-scoped write window) |
 | `consolidation_stats` | Replay queue depth, labile count, ripple event totals |
+| `consolidation_run` | Run SWR-driven consolidation pass: promote episodic→semantic, mine causal chains |
 
 ## Environment Variables
 
