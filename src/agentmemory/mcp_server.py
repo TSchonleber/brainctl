@@ -35,6 +35,7 @@ try:
         mcp_tools_agents,
         mcp_tools_allostatic,
         mcp_tools_analytics,
+        mcp_tools_dmem,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
         mcp_tools_consolidation,
@@ -64,6 +65,7 @@ try:
         mcp_tools_agents,
         mcp_tools_allostatic,
         mcp_tools_analytics,
+        mcp_tools_dmem,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
         mcp_tools_consolidation,
@@ -724,12 +726,25 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         except Exception:
             pass
 
+    # D-MEM RPE three-tier routing (issue #31)
+    # Determine write_tier and indexed based on worthiness_score.
+    # None or ≥ 0.7 → FULL_EVOLUTION; 0.3–0.7 → CONSTRUCT_ONLY (no embed/FTS).
+    # < 0.3 is already rejected above (SKIP tier).
+    if worthiness_score is not None and not force and worthiness_score < 0.7:
+        write_tier = "construct"
+        do_index = 0
+    else:
+        write_tier = "full"
+        do_index = 1
+
     created_at = _now_ts()
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha, trust_score, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, trust_score, write_tier, indexed, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor), source_trust, created_at, created_at)
+         supersedes_id, float(alpha_floor), source_trust, write_tier, do_index,
+         created_at, created_at)
     )
     mid = cur.lastrowid
 
@@ -741,25 +756,27 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             pass
 
     log_access(db, agent_id, "write", "memories", mid)
-    # Embed on write — reuse blob computed above for the gate
+    # Embed on write — only for FULL_EVOLUTION tier
     embedded = False
-    try:
-        if not blob:
-            blob = _embed_safe(content)
-        if blob:
-            vdb = _get_vec_db()
-            if vdb:
-                vdb.execute("INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?,?)", (mid, blob))
-                vdb.execute(
-                    "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
-                    ("memories", mid, EMBED_MODEL, 768, blob)
-                )
-                vdb.commit(); vdb.close()
-                embedded = True
-    except Exception:
-        pass
+    if do_index:
+        try:
+            if not blob:
+                blob = _embed_safe(content)
+            if blob:
+                vdb = _get_vec_db()
+                if vdb:
+                    vdb.execute("INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?,?)", (mid, blob))
+                    vdb.execute(
+                        "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
+                        ("memories", mid, EMBED_MODEL, 768, blob)
+                    )
+                    vdb.commit(); vdb.close()
+                    embedded = True
+        except Exception:
+            pass
     db.commit(); db.close()
     result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score,
+              "write_tier": write_tier,
               "surprise_score": surprise, "surprise_method": surprise_method,
               "source": source, "trust_score": source_trust,
               "memory_type": memory_type}
