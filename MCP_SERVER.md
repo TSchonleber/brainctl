@@ -98,6 +98,86 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `zoom_in` | Given a summary memory, return its constituent child memories |
 | `temporal_map` | Count breakdown of memories at each temporal level for an agent |
 
+## Which Tools Do I Need?
+
+192 tools is overwhelming. Most agents need ~15 on a daily basis. Here's how to find what you need.
+
+### Tier 1: Essential (daily use)
+
+**Store information:**
+- Durable fact/lesson/convention: `memory_add` (enforces W(m) write gate)
+- What just happened: `event_add` (timestamped, no gate)
+- Why a choice was made: `decision_add` (with rationale)
+- Working state for next session: `handoff_add`
+
+**Find information:**
+- Everything about a topic: `search` (memories + events + entities)
+- Just memories: `memory_search` (supports category, scope, pagerank_boost)
+- Just events: `event_search` (supports event_type, project)
+- A specific entity: `entity_get`
+- Entities matching a query: `entity_search`
+
+**Track entities:**
+- New entity: `entity_create`
+- New fact about entity: `entity_observe`
+- Link two entities: `entity_relate`
+
+**Session continuity:**
+- Set a future reminder: `trigger_create`
+- Check reminders: `trigger_check`
+- Resume prior work: `handoff_latest` / `handoff_consume`
+
+**Health:**
+- Database overview: `stats`
+- Schema integrity: `validate`
+- Quality lint: `lint`
+
+### Tier 2: Advanced (weekly/as-needed)
+
+| Category | Tools | When to use |
+|----------|-------|-------------|
+| Consolidation | `consolidation_run`, `replay_boost`, `replay_queue` | Memory maintenance |
+| Reconsolidation | `reconsolidation_check`, `reconsolidate` | Lability window mechanics |
+| Beliefs & Conflicts | `resolve_conflict`, `belief_collapse` | When memories contradict |
+| Temporal Abstraction | `abstract_summarize`, `zoom_out`, `zoom_in`, `temporal_map` | Hierarchical summarization |
+| Allostatic Scheduling | `consolidation_schedule`, `allostatic_prime`, `demand_forecast` | Predictive memory pre-loading |
+| Immunity | `quarantine_list`, `quarantine_review`, `quarantine_purge` | Poisoned memory handling |
+| D-MEM | `memory_promote`, `tier_stats` | Write-tier management |
+| Metacognition | `memory_calibration`, `attention_snapshot`, `free_energy_check` | Self-monitoring |
+| Affect | `affect_classify`, `affect_log`, `affect_check`, `affect_monitor` | Emotional state tracking |
+
+### Tier 3: Specialist (~150 tools)
+
+The remaining tools cover specialized subsystems: Theory of Mind, Trust scoring, Neuromodulation, MEB (Memory Event Buffer), Expertise routing, Federation, Policy memory, Reasoning chains, Reflexion loops, Workspace management, World models, Analytics, Telemetry, and Usage tracking. These are documented in the individual `mcp_tools_*.py` source modules.
+
+### Decision Tree
+
+```
+What do you need?
+|
++-- Store something?
+|   +-- Durable fact ----------> memory_add
+|   +-- What just happened ----> event_add
+|   +-- Why a choice was made -> decision_add
+|   +-- State for next session > handoff_add
+|
++-- Find something?
+|   +-- Broad topic search ----> search
+|   +-- Memories only ---------> memory_search
+|   +-- Events only -----------> event_search
+|   +-- Entity by name --------> entity_get
+|
++-- Track an entity?
+|   +-- New entity ------------> entity_create
+|   +-- New fact about it -----> entity_observe
+|   +-- Link two entities -----> entity_relate
+|
++-- Set a reminder? -----------> trigger_create
++-- Check reminders? ----------> trigger_check
++-- Resume prior work? --------> handoff_latest
++-- Check system health? ------> stats / health / lint
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
