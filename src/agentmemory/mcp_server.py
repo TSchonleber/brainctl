@@ -498,10 +498,29 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         pass
 
-    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy) * arousal
+    # Valence-gated encoding (McGaugh 2004 + Hamann 2001):
+    # Negative valence (threat/aversion) suppresses memory propagation.
+    # Positive valence (reward/approach) facilitates propagation.
+    # Read agent's most recent affect_log valence and scale W(m) accordingly.
+    _valence_scale = 1.0
+    try:
+        _valence_row = db.execute(
+            "SELECT valence FROM affect_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+            (agent_id,)
+        ).fetchone()
+        if _valence_row:
+            _v = float(_valence_row["valence"] or 0.0)
+            if _v < -0.5:
+                _valence_scale = 0.7   # suppress: high-stress encoding is attenuated
+            elif _v > 0.5:
+                _valence_scale = 1.15  # propagate: positive state boosts encoding
+    except Exception:
+        pass
+
+    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy) * arousal * valence
     importance_estimate = confidence
     _pre_redundancy = 0.5 if (surprise is not None and surprise < 0.2) else 0.0
-    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _arousal_gain
+    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _arousal_gain * _valence_scale
     if _pre_worthiness < 0.3 and not force:
         try:
             db.execute(
@@ -514,6 +533,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "surprise": surprise,
                      "surprise_method": surprise_method,
                      "importance_estimate": round(importance_estimate, 4),
+                     "valence_scale": round(_valence_scale, 4),
                      "pre_worthiness": round(_pre_worthiness, 4),
                      "category": category,
                      "scope": scope,
@@ -646,6 +666,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         pass
     db.commit(); db.close()
     result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score, "surprise_score": surprise, "surprise_method": surprise_method}
+    if _valence_scale != 1.0:
+        result["valence_scale"] = round(_valence_scale, 4)
     if pii_gate_info:
         result["pii_gate"] = pii_gate_info
     return result
