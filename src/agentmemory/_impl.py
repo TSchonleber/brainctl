@@ -18,6 +18,7 @@ import hashlib
 import math
 import shutil
 import re
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -5441,6 +5442,79 @@ def cmd_backup(args):
 
     size = backup_path.stat().st_size
     json_out({"ok": True, "backup": str(backup_path), "sql": str(sql_path), "size_bytes": size})
+
+
+def cmd_dashboard(args):
+    """Unified telemetry dashboard — single-pane-of-glass health view of brain.db."""
+    from agentmemory.telemetry import get_dashboard
+
+    db_path = str(DB_PATH)
+    agent_id = getattr(args, "dashboard_agent", None)
+    fmt = getattr(args, "format", "text")
+
+    data = get_dashboard(db_path, agent_id=agent_id)
+
+    if fmt == "json":
+        json_out(data)
+        return
+
+    # ── Terminal-friendly summary ────────────────────────────────────────────
+    score = data["health_score"]
+    grade = data["grade"]
+    computed = data["computed_at"]
+
+    # Header
+    agent_label = f"  agent={agent_id}" if agent_id else ""
+    print(f"brainctl dashboard{agent_label}  [{computed}]")
+    print()
+
+    # Score bar
+    bar_len = 30
+    filled = int(round(score * bar_len))
+    bar = "#" * filled + "-" * (bar_len - filled)
+    print(f"  Health Score : {score:.2f} / 1.00  [{bar}]  Grade: {grade}")
+    print()
+
+    # Memory
+    m = data["memory"]
+    print(f"  Memory       : {m['active']} active / {m['count']} total"
+          f"  (avg confidence: {m['avg_confidence']:.2f})")
+
+    # Events
+    e = data["events"]
+    print(f"  Events       : {e['count']} total  |  {e['last_7d']} last 7d")
+
+    # Entities
+    en = data["entities"]
+    print(f"  Entities     : {en['active']} active / {en['count']} total")
+
+    # Decisions
+    d = data["decisions"]
+    print(f"  Decisions    : {d['count']}")
+
+    # Affect
+    af = data["affect"]
+    if af:
+        print(f"  Affect       : {af['current_state'] or 'unknown'}"
+              f"  (valence={af['valence']:.2f}, arousal={af['arousal']:.2f})")
+    else:
+        print("  Affect       : no data")
+
+    # Budget
+    b = data["budget"]
+    print(f"  Budget       : ~{b['token_estimate']:,} tokens logged")
+
+    # Alerts
+    alerts = data["alerts"]
+    print()
+    if alerts:
+        print(f"  Alerts ({len(alerts)}):")
+        for a in alerts:
+            print(f"    ! {a}")
+    else:
+        print("  No alerts.")
+    print()
+
 
 def cmd_stats(args):
     db = get_db()
@@ -12419,6 +12493,22 @@ def build_parser():
     health.add_argument("--json", action="store_true", help="Output raw JSON instead of dashboard")
     health.add_argument("--window", type=int, default=7, metavar="DAYS", help="Rolling window in days for coverage/freshness (default: 7)")
 
+    # --- dashboard ---
+    dash = sub.add_parser(
+        "dashboard",
+        help="Unified telemetry dashboard — single-pane-of-glass health view of brain.db",
+    )
+    dash.add_argument(
+        "--format", "-f",
+        choices=["text", "json"],
+        default="text",
+        help="Output format: text (default, human-readable) or json (machine output)",
+    )
+    dash.add_argument(
+        "--agent", dest="dashboard_agent", default=None, metavar="AGENT_ID",
+        help="Filter dashboard to a single agent (default: show all agents)",
+    )
+
     # --- graph ---
     gph = sub.add_parser("graph", help="Query knowledge_edges graph (related nodes, causal chains, stats)")
     gph_sub = gph.add_subparsers(dest="graph_cmd")
@@ -13005,6 +13095,16 @@ def build_parser():
     out_rep.add_argument("--json", action="store_true")
     out_rep.add_argument("--save", action="store_true", help="Persist calibration snapshot to memory_outcome_calibration")
 
+    # --- monitor ---
+    mon_p = sub.add_parser("monitor", help="Stream new events, memories, and affect changes in real-time")
+    mon_p.add_argument("--agent", "-a", default=None, dest="agent", help="Filter to a specific agent ID")
+    mon_p.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
+                       help="Poll interval in seconds (default: 2.0)")
+    mon_p.add_argument("--tail", type=int, default=20, metavar="N",
+                       help="Number of recent items to show on startup (default: 20)")
+    mon_p.add_argument("--types", metavar="TYPE1,TYPE2",
+                       help="Comma-separated event_types to filter (applies to events only)")
+
     # --- config ---
     p_config = sub.add_parser("config", help="Manage brainctl configuration")
     config_sub = p_config.add_subparsers(dest="config_cmd")
@@ -13017,6 +13117,16 @@ def build_parser():
     p_migrate.add_argument("--status", action="store_true", help="Show migration status without applying")
     p_migrate.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing")
     p_migrate.add_argument("--path", help="Path to brain.db (default: from env/config)")
+
+    # --- merge ---
+    p_merge = sub.add_parser("merge", help="Merge two brain.db files — combine offline work or sync from backup")
+    p_merge.add_argument("source", help="Path to source brain.db (merged INTO target)")
+    p_merge.add_argument("--target", default=None, metavar="PATH",
+                         help="Path to target brain.db (default: $BRAIN_DB)")
+    p_merge.add_argument("--dry-run", action="store_true", dest="dry_run",
+                         help="Preview what would be merged without making changes")
+    p_merge.add_argument("--tables", default=None, metavar="TABLE1,TABLE2",
+                         help="Only merge specific tables (comma-separated)")
 
     return p
 
@@ -13126,6 +13236,197 @@ def cmd_migrate(args):
 
 
 # ---------------------------------------------------------------------------
+# Merge command
+# ---------------------------------------------------------------------------
+
+def cmd_merge(args):
+    """Merge source brain.db into target brain.db."""
+    from agentmemory.merge import merge as do_merge
+
+    source = args.source
+    target = str(getattr(args, 'target', None) or DB_PATH)
+    dry_run = getattr(args, 'dry_run', False)
+    tables_raw = getattr(args, 'tables', None)
+    table_list = [t.strip() for t in tables_raw.split(",") if t.strip()] if tables_raw else None
+
+    result = do_merge(
+        source_path=source,
+        target_path=target,
+        dry_run=dry_run,
+        tables=table_list,
+    )
+    json_out(result)
+
+
+# ---------------------------------------------------------------------------
+# Monitor command
+# ---------------------------------------------------------------------------
+
+def cmd_monitor(args):
+    """Stream new events, memories, and affect changes in real-time."""
+    db = get_db()
+    interval = getattr(args, "interval", 2.0) or 2.0
+    tail_n = getattr(args, "tail", 20) or 20
+    agent_filter = getattr(args, "agent", None)
+    types_filter = getattr(args, "types", None)
+
+    # Parse --types filter
+    type_set = None
+    if types_filter:
+        type_set = {t.strip() for t in types_filter.split(",") if t.strip()}
+
+    # ANSI colors
+    use_color = sys.stdout.isatty()
+    _C = {
+        "EVENT":  "\033[96m",   # cyan
+        "MEM":    "\033[92m",   # green
+        "AFFECT": "\033[93m",   # yellow
+        "RESET":  "\033[0m",
+        "DIM":    "\033[2m",
+    }
+    def _col(key, text):
+        if not use_color:
+            return text
+        return f"{_C[key]}{text}{_C['RESET']}"
+
+    def _print_line(prefix, event_type, agent_id, content, ts):
+        ts_str = (ts or "")[:19]
+        label = _col(prefix, f"[{prefix}/{event_type}]")
+        dim_agent = _col("DIM", agent_id) if use_color else agent_id
+        snippet = (content or "").replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+        print(f"{ts_str} {label} {dim_agent}: \"{snippet}\"", flush=True)
+
+    # Check if affect_log table exists
+    has_affect = bool(db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='affect_log'"
+    ).fetchone())
+
+    # ---- Tail: show last N items on startup ----
+    # Events tail
+    ev_sql = "SELECT id, agent_id, event_type, summary, created_at FROM events WHERE 1=1"
+    ev_params = []
+    if agent_filter:
+        ev_sql += " AND agent_id = ?"
+        ev_params.append(agent_filter)
+    if type_set:
+        placeholders = ",".join("?" * len(type_set))
+        ev_sql += f" AND event_type IN ({placeholders})"
+        ev_params.extend(sorted(type_set))
+    ev_sql += " ORDER BY id DESC LIMIT ?"
+    ev_params.append(tail_n)
+    tail_events = list(reversed(db.execute(ev_sql, ev_params).fetchall()))
+
+    # Memories tail
+    mem_sql = "SELECT id, agent_id, category, content, created_at FROM memories WHERE retired_at IS NULL"
+    mem_params = []
+    if agent_filter:
+        mem_sql += " AND agent_id = ?"
+        mem_params.append(agent_filter)
+    mem_sql += " ORDER BY id DESC LIMIT ?"
+    mem_params.append(tail_n)
+    tail_mems = list(reversed(db.execute(mem_sql, mem_params).fetchall()))
+
+    # Affect tail
+    tail_affect = []
+    if has_affect:
+        aff_sql = "SELECT id, agent_id, affect_label, functional_state, created_at FROM affect_log WHERE 1=1"
+        aff_params = []
+        if agent_filter:
+            aff_sql += " AND agent_id = ?"
+            aff_params.append(agent_filter)
+        aff_sql += " ORDER BY id DESC LIMIT ?"
+        aff_params.append(tail_n)
+        tail_affect = [dict(r) for r in reversed(db.execute(aff_sql, aff_params).fetchall())]
+
+    # Print tail items interleaved by timestamp
+    tail_items = []
+    for r in tail_events:
+        tail_items.append(("EVENT", r["event_type"] or "event", r["agent_id"], r["summary"], r["created_at"], r["id"]))
+    for r in tail_mems:
+        tail_items.append(("MEM", r["category"] or "memory", r["agent_id"], r["content"], r["created_at"], r["id"]))
+    for r in tail_affect:
+        content = r.get("functional_state") or r.get("affect_label") or "affect"
+        tail_items.append(("AFFECT", r.get("affect_label") or "affect", r["agent_id"], content, r["created_at"], r["id"]))
+
+    tail_items.sort(key=lambda x: (x[4] or ""))
+    for prefix, ev_type, agent_id, content, ts, _ in tail_items:
+        _print_line(prefix, ev_type, agent_id, content, ts)
+
+    # Track high-water marks
+    row = db.execute("SELECT MAX(id) FROM events").fetchone()
+    last_event_id = row[0] if row and row[0] is not None else 0
+
+    row = db.execute("SELECT MAX(id) FROM memories").fetchone()
+    last_mem_id = row[0] if row and row[0] is not None else 0
+
+    last_affect_id = 0
+    if has_affect:
+        row = db.execute("SELECT MAX(id) FROM affect_log").fetchone()
+        last_affect_id = row[0] if row and row[0] is not None else 0
+
+    # ---- Poll loop ----
+    try:
+        while True:
+            time.sleep(interval)
+
+            # New events
+            ev_sql = (
+                "SELECT id, agent_id, event_type, summary, created_at FROM events "
+                "WHERE id > ?"
+            )
+            ev_params = [last_event_id]
+            if agent_filter:
+                ev_sql += " AND agent_id = ?"
+                ev_params.append(agent_filter)
+            if type_set:
+                placeholders = ",".join("?" * len(type_set))
+                ev_sql += f" AND event_type IN ({placeholders})"
+                ev_params.extend(sorted(type_set))
+            ev_sql += " ORDER BY id ASC"
+            new_events = db.execute(ev_sql, ev_params).fetchall()
+            for r in new_events:
+                _print_line("EVENT", r["event_type"] or "event", r["agent_id"], r["summary"], r["created_at"])
+                last_event_id = max(last_event_id, r["id"])
+
+            # New memories
+            mem_sql = (
+                "SELECT id, agent_id, category, content, created_at FROM memories "
+                "WHERE id > ? AND retired_at IS NULL"
+            )
+            mem_params = [last_mem_id]
+            if agent_filter:
+                mem_sql += " AND agent_id = ?"
+                mem_params.append(agent_filter)
+            mem_sql += " ORDER BY id ASC"
+            new_mems = db.execute(mem_sql, mem_params).fetchall()
+            for r in new_mems:
+                _print_line("MEM", r["category"] or "memory", r["agent_id"], r["content"], r["created_at"])
+                last_mem_id = max(last_mem_id, r["id"])
+
+            # New affect
+            if has_affect:
+                aff_sql = (
+                    "SELECT id, agent_id, affect_label, functional_state, created_at FROM affect_log "
+                    "WHERE id > ?"
+                )
+                aff_params = [last_affect_id]
+                if agent_filter:
+                    aff_sql += " AND agent_id = ?"
+                    aff_params.append(agent_filter)
+                aff_sql += " ORDER BY id ASC"
+                new_affect = [dict(r) for r in db.execute(aff_sql, aff_params).fetchall()]
+                for r in new_affect:
+                    content = r.get("functional_state") or r.get("affect_label") or "affect"
+                    _print_line("AFFECT", r.get("affect_label") or "affect", r["agent_id"], content, r["created_at"])
+                    last_affect_id = max(last_affect_id, r["id"])
+
+    except KeyboardInterrupt:
+        print("\n[monitor] stopped.", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -13166,6 +13467,7 @@ def main():
         "vsearch": cmd_vsearch,
         "graph": cmd_graph,
         "health": cmd_health,
+        "dashboard": cmd_dashboard,
         "neurostate": cmd_neurostate,
         "ui": None,  # handled below
     }
@@ -13437,10 +13739,15 @@ def main():
         fn = dispatch.get(world_cmd)
         if fn is None:
             fn = cmd_world_status  # default subcommand
+    elif args.command == "monitor":
+        fn = cmd_monitor
     elif args.command == "config":
         fn = cmd_config
     elif args.command == "migrate":
         cmd_migrate(args)
+        return
+    elif args.command == "merge":
+        cmd_merge(args)
         return
     else:
         fn = dispatch.get(args.command)

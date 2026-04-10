@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (134)
+## Available Tools (159)
 
 | Tool | Description |
 |------|-------------|
