@@ -290,6 +290,35 @@ brainctl stats                     # database overview
 brainctl cost                      # token usage dashboard
 ```
 
+## Obsidian Integration
+
+Bidirectional sync between brain.db and an [Obsidian](https://obsidian.md) vault.
+Follows the Karpathy LLM-wiki pattern: brain.db is the source of truth, Obsidian is the
+navigable wiki layer, YAML frontmatter is the schema layer for round-tripping.
+
+```bash
+# Export brain to vault (memories → md, entities → md with wikilinks, events → daily notes)
+brainctl obsidian export ~/Documents/MyVault
+
+# Check drift between brain.db and vault
+brainctl obsidian status ~/Documents/MyVault
+
+# Import new notes you wrote in Obsidian (no brainctl_id → ingested through W(m) gate)
+brainctl obsidian import ~/Documents/MyVault
+
+# Watch vault for new/modified notes and auto-ingest
+pip install watchdog
+brainctl obsidian watch ~/Documents/MyVault
+```
+
+Vault layout under `<vault>/brainctl/`:
+- `memories/<id>-<slug>.md` — one file per active memory with frontmatter
+- `entities/<name>.md` — one file per entity, observations listed, `[[wikilinks]]` ready
+- `events/YYYY-MM-DD.md` — daily note grouping all events for that date
+
+Export is idempotent (skips existing files unless `--force`). Import skips any file that
+already has a `brainctl_id:` frontmatter field (i.e. files we exported).
+
 ## Vector Search (Optional)
 
 brainctl works without embeddings. For semantic similarity search:
