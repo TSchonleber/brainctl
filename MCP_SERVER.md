@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (171)
+## Available Tools (176)
 
 | Tool | Description |
 |------|-------------|
@@ -76,6 +76,11 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `affect_log` | Classify affect and store in affect_log |
 | `affect_check` | Check current affect state for an agent |
 | `affect_monitor` | Fleet-wide affect scan across all agents |
+| `replay_boost` | Manually boost a memory's replay_priority for consolidation scheduling |
+| `replay_queue` | List top consolidation candidates sorted by replay_priority |
+| `reconsolidation_check` | Check if a memory is in its lability window (opened by high-PE retrieval) |
+| `reconsolidate` | Merge new content into a labile memory (agent-scoped write window) |
+| `consolidation_stats` | Replay queue depth, labile count, ripple event totals |
 
 ## Environment Variables
 

@@ -740,14 +740,47 @@ def tool_vsearch(
         db_main = _db()
         try:
             _log_access(db_main, agent or "unknown", "vsearch", query=query, result_count=total)
-            # Update recalled_count for every surfaced memory
+            now_sql = _now()
             for r in results.get("memories", []):
+                score = r.get("score", 0.0)
+                distance = r.get("distance", 0.0)
+                mem_confidence = r.get("confidence", 1.0) or 1.0
+                recalled = r.get("recalled_count", 0) or 0
+
+                # Replay priority: salience-weighted accumulation (SWR tagging model)
+                # Higher score × confidence = stronger replay tagging
+                salience = score * mem_confidence
+                replay_delta = round(salience * 0.1, 4)
+                is_high_salience = salience > 0.8
+
+                # Reconsolidation window: open when prediction error (distance) is high
+                # — the retrieved context diverges from what the memory expected to match
+                open_lability = (distance > 0.35 and recalled > 0)
+                lability_sql = (
+                    ", labile_until = strftime('%Y-%m-%dT%H:%M:%S', datetime('now', '+20 minutes'))"
+                    ", labile_agent_id = ?"
+                    ", retrieval_prediction_error = ?"
+                ) if open_lability else ""
+
+                params: list = []
+                if open_lability:
+                    params = [replay_delta, int(is_high_salience), r["id"],
+                              agent or "unknown", round(distance, 4)]
+                else:
+                    params = [replay_delta, int(is_high_salience), r["id"]]
+
                 db_main.execute(
-                    "UPDATE memories SET recalled_count = recalled_count + 1, "
-                    "last_recalled_at = strftime('%Y-%m-%dT%H:%M:%S', 'now'), "
-                    "confidence = MIN(1.0, confidence + 0.15 * (1.0 - confidence)) "
-                    "WHERE id = ?",
-                    (r["id"],),
+                    f"UPDATE memories SET "
+                    f"recalled_count = recalled_count + 1, "
+                    f"last_recalled_at = ?, "
+                    f"confidence = MIN(1.0, confidence + 0.15 * (1.0 - confidence)), "
+                    f"replay_priority = MIN(10.0, replay_priority + ?), "
+                    f"ripple_tags = ripple_tags + ?"
+                    f"{lability_sql} "
+                    f"WHERE id = ?",
+                    [now_sql, replay_delta, int(is_high_salience)]
+                    + ([agent or "unknown", round(distance, 4)] if open_lability else [])
+                    + [r["id"]],
                 )
             db_main.commit()
         finally:

@@ -31,6 +31,7 @@ def gate_write(
     scope: str,
     db_vec,
     force: bool = False,
+    arousal_gain: float = 1.0,
 ) -> tuple[float, str, dict]:
     """
     Evaluate write worthiness of a candidate memory.
@@ -82,8 +83,11 @@ def gate_write(
     }
     cat_weight = category_weights.get(category, 0.5)
 
-    # Final worthiness score
-    score = novelty * 0.5 + importance * 0.3 + cat_weight * 0.2
+    # Final worthiness score — precision-weighted by arousal (Free Energy Principle:
+    # arousal = global precision gain multiplier; McGaugh 2004 emotional consolidation)
+    base_score = novelty * 0.5 + importance * 0.3 + cat_weight * 0.2
+    gain = max(0.5, min(2.0, arousal_gain))  # clamp to [0.5, 2.0]
+    score = min(1.0, base_score * gain)
 
     components = {
         "novelty": round(novelty, 4),
@@ -91,6 +95,8 @@ def gate_write(
         "neighbor_count": neighbor_count,
         "importance": round(importance, 4),
         "category_weight": round(cat_weight, 4),
+        "arousal_gain": round(gain, 4),
+        "base_score": round(base_score, 4),
         "score": round(score, 4),
     }
 
