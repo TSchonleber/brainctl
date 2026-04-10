@@ -666,9 +666,9 @@ TOOLS: list[Tool] = [
 ]
 
 DISPATCH: dict = {
-    "belief_conflicts_scan": lambda args: tool_belief_conflicts_scan(**args),
-    "belief_merge":          lambda args: tool_belief_merge(**args),
-    "belief_propagate":      lambda args: tool_belief_propagate(**args),
-    "belief_consensus":      lambda args: tool_belief_consensus(**args),
-    "belief_diff":           lambda args: tool_belief_diff(**args),
+    "belief_conflicts_scan": lambda agent_id=None, **kw: tool_belief_conflicts_scan(**kw),
+    "belief_merge":          lambda agent_id=None, **kw: tool_belief_merge(**kw),
+    "belief_propagate":      lambda agent_id=None, **kw: tool_belief_propagate(**kw),
+    "belief_consensus":      lambda agent_id=None, **kw: tool_belief_consensus(**kw),
+    "belief_diff":           lambda agent_id=None, **kw: tool_belief_diff(**kw),
 }

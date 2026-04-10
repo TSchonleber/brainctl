@@ -133,7 +133,7 @@ class TestMemoryPii:
     def test_dispatch_memory_pii(self, isolated_db):
         mid = _insert_memory(isolated_db, recalled_count=3)
         fn = trust_mod.DISPATCH["memory_pii"]
-        result = fn({"memory_id": mid})
+        result = fn(memory_id=mid)
         assert result["ok"] is True
 
 
@@ -176,7 +176,7 @@ class TestMemoryPiiScan:
 
     def test_dispatch_memory_pii_scan(self, isolated_db):
         fn = trust_mod.DISPATCH["memory_pii_scan"]
-        result = fn({"top": 5})
+        result = fn(top=5)
         assert result["ok"] is True
 
 
@@ -215,7 +215,7 @@ class TestMemoryTrustPropagate:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["memory_trust_propagate"]
-        result = fn({})
+        result = fn()
         assert result["ok"] is True
 
 
@@ -266,7 +266,7 @@ class TestMemorySuggestCategory:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["memory_suggest_category"]
-        result = fn({"content": "We chose Python for this project"})
+        result = fn(content="We chose Python for this project")
         assert result["ok"] is True
         assert result["inferred_category"] == "decision"
 
@@ -301,7 +301,7 @@ class TestTrustShow:
     def test_dispatch(self, isolated_db):
         mid = _insert_memory(isolated_db)
         fn = trust_mod.DISPATCH["trust_show"]
-        result = fn({"memory_id": mid})
+        result = fn(memory_id=mid)
         assert result["ok"] is True
         assert "trust_score" in result
 
@@ -340,7 +340,7 @@ class TestTrustAudit:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["trust_audit"]
-        result = fn({"threshold": 0.8})
+        result = fn(threshold=0.8)
         assert result["ok"] is True
 
 
@@ -388,7 +388,7 @@ class TestTrustCalibrate:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["trust_calibrate"]
-        result = fn({"dry_run": True})
+        result = fn(dry_run=True)
         assert result["ok"] is True
         assert result["dry_run"] is True
 
@@ -450,7 +450,7 @@ class TestTrustDecay:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["trust_decay"]
-        result = fn({})
+        result = fn()
         assert result["ok"] is True
 
 
@@ -499,7 +499,7 @@ class TestTrustUpdateContradiction:
         mid_a = _insert_memory(isolated_db, trust_score=0.8, agent_id="agent-d")
         mid_b = _insert_memory(isolated_db, trust_score=0.7, agent_id="agent-d")
         fn = trust_mod.DISPATCH["trust_update_contradiction"]
-        result = fn({"memory_id_a": mid_a, "memory_id_b": mid_b})
+        result = fn(memory_id_a=mid_a, memory_id_b=mid_b)
         assert result["ok"] is True
 
 
@@ -566,7 +566,7 @@ class TestTrustProcessMeb:
 
     def test_dispatch(self, isolated_db):
         fn = trust_mod.DISPATCH["trust_process_meb"]
-        result = fn({"since": 0, "dry_run": True})
+        result = fn(since=0, dry_run=True)
         assert result["ok"] is True
 
 

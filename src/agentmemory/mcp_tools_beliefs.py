@@ -432,10 +432,10 @@ TOOLS: list[Tool] = [
 ]
 
 DISPATCH: dict = {
-    "belief_conflicts": lambda args: tool_belief_conflicts(**args),
-    "collapse_log":     lambda args: tool_collapse_log(**args),
-    "collapse_stats":   lambda args: tool_collapse_stats(**args),
-    "belief_set":       lambda args: tool_belief_set(**args),
-    "belief_get":       lambda args: tool_belief_get(**args),
-    "belief_seed":      lambda args: tool_belief_seed(**args),
+    "belief_conflicts": lambda agent_id=None, **kw: tool_belief_conflicts(**kw),
+    "collapse_log":     lambda agent_id=None, **kw: tool_collapse_log(**kw),
+    "collapse_stats":   lambda agent_id=None, **kw: tool_collapse_stats(**kw),
+    "belief_set":       lambda agent_id=None, **kw: tool_belief_set(**kw),
+    "belief_get":       lambda agent_id=None, **kw: tool_belief_get(**kw),
+    "belief_seed":      lambda agent_id=None, **kw: tool_belief_seed(**kw),
 }

@@ -283,7 +283,7 @@ class TestPush:
         assert "hybrid" in result
 
     def test_dispatch_push(self, brain_with_memories):
-        result = meb_mod.DISPATCH["push"]({"task": "python testing"})
+        result = meb_mod.DISPATCH["push"](task="python testing")
         assert result["ok"] is True
 
 
@@ -337,7 +337,7 @@ class TestPushReport:
             assert "was_useful" in m
 
     def test_dispatch_push_report_invalid(self):
-        result = meb_mod.DISPATCH["push_report"]({"push_id": "nonexistent"})
+        result = meb_mod.DISPATCH["push_report"](push_id="nonexistent")
         assert result["ok"] is False
 
 
@@ -359,12 +359,12 @@ class TestVsearch:
         assert "error" in result
 
     def test_dispatch_vsearch_empty_query(self):
-        result = meb_mod.DISPATCH["vsearch"]({"query": ""})
+        result = meb_mod.DISPATCH["vsearch"](query="")
         assert result["ok"] is False
 
     def test_vec_unavailable_via_dispatch(self, monkeypatch):
         monkeypatch.setattr(meb_mod, "VEC_DYLIB", None)
-        result = meb_mod.DISPATCH["vsearch"]({"query": "hello"})
+        result = meb_mod.DISPATCH["vsearch"](query="hello")
         assert result["ok"] is False
 
     @pytest.mark.skipif(

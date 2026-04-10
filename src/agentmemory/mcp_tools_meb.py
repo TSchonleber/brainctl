@@ -943,32 +943,32 @@ TOOLS: list[Tool] = [
 # ---------------------------------------------------------------------------
 
 DISPATCH: dict = {
-    "meb_tail":    lambda args: tool_meb_tail(
-        n=args.get("n", 20),
-        since=args.get("since"),
-        agent=args.get("agent"),
-        category=args.get("category"),
-        scope=args.get("scope"),
-        include_backfill=args.get("include_backfill", False),
+    "meb_tail":    lambda agent_id=None, **kw: tool_meb_tail(
+        n=kw.get("n", 20),
+        since=kw.get("since"),
+        agent=kw.get("agent"),
+        category=kw.get("category"),
+        scope=kw.get("scope"),
+        include_backfill=kw.get("include_backfill", False),
     ),
-    "meb_stats":   lambda args: tool_meb_stats(),
-    "meb_prune":   lambda args: tool_meb_prune(
-        ttl_hours=args.get("ttl_hours"),
-        max_depth=args.get("max_depth"),
+    "meb_stats":   lambda agent_id=None, **kw: tool_meb_stats(),
+    "meb_prune":   lambda agent_id=None, **kw: tool_meb_prune(
+        ttl_hours=kw.get("ttl_hours"),
+        max_depth=kw.get("max_depth"),
     ),
-    "push":        lambda args: tool_push(
-        task=args["task"],
-        top_k=args.get("top_k", 5),
-        agent=args.get("agent", "unknown"),
-        project=args.get("project"),
+    "push":        lambda agent_id=None, **kw: tool_push(
+        task=kw["task"],
+        top_k=kw.get("top_k", 5),
+        agent=kw.get("agent", "unknown"),
+        project=kw.get("project"),
     ),
-    "push_report": lambda args: tool_push_report(push_id=args["push_id"]),
-    "vsearch":     lambda args: tool_vsearch(
-        query=args["query"],
-        limit=args.get("limit", 10),
-        alpha=args.get("alpha", 0.5),
-        tables=args.get("tables", "memories,events,context"),
-        vec_only=args.get("vec_only", False),
-        agent=args.get("agent", "unknown"),
+    "push_report": lambda agent_id=None, **kw: tool_push_report(push_id=kw["push_id"]),
+    "vsearch":     lambda agent_id=None, **kw: tool_vsearch(
+        query=kw["query"],
+        limit=kw.get("limit", 10),
+        alpha=kw.get("alpha", 0.5),
+        tables=kw.get("tables", "memories,events,context"),
+        vec_only=kw.get("vec_only", False),
+        agent=kw.get("agent", "unknown"),
     ),
 }

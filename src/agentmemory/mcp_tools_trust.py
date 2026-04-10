@@ -867,27 +867,27 @@ TOOLS: list[Tool] = [
 # ---------------------------------------------------------------------------
 
 DISPATCH: dict[str, Any] = {
-    "memory_pii":                 lambda args: tool_memory_pii(
-                                      memory_id=int(args["memory_id"])),
-    "memory_pii_scan":            lambda args: tool_memory_pii_scan(
-                                      top=int(args.get("top", 20))),
-    "memory_trust_propagate":     lambda args: tool_memory_trust_propagate(),
-    "memory_suggest_category":    lambda args: tool_memory_suggest_category(
-                                      content=args["content"]),
-    "trust_show":                 lambda args: tool_trust_show(
-                                      memory_id=int(args["memory_id"])),
-    "trust_audit":                lambda args: tool_trust_audit(
-                                      threshold=float(args.get("threshold", 0.5)),
-                                      limit=int(args.get("limit", 50))),
-    "trust_calibrate":            lambda args: tool_trust_calibrate(
-                                      dry_run=bool(args.get("dry_run", False))),
-    "trust_decay":                lambda args: tool_trust_decay(
-                                      dry_run=bool(args.get("dry_run", False))),
-    "trust_update_contradiction":  lambda args: tool_trust_update_contradiction(
-                                      memory_id_a=int(args["memory_id_a"]),
-                                      memory_id_b=int(args["memory_id_b"]),
-                                      resolved=bool(args.get("resolved", False))),
-    "trust_process_meb":          lambda args: tool_trust_process_meb(
-                                      since=int(args.get("since", 0)),
-                                      dry_run=bool(args.get("dry_run", False))),
+    "memory_pii":                 lambda agent_id=None, **kw: tool_memory_pii(
+                                      memory_id=int(kw["memory_id"])),
+    "memory_pii_scan":            lambda agent_id=None, **kw: tool_memory_pii_scan(
+                                      top=int(kw.get("top", 20))),
+    "memory_trust_propagate":     lambda agent_id=None, **kw: tool_memory_trust_propagate(),
+    "memory_suggest_category":    lambda agent_id=None, **kw: tool_memory_suggest_category(
+                                      content=kw["content"]),
+    "trust_show":                 lambda agent_id=None, **kw: tool_trust_show(
+                                      memory_id=int(kw["memory_id"])),
+    "trust_audit":                lambda agent_id=None, **kw: tool_trust_audit(
+                                      threshold=float(kw.get("threshold", 0.5)),
+                                      limit=int(kw.get("limit", 50))),
+    "trust_calibrate":            lambda agent_id=None, **kw: tool_trust_calibrate(
+                                      dry_run=bool(kw.get("dry_run", False))),
+    "trust_decay":                lambda agent_id=None, **kw: tool_trust_decay(
+                                      dry_run=bool(kw.get("dry_run", False))),
+    "trust_update_contradiction":  lambda agent_id=None, **kw: tool_trust_update_contradiction(
+                                      memory_id_a=int(kw["memory_id_a"]),
+                                      memory_id_b=int(kw["memory_id_b"]),
+                                      resolved=bool(kw.get("resolved", False))),
+    "trust_process_meb":          lambda agent_id=None, **kw: tool_trust_process_meb(
+                                      since=int(kw.get("since", 0)),
+                                      dry_run=bool(kw.get("dry_run", False))),
 }

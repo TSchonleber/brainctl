@@ -268,7 +268,7 @@ class TestVsearchHappyPath:
         with patch.object(meb_mod, "_embed_query_safe", return_value=embedding):
             with patch.object(meb_mod, "_get_vec_db", return_value=vec_conn):
                 result = meb_mod.DISPATCH["vsearch"](
-                    {"query": "pytest", "tables": "memories"}
+                    query="pytest", tables="memories"
                 )
 
         assert result["ok"] is True
