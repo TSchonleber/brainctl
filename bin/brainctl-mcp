@@ -471,11 +471,22 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             "alpha_floor": alpha_floor,
         }
 
+    # D-MEM RPE three-tier routing (issue #31)
+    # score < 0.3 → SKIP (already rejected above)
+    # 0.3 ≤ score < 0.7 → CONSTRUCT_ONLY (no embed/FTS)
+    # score ≥ 0.7 or None → FULL_EVOLUTION (embed + FTS)
+    if worthiness_score is not None and not force and worthiness_score < 0.7:
+        write_tier = "construct"
+        do_index = 0
+    else:
+        write_tier = "full"
+        do_index = 1
+
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha, trust_score) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, trust_score, write_tier, indexed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor), source_trust)
+         supersedes_id, float(alpha_floor), source_trust, write_tier, do_index)
     )
     mid = cur.lastrowid
 
@@ -487,25 +498,27 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             pass
 
     log_access(db, agent_id, "write", "memories", mid)
-    # Embed on write — reuse blob computed above for the gate
+    # Embed on write — only for FULL_EVOLUTION tier
     embedded = False
-    try:
-        if not blob:
-            blob = _embed_safe(content)
-        if blob:
-            vdb = _get_vec_db()
-            if vdb:
-                vdb.execute("INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?,?)", (mid, blob))
-                vdb.execute(
-                    "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
-                    ("memories", mid, EMBED_MODEL, 768, blob)
-                )
-                vdb.commit(); vdb.close()
-                embedded = True
-    except Exception:
-        pass
+    if do_index:
+        try:
+            if not blob:
+                blob = _embed_safe(content)
+            if blob:
+                vdb = _get_vec_db()
+                if vdb:
+                    vdb.execute("INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?,?)", (mid, blob))
+                    vdb.execute(
+                        "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
+                        ("memories", mid, EMBED_MODEL, 768, blob)
+                    )
+                    vdb.commit(); vdb.close()
+                    embedded = True
+        except Exception:
+            pass
     db.commit(); db.close()
     result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score,
+              "write_tier": write_tier,
               "surprise_score": surprise, "surprise_method": surprise_method,
               "source": source, "trust_score": source_trust}
     if _valence_scale != 1.0:
@@ -1963,6 +1976,23 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="memory_promote",
+        description="Promote a CONSTRUCT_ONLY memory to FULL_EVOLUTION: embed + FTS index. Sets write_tier='full', indexed=1. Idempotent.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "integer", "description": "ID of memory to promote"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="tier_stats",
+        description="Show write-tier distribution (full/construct) for an agent, including unindexed CONSTRUCT_ONLY count.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2734,6 +2764,89 @@ def tool_demand_forecast(agent_id="mcp-client", include_fulfilled=False, limit=2
 
 
 # ---------------------------------------------------------------------------
+# D-MEM promotion tools (issue #31)
+# ---------------------------------------------------------------------------
+
+def tool_memory_promote(agent_id="mcp-client", memory_id=None, dry_run=False, **kw):
+    """Promote a CONSTRUCT_ONLY memory to FULL_EVOLUTION (embed + FTS index)."""
+    if not memory_id:
+        return {"ok": False, "error": "memory_id is required"}
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, content, write_tier, indexed FROM memories WHERE id = ? AND agent_id = ?",
+            (memory_id, agent_id),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": f"Memory {memory_id} not found for agent {agent_id}"}
+        if row["write_tier"] == "full" and row["indexed"] == 1:
+            return {"ok": True, "memory_id": memory_id, "already_full": True}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "memory_id": memory_id,
+                    "write_tier": row["write_tier"], "indexed": row["indexed"]}
+        content = row["content"]
+        blob = _embed_safe(content)
+        embedded = False
+        if blob:
+            vdb = _get_vec_db()
+            if vdb:
+                try:
+                    vdb.execute("INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?,?)", (memory_id, blob))
+                    vdb.execute(
+                        "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) "
+                        "VALUES (?,?,?,?,?)",
+                        ("memories", memory_id, EMBED_MODEL, 768, blob),
+                    )
+                    vdb.commit()
+                    embedded = True
+                finally:
+                    vdb.close()
+        # Promotion: triggers memories_fts_update_insert via indexed 0→1
+        db.execute(
+            "UPDATE memories SET write_tier = 'full', indexed = 1, promoted_at = ? WHERE id = ?",
+            (_now_ts(), memory_id),
+        )
+        db.commit()
+        try:
+            db.execute(
+                "INSERT INTO events (agent_id, event_type, summary, created_at) VALUES (?, 'memory_promoted', ?, ?)",
+                (agent_id, f"Promoted memory {memory_id} to FULL_EVOLUTION", _now_ts()),
+            )
+            db.commit()
+        except Exception:
+            pass
+        return {"ok": True, "memory_id": memory_id, "promoted": True, "embedded": embedded}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_tier_stats(agent_id="mcp-client", **kw):
+    """Show write-tier distribution for an agent."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT write_tier, COUNT(*) as cnt FROM memories WHERE agent_id = ? AND retired_at IS NULL "
+            "GROUP BY write_tier",
+            (agent_id,),
+        ).fetchall()
+        if not rows:
+            return {"ok": True, "agent_id": agent_id, "total": 0, "tiers": {}}
+        total = sum(r["cnt"] for r in rows)
+        tiers = {r["write_tier"]: {"count": r["cnt"], "pct": round(100.0 * r["cnt"] / total, 1)} for r in rows}
+        unindexed = db.execute(
+            "SELECT COUNT(*) as cnt FROM memories WHERE agent_id = ? AND indexed = 0 AND retired_at IS NULL",
+            (agent_id,),
+        ).fetchone()["cnt"]
+        return {"ok": True, "agent_id": agent_id, "total": total, "tiers": tiers, "unindexed_count": unindexed}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
 
@@ -2787,6 +2900,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "consolidation_schedule": tool_consolidation_schedule,
         "allostatic_prime": tool_allostatic_prime,
         "demand_forecast": tool_demand_forecast,
+        "memory_promote": tool_memory_promote,
+        "tier_stats": tool_tier_stats,
     }
 
     fn = dispatch.get(name)
