@@ -1105,6 +1105,8 @@ def cmd_memory_add(args):
                         db_vec=db_vec_gate,
                         force=False,
                         arousal_gain=_arousal_boost,
+                        db_stats=db,
+                        agent_id=args.agent,
                     )
                 finally:
                     db_vec_gate.close()
@@ -1243,15 +1245,27 @@ def cmd_memory_add(args):
         except Exception as exc:
             logger.debug("Cap check failed (non-fatal): %s", exc)
 
+    # D-MEM RPE three-tier routing (issue #31)
+    # score < 0.3 → SKIP (already rejected above)
+    # 0.3 ≤ score < 0.7 → CONSTRUCT_ONLY (no embed/FTS)
+    # score ≥ 0.7 or None → FULL_EVOLUTION (embed + FTS)
+    if worthiness_score is not None and not force_write and worthiness_score < 0.7:
+        write_tier = "construct"
+        do_index = 0
+    else:
+        write_tier = "full"
+        do_index = 1
+
     file_path = getattr(args, "file_path", None)
     file_line = getattr(args, "file_line", None)
     cursor = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, source_event_id, "
-        "memory_type, supersedes_id, alpha, file_path, file_line, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "memory_type, supersedes_id, alpha, file_path, file_line, write_tier, indexed, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (args.agent, args.category, args.scope or "global", args.content,
          effective_confidence, tags_json, args.source_event, memory_type,
-         supersedes_id, float(alpha_floor), file_path, file_line, _now_ts(), _now_ts())
+         supersedes_id, float(alpha_floor), file_path, file_line,
+         write_tier, do_index, _now_ts(), _now_ts())
     )
     memory_id = cursor.lastrowid
 
@@ -1342,34 +1356,36 @@ def cmd_memory_add(args):
         except Exception:
             pass  # non-fatal
 
-    # Sync embedding on write — keep vec_memories in lock-step
+    # Sync embedding on write — only for FULL_EVOLUTION tier (indexed=1)
     # blob was already computed above for the gate; reuse it here.
     embedded = False
-    try:
-        if not blob:
-            blob = _embed_query_safe(args.content)
-        if blob:
-            db_vec = _try_get_db_with_vec()
-            if db_vec:
-                db_vec.execute(
-                    "INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?, ?)",
-                    (memory_id, blob)
-                )
-                db_vec.execute(
-                    "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
-                    ("memories", memory_id, EMBED_MODEL, EMBED_DIMENSIONS, blob)
-                )
-                db_vec.commit()
-                db_vec.close()
-                embedded = True
-    except Exception:
-        pass  # non-fatal: backfill cron handles coverage gaps
+    if do_index:
+        try:
+            if not blob:
+                blob = _embed_query_safe(args.content)
+            if blob:
+                db_vec = _try_get_db_with_vec()
+                if db_vec:
+                    db_vec.execute(
+                        "INSERT OR REPLACE INTO vec_memories(rowid, embedding) VALUES (?, ?)",
+                        (memory_id, blob)
+                    )
+                    db_vec.execute(
+                        "INSERT OR IGNORE INTO embeddings (source_table, source_id, model, dimensions, vector) VALUES (?,?,?,?,?)",
+                        ("memories", memory_id, EMBED_MODEL, EMBED_DIMENSIONS, blob)
+                    )
+                    db_vec.commit()
+                    db_vec.close()
+                    embedded = True
+        except Exception:
+            pass  # non-fatal: backfill cron handles coverage gaps
 
     out = {
         "ok": True,
         "memory_id": memory_id,
         "reflexion": getattr(args, "reflexion", False),
         "embedded": embedded,
+        "write_tier": write_tier,
         "effective_confidence": effective_confidence,
         "source_weight": round(source_weight_applied, 4),
         "conflict_logged": conflict_logged,

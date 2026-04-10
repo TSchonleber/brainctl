@@ -108,16 +108,43 @@ def gate_write(
         scope_weight = 0.75
 
     # Historical recall rate from memory_stats (if DB available)
+    # Falls back to computing from live data and caching the result.
     recall_rate = 0.50
     if db_stats is not None and agent_id:
         try:
             row = db_stats.execute(
-                "SELECT avg_recall_rate FROM memory_stats "
+                "SELECT avg_recall_rate, sample_count FROM memory_stats "
                 "WHERE agent_id = ? AND category = ? AND scope = ?",
                 (agent_id, category, scope or "global"),
             ).fetchone()
             if row:
-                recall_rate = row[0] if isinstance(row, tuple) else row["avg_recall_rate"]
+                rr = row[0] if isinstance(row, tuple) else row["avg_recall_rate"]
+                recall_rate = rr if rr is not None else 0.50
+            else:
+                # No cached stats — compute from live data and seed the cache
+                live = db_stats.execute(
+                    "SELECT COUNT(*) as cnt, "
+                    "AVG(CASE WHEN recalled_count > 0 THEN 1.0 ELSE 0.0 END) as rate "
+                    "FROM memories WHERE agent_id = ? AND category = ? "
+                    "AND scope = ? AND retired_at IS NULL",
+                    (agent_id, category, scope or "global"),
+                ).fetchone()
+                if live:
+                    cnt = live[0] if isinstance(live, tuple) else live["cnt"]
+                    rate = live[1] if isinstance(live, tuple) else live["rate"]
+                    if cnt and cnt > 0 and rate is not None:
+                        recall_rate = rate
+                        try:
+                            db_stats.execute(
+                                "INSERT OR REPLACE INTO memory_stats "
+                                "(agent_id, category, scope, avg_recall_rate, sample_count) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                (agent_id, category, scope or "global",
+                                 round(recall_rate, 4), cnt),
+                            )
+                            db_stats.commit()
+                        except Exception:
+                            pass  # table may not exist yet
         except Exception:
             pass
 
