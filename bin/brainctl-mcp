@@ -522,7 +522,9 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
                        scope: str = None, limit: int = 20,
                        memory_type: str = None,
                        pagerank_boost: float = 0.0,
-                       borrow_from: str = None) -> dict:
+                       borrow_from: str = None,
+                       multi_pass: bool = False,
+                       temporal_expand_hours: int = 0) -> dict:
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     db = get_db()
@@ -599,6 +601,69 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
         results.sort(key=lambda r: -r.get("_sr_score", 0.0))
         for r in results:
             r.pop("_sr_score", None)
+
+    # Multi-pass SDM-style convergence retrieval (issue #36)
+    if multi_pass and results:
+        try:
+            seen_ids = {r["id"] for r in results}
+            extra_terms = []
+            _stop = {"the", "a", "an", "is", "are", "was", "were", "in",
+                     "of", "to", "and", "or", "for", "with", "on", "at"}
+            for r in results[:3]:
+                words = r.get("content", "").lower().split()
+                extra_terms.extend(w for w in words if len(w) > 4 and w not in _stop)
+            if extra_terms:
+                combined_query = query + " " + " ".join(extra_terms[:10])
+                fts_q2 = _safe_fts(combined_query)
+                if fts_q2:
+                    params2 = [fts_q2] + [p for p in params[1:] if p != limit]
+                    params2.append(limit)
+                    rows2 = db.execute(
+                        f"SELECT m.* FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
+                        f"WHERE memories_fts MATCH ? AND {where} ORDER BY rank LIMIT ?", params2
+                    ).fetchall()
+                    pass2 = rows_to_list(rows2)
+                    pass1_ids = {r["id"] for r in results}
+                    for r in pass2:
+                        if r["id"] not in seen_ids:
+                            results.append(r)
+                            seen_ids.add(r["id"])
+                    pass2_ids = {r["id"] for r in pass2}
+                    both = pass1_ids & pass2_ids
+                    results.sort(key=lambda r: (0 if r["id"] in both else 1))
+        except Exception:
+            pass
+
+    # Temporal neighborhood expansion (issue #35)
+    if temporal_expand_hours > 0 and results:
+        try:
+            from datetime import timedelta as _th
+            seen_ids = {r["id"] for r in results}
+            neighbors = []
+            for r in results[:5]:
+                created = r.get("created_at")
+                if not created:
+                    continue
+                try:
+                    base_dt = datetime.fromisoformat(created)
+                except Exception:
+                    continue
+                lo = (base_dt - _th(hours=temporal_expand_hours)).strftime("%Y-%m-%dT%H:%M:%S")
+                hi = (base_dt + _th(hours=temporal_expand_hours)).strftime("%Y-%m-%dT%H:%M:%S")
+                nb_rows = db.execute(
+                    "SELECT * FROM memories WHERE retired_at IS NULL "
+                    "AND created_at BETWEEN ? AND ? "
+                    "AND id NOT IN ({}) LIMIT 5".format(",".join("?" * len(seen_ids))),
+                    [lo, hi] + list(seen_ids),
+                ).fetchall()
+                for nb in rows_to_list(nb_rows):
+                    if nb["id"] not in seen_ids:
+                        nb["_temporal_neighbor"] = True
+                        neighbors.append(nb)
+                        seen_ids.add(nb["id"])
+            results = results + neighbors
+        except Exception:
+            pass
 
     if borrow_from:
         log_access(db, agent_id, "borrow", "memories", query=f"{query} [from:{borrow_from}]", result_count=len(results))
@@ -945,7 +1010,7 @@ def tool_decision_add(agent_id: str, title: str, rationale: str, project: str = 
     return {"ok": True, "decision_id": did}
 
 
-def tool_search(agent_id: str, query: str, limit: int = 20) -> dict:
+def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False) -> dict:
     """Cross-table search: memories + events + entities. Intent-aware routing."""
     db = get_db()
     fts_q = _safe_fts(query)
@@ -1017,6 +1082,63 @@ def tool_search(agent_id: str, query: str, limit: int = 20) -> dict:
             (fts_q, limit)
         ).fetchall())
         results.extend(entities)
+
+    # Vector search path (issue #19)
+    if vector:
+        try:
+            sys.path.insert(0, str(Path.home() / "agentmemory" / "src"))
+            from agentmemory.vec import embed_text as _embed_text
+            blob = _embed_text(query)
+            if blob:
+                db_vec = _get_vec_db()
+                if db_vec:
+                    try:
+                        vmem_rows = db_vec.execute(
+                            "SELECT rowid, distance FROM vec_memories WHERE embedding MATCH ? AND k=?",
+                            (blob, limit)
+                        ).fetchall()
+                        for vr in vmem_rows:
+                            mid = vr[0] if isinstance(vr, tuple) else vr["rowid"]
+                            dist = vr[1] if isinstance(vr, tuple) else vr["distance"]
+                            mr = db.execute(
+                                "SELECT id, 'memory' as type, content as text, category, confidence, created_at "
+                                "FROM memories WHERE id = ? AND retired_at IS NULL", (mid,)
+                            ).fetchone()
+                            if mr:
+                                row = dict(mr)
+                                row["_vscore"] = round(1.0 - float(dist), 4)
+                                row["source_type"] = "memory"
+                                results.append(row)
+                        vent_rows = db_vec.execute(
+                            "SELECT rowid, distance FROM vec_entities WHERE embedding MATCH ? AND k=?",
+                            (blob, limit)
+                        ).fetchall()
+                        for vr in vent_rows:
+                            eid = vr[0] if isinstance(vr, tuple) else vr["rowid"]
+                            dist = vr[1] if isinstance(vr, tuple) else vr["distance"]
+                            er = db.execute(
+                                "SELECT id, 'entity' as type, name as text, entity_type as category, confidence, created_at "
+                                "FROM entities WHERE id = ? AND retired_at IS NULL", (eid,)
+                            ).fetchone()
+                            if er:
+                                row = dict(er)
+                                row["_vscore"] = round(1.0 - float(dist), 4)
+                                row["source_type"] = "entity"
+                                results.append(row)
+                    finally:
+                        db_vec.close()
+                    seen = set()
+                    deduped = []
+                    for r in results:
+                        key = (r.get("type", ""), r.get("id", ""))
+                        if key not in seen:
+                            seen.add(key)
+                            deduped.append(r)
+                    results = sorted(deduped, key=lambda r: -r.get("_vscore", 0.0))
+                    for r in results:
+                        r.pop("_vscore", None)
+        except Exception:
+            pass
 
     log_access(db, agent_id, "search", query=query, result_count=len(results))
     db.commit(); db.close()
@@ -1324,7 +1446,7 @@ TOOLS = [
     ),
     Tool(
         name="memory_search",
-        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling). Set memory_type to filter to one CLS store; unset applies a 1.1x semantic confidence bonus. Set pagerank_boost > 0 for SR-style retrieval (Millidge 2025: PageRank == Successor Representation).",
+        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling). Set memory_type to filter to one CLS store; unset applies a 1.1x semantic confidence bonus. Set pagerank_boost > 0 for SR-style retrieval (Millidge 2025: PageRank == Successor Representation). Set multi_pass=true for SDM-style iterative convergence (uses pass-1 results to enrich pass-2 query). Set temporal_expand_hours > 0 for TCM temporal contiguity (neighbors within ±N hours are added).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1335,6 +1457,8 @@ TOOLS = [
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
                 "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
                 "borrow_from": {"type": "string", "description": "Agent ID to borrow from. When set, searches only that agent's scope='global' memories and logs the cross-agent access in access_log."},
+                "multi_pass": {"type": "boolean", "default": False, "description": "SDM-style iterative convergence: use pass-1 results to build a richer pass-2 query; merge and deduplicate both passes."},
+                "temporal_expand_hours": {"type": "integer", "default": 0, "description": "TCM temporal contiguity: after retrieval, add memories created within ±N hours of each result."},
             },
             "required": ["query"],
         },
@@ -1484,12 +1608,13 @@ TOOLS = [
     ),
     Tool(
         name="search",
-        description="Cross-table search across memories, events, and entities simultaneously. Best for broad queries.",
+        description="Cross-table search across memories, events, and entities simultaneously. Best for broad queries. Set vector=true to run vector similarity across vec_memories and vec_entities, ranked by cosine score.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "limit": {"type": "integer", "default": 20},
+                "vector": {"type": "boolean", "default": False, "description": "When true, run vector similarity search across vec_memories and vec_entities, ranked by cosine score."},
             },
             "required": ["query"],
         },
