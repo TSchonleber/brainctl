@@ -1548,3 +1548,32 @@ CREATE INDEX idx_affect_safety ON affect_log(safety_flag) WHERE safety_flag IS N
 
 CREATE INDEX idx_affect_cluster ON affect_log(cluster, created_at DESC);
 
+-- -------------------------------------------------------------------------
+-- LLM usage tracking
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS llm_usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    tool_name TEXT,          -- which MCP tool triggered the call (if applicable)
+    project TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_agent_created ON llm_usage_log(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created_at);
+
+-- Per-agent budget limits
+CREATE TABLE IF NOT EXISTS agent_budget (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+    monthly_limit_usd REAL NOT NULL DEFAULT 10.0,
+    alert_threshold REAL NOT NULL DEFAULT 0.8,   -- fraction of limit that triggers alert
+    hard_limit REAL NOT NULL DEFAULT 1.0,         -- fraction at which calls are blocked
+    reset_day INTEGER NOT NULL DEFAULT 1,         -- day of month budgets reset
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+

@@ -53,6 +53,7 @@ try:
         mcp_tools_temporal,
         mcp_tools_tom,
         mcp_tools_trust,
+        mcp_tools_usage,
         mcp_tools_workspace,
         mcp_tools_world,
     )
@@ -78,6 +79,7 @@ try:
         mcp_tools_temporal,
         mcp_tools_tom,
         mcp_tools_trust,
+        mcp_tools_usage,
         mcp_tools_workspace,
         mcp_tools_world,
     ]
