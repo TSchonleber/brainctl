@@ -864,17 +864,19 @@ def apply_decay(conn: sqlite3.Connection, now: Optional[datetime] = None) -> Dic
     _protected_select = ", protected" if _protected_col else ""
     _has_ab = has_column(conn, "memories", "alpha")  # Bayesian alpha/beta columns
     _ab_select = ", alpha, beta" if _has_ab else ""
+    _has_labile = has_column(conn, "memories", "labile_until")
+    _labile_select = ", labile_until" if _has_labile else ""
 
     rows = conn.execute(
         f"""
-        SELECT id, confidence, temporal_class, memory_type, created_at, last_recalled_at{_protected_select}{_ab_select}
+        SELECT id, confidence, temporal_class, memory_type, created_at, last_recalled_at{_protected_select}{_ab_select}{_labile_select}
         FROM memories
         WHERE retired_at IS NULL
         """
     ).fetchall()
 
     stats = {"scanned": len(rows), "skipped_permanent": 0, "skipped_protected": 0,
-             "skipped_has_dependents": 0, "updated": 0, "retired": 0}
+             "skipped_labile": 0, "skipped_has_dependents": 0, "updated": 0, "retired": 0}
 
     for row in rows:
         mem_id = row["id"]
@@ -886,6 +888,13 @@ def apply_decay(conn: sqlite3.Connection, now: Optional[datetime] = None) -> Dic
         if temporal_class == "permanent":
             stats["skipped_permanent"] += 1
             continue
+
+        # Behavioral tagging: memories in their labile window are immune to decay
+        if _has_labile:
+            labile_until = row["labile_until"]
+            if labile_until and labile_until > now_sql:
+                stats["skipped_labile"] += 1
+                continue
 
         half_life = HALF_LIFE_DAYS.get(temporal_class)
         if half_life is None:
