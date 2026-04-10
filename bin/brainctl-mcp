@@ -1993,6 +1993,54 @@ TOOLS = [
         description="Show write-tier distribution (full/construct) for an agent, including unindexed CONSTRUCT_ONLY count.",
         inputSchema={"type": "object", "properties": {}},
     ),
+    Tool(
+        name="abstract_summarize",
+        description="Create a summary memory at a higher temporal level (session/day/week/month/quarter). Extracts salient content from constituent memories in the time window. Use dry_run=true to preview.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "level": {"type": "string", "enum": ["session", "day", "week", "month", "quarter"]},
+                "anchor_time": {"type": "string", "description": "ISO datetime anchor (defaults to most recent activity)"},
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "category": {"type": "string"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["level"],
+        },
+    ),
+    Tool(
+        name="zoom_out",
+        description="Given a memory_id, return the parent summaries in the hierarchy above it (session→day→week→month→quarter).",
+        inputSchema={
+            "type": "object",
+            "properties": {"memory_id": {"type": "integer"}},
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="zoom_in",
+        description="Given a summary memory, return its constituent memories at the next level down.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "integer"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="temporal_map",
+        description="Show a count breakdown of memories at each temporal level (moment→quarter) for an agent. Filter by scope or project.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2764,6 +2812,235 @@ def tool_demand_forecast(agent_id="mcp-client", include_fulfilled=False, limit=2
 
 
 # ---------------------------------------------------------------------------
+# Temporal abstraction hierarchy tools (issue #20)
+# ---------------------------------------------------------------------------
+
+_TEMPORAL_LEVELS_BMC = ("moment", "session", "day", "week", "month", "quarter")
+_LEVEL_WINDOW_BMC = {
+    "session": 8,   # hours
+    "day": 24,
+    "week": 24 * 7,
+    "month": 24 * 30,
+    "quarter": 24 * 91,
+}
+_CHILD_LEVEL_BMC = {
+    "session": "moment", "day": "session",
+    "week": "day", "month": "week", "quarter": "month",
+}
+
+
+def _ensure_temporal_level_col_bmc(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    if "temporal_level" not in cols:
+        conn.execute(
+            "ALTER TABLE memories ADD COLUMN temporal_level TEXT NOT NULL DEFAULT 'moment' "
+            "CHECK(temporal_level IN ('moment','session','day','week','month','quarter'))"
+        )
+        conn.commit()
+
+
+def _extract_summary_bmc(memories, max_chars=400):
+    seen, parts, total = set(), [], 0
+    for m in sorted(memories, key=lambda x: x.get("confidence", 0.0), reverse=True):
+        text = (m.get("content") or "").strip()
+        first = text.split(".")[0].strip()
+        if not first or first in seen:
+            continue
+        seen.add(first)
+        parts.append(first)
+        total += len(first)
+        if total >= max_chars:
+            break
+    return "; ".join(parts) if parts else "No content"
+
+
+def tool_abstract_summarize(agent_id="mcp-client", level="session", anchor_time=None,
+                             project=None, scope=None, category=None, dry_run=False, **kw):
+    if level not in _LEVEL_WINDOW_BMC:
+        return {"ok": False, "error": f"level must be one of {list(_LEVEL_WINDOW_BMC)}"}
+    db = get_db()
+    _ensure_temporal_level_col_bmc(db)
+    try:
+        child_level = _CHILD_LEVEL_BMC[level]
+        window_h = _LEVEL_WINDOW_BMC[level]
+        from datetime import timedelta as _td
+        if anchor_time:
+            try:
+                anchor_dt = datetime.fromisoformat(anchor_time)
+            except ValueError:
+                return {"ok": False, "error": f"anchor_time invalid: {anchor_time}"}
+        else:
+            q = "SELECT created_at FROM memories WHERE retired_at IS NULL AND agent_id = ? AND temporal_level = ?"
+            p = [agent_id, child_level]
+            if project:
+                q += " AND content LIKE ?"
+                p.append(f"%{project}%")
+            q += " ORDER BY created_at DESC LIMIT 1"
+            row = db.execute(q, p).fetchone()
+            if not row:
+                return {"ok": False, "error": f"No {child_level}-level memories found"}
+            anchor_dt = datetime.fromisoformat(row["created_at"])
+        window_start = (anchor_dt - _td(hours=window_h)).strftime("%Y-%m-%dT%H:%M:%S")
+        window_end = anchor_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        conds = ["retired_at IS NULL", "agent_id = ?", "temporal_level = ?", "created_at BETWEEN ? AND ?"]
+        params = [agent_id, child_level, window_start, window_end]
+        if project:
+            conds.append("content LIKE ?")
+            params.append(f"%{project}%")
+        if scope:
+            conds.append("scope = ?")
+            params.append(scope)
+        if category:
+            conds.append("category = ?")
+            params.append(category)
+        rows = db.execute(
+            f"SELECT * FROM memories WHERE {' AND '.join(conds)} ORDER BY created_at ASC", params
+        ).fetchall()
+        children = [dict(r) for r in rows]
+        if not children:
+            return {"ok": False, "error": f"No {child_level}-level memories in window {window_start}–{window_end}"}
+        summary_text = _extract_summary_bmc(children)
+        derived_from = [c["id"] for c in children]
+        from collections import Counter as _Counter
+        top_cat = _Counter(c.get("category") for c in children if c.get("category"))
+        summary_category = top_cat.most_common(1)[0][0] if top_cat else "convention"
+        if dry_run:
+            return {"ok": True, "dry_run": True, "level": level, "window_start": window_start,
+                    "window_end": window_end, "constituent_count": len(children),
+                    "summary_preview": summary_text[:200], "derived_from_ids": derived_from}
+        now = _now_ts()
+        db.execute(
+            "INSERT INTO memories (agent_id, category, content, confidence, scope, memory_type, temporal_level, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'semantic', ?, ?)",
+            (agent_id, summary_category, summary_text,
+             min(1.0, sum(c.get("confidence", 0.5) for c in children) / len(children) + 0.1),
+             scope or "global", level, now),
+        )
+        db.commit()
+        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return {"ok": True, "memory_id": new_id, "level": level, "window_start": window_start,
+                "window_end": window_end, "constituent_count": len(children),
+                "derived_from_ids": derived_from, "summary": summary_text}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_zoom_out(agent_id="mcp-client", memory_id=None, **kw):
+    if memory_id is None:
+        return {"ok": False, "error": "memory_id required"}
+    db = get_db()
+    _ensure_temporal_level_col_bmc(db)
+    try:
+        row = db.execute(
+            "SELECT id, content, category, created_at, temporal_level, agent_id FROM memories "
+            "WHERE id = ? AND retired_at IS NULL", (memory_id,)
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": f"memory {memory_id} not found"}
+        mem = dict(row)
+        from datetime import timedelta as _td
+        current_idx = _TEMPORAL_LEVELS_BMC.index(mem["temporal_level"])
+        hierarchy = []
+        for level in _TEMPORAL_LEVELS_BMC[current_idx + 1:]:
+            if level not in _LEVEL_WINDOW_BMC:
+                continue
+            window_h = _LEVEL_WINDOW_BMC[level]
+            try:
+                mem_dt = datetime.fromisoformat(mem["created_at"])
+            except ValueError:
+                break
+            ws = (mem_dt - _td(hours=window_h)).strftime("%Y-%m-%dT%H:%M:%S")
+            we = (mem_dt + _td(hours=window_h)).strftime("%Y-%m-%dT%H:%M:%S")
+            parent = db.execute(
+                "SELECT id, content, category, created_at, temporal_level, confidence FROM memories "
+                "WHERE temporal_level = ? AND agent_id = ? AND created_at BETWEEN ? AND ? "
+                "AND retired_at IS NULL ORDER BY ABS(julianday(created_at) - julianday(?)) ASC LIMIT 1",
+                (level, mem.get("agent_id", agent_id), ws, we, mem["created_at"]),
+            ).fetchone()
+            if parent:
+                hierarchy.append(dict(parent))
+        return {"ok": True, "memory_id": memory_id, "current_level": mem["temporal_level"],
+                "hierarchy_above": hierarchy}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_zoom_in(agent_id="mcp-client", memory_id=None, limit=20, **kw):
+    if memory_id is None:
+        return {"ok": False, "error": "memory_id required"}
+    db = get_db()
+    _ensure_temporal_level_col_bmc(db)
+    try:
+        row = db.execute(
+            "SELECT id, content, category, created_at, temporal_level, agent_id FROM memories "
+            "WHERE id = ? AND retired_at IS NULL", (memory_id,)
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": f"memory {memory_id} not found"}
+        mem = dict(row)
+        level = mem["temporal_level"]
+        if level == "moment":
+            return {"ok": True, "memory_id": memory_id, "level": level, "children": [],
+                    "note": "moment is the finest level — no children"}
+        if level not in _LEVEL_WINDOW_BMC:
+            return {"ok": False, "error": f"Unknown level: {level}"}
+        child_level = _CHILD_LEVEL_BMC[level]
+        from datetime import timedelta as _td
+        window_h = _LEVEL_WINDOW_BMC[level]
+        try:
+            mem_dt = datetime.fromisoformat(mem["created_at"])
+        except ValueError:
+            return {"ok": False, "error": "Invalid created_at on summary memory"}
+        ws = (mem_dt - _td(hours=window_h)).strftime("%Y-%m-%dT%H:%M:%S")
+        we = mem_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        children = db.execute(
+            "SELECT id, content, category, created_at, temporal_level, confidence FROM memories "
+            "WHERE temporal_level = ? AND agent_id = ? AND created_at BETWEEN ? AND ? "
+            "AND retired_at IS NULL ORDER BY created_at ASC LIMIT ?",
+            (child_level, mem.get("agent_id", agent_id), ws, we, limit),
+        ).fetchall()
+        return {"ok": True, "memory_id": memory_id, "level": level, "child_level": child_level,
+                "window_start": ws, "window_end": we, "children": [dict(c) for c in children]}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_temporal_map(agent_id="mcp-client", project=None, scope=None, **kw):
+    db = get_db()
+    _ensure_temporal_level_col_bmc(db)
+    try:
+        conds = ["retired_at IS NULL", "agent_id = ?"]
+        params = [agent_id]
+        if scope:
+            conds.append("scope = ?")
+            params.append(scope)
+        if project:
+            conds.append("content LIKE ?")
+            params.append(f"%{project}%")
+        rows = db.execute(
+            f"SELECT temporal_level, COUNT(*) as count, MIN(created_at) as earliest, MAX(created_at) as latest "
+            f"FROM memories WHERE {' AND '.join(conds)} GROUP BY temporal_level", params
+        ).fetchall()
+        level_map = {r["temporal_level"]: dict(r) for r in rows}
+        full_map = []
+        for level in _TEMPORAL_LEVELS_BMC:
+            full_map.append(level_map.get(level, {"temporal_level": level, "count": 0,
+                                                   "earliest": None, "latest": None}))
+        return {"ok": True, "agent_id": agent_id, "total_memories": sum(r["count"] for r in full_map),
+                "levels": full_map}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # D-MEM promotion tools (issue #31)
 # ---------------------------------------------------------------------------
 
@@ -2902,6 +3179,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "demand_forecast": tool_demand_forecast,
         "memory_promote": tool_memory_promote,
         "tier_stats": tool_tier_stats,
+        "abstract_summarize": tool_abstract_summarize,
+        "zoom_out": tool_zoom_out,
+        "zoom_in": tool_zoom_in,
+        "temporal_map": tool_temporal_map,
     }
 
     fn = dispatch.get(name)

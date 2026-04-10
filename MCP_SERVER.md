@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (188)
+## Available Tools (192)
 
 | Tool | Description |
 |------|-------------|
@@ -93,6 +93,10 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `demand_forecast` | Show consolidation forecasts with signal_source and confidence |
 | `memory_promote` | Promote a CONSTRUCT_ONLY memory to FULL_EVOLUTION (embed + FTS index) |
 | `tier_stats` | Show write-tier distribution (full/construct) for an agent |
+| `abstract_summarize` | Create an extractive summary memory at session/day/week/month/quarter level |
+| `zoom_out` | Given a memory, return its parent summaries in the temporal hierarchy |
+| `zoom_in` | Given a summary memory, return its constituent child memories |
+| `temporal_map` | Count breakdown of memories at each temporal level for an agent |
 
 ## Environment Variables
 
