@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (186)
+## Available Tools (188)
 
 | Tool | Description |
 |------|-------------|
@@ -91,6 +91,8 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `consolidation_schedule` | Predict memories likely to be needed soon and store forecasts |
 | `allostatic_prime` | Boost replay_priority for pending forecasts before demand arrives |
 | `demand_forecast` | Show consolidation forecasts with signal_source and confidence |
+| `memory_promote` | Promote a CONSTRUCT_ONLY memory to FULL_EVOLUTION (embed + FTS index) |
+| `tier_stats` | Show write-tier distribution (full/construct) for an agent |
 
 ## Environment Variables
 

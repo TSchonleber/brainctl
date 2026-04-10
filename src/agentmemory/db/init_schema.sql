@@ -40,7 +40,7 @@ CREATE TABLE memories (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     retired_at TEXT                                    -- soft delete
-, epoch_id INTEGER REFERENCES epochs(id), temporal_class TEXT NOT NULL DEFAULT 'medium', validation_agent_id TEXT REFERENCES agents(id), validated_at TEXT, trust_score REAL DEFAULT 1.0, derived_from_ids TEXT, retracted_at TEXT, retraction_reason TEXT, version INTEGER NOT NULL DEFAULT 1, memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic')), protected INTEGER NOT NULL DEFAULT 0, salience_score REAL NOT NULL DEFAULT 0.0, gw_broadcast INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL DEFAULT 'public', read_acl TEXT, ewc_importance REAL NOT NULL DEFAULT 0.0, alpha REAL DEFAULT 1.0, beta  REAL DEFAULT 1.0, confidence_alpha REAL GENERATED ALWAYS AS (alpha) VIRTUAL, confidence_beta  REAL GENERATED ALWAYS AS (beta)  VIRTUAL, confidence_phase REAL NOT NULL DEFAULT 0.0, hilbert_projection BLOB DEFAULT NULL, coherence_syndrome TEXT DEFAULT NULL, decoherence_rate REAL DEFAULT NULL, gated_from_memory_id INTEGER REFERENCES memories(id), file_path TEXT, file_line INTEGER);
+, epoch_id INTEGER REFERENCES epochs(id), temporal_class TEXT NOT NULL DEFAULT 'medium', validation_agent_id TEXT REFERENCES agents(id), validated_at TEXT, trust_score REAL DEFAULT 1.0, derived_from_ids TEXT, retracted_at TEXT, retraction_reason TEXT, version INTEGER NOT NULL DEFAULT 1, memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic')), protected INTEGER NOT NULL DEFAULT 0, salience_score REAL NOT NULL DEFAULT 0.0, gw_broadcast INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL DEFAULT 'public', read_acl TEXT, ewc_importance REAL NOT NULL DEFAULT 0.0, alpha REAL DEFAULT 1.0, beta  REAL DEFAULT 1.0, confidence_alpha REAL GENERATED ALWAYS AS (alpha) VIRTUAL, confidence_beta  REAL GENERATED ALWAYS AS (beta)  VIRTUAL, confidence_phase REAL NOT NULL DEFAULT 0.0, hilbert_projection BLOB DEFAULT NULL, coherence_syndrome TEXT DEFAULT NULL, decoherence_rate REAL DEFAULT NULL, gated_from_memory_id INTEGER REFERENCES memories(id), file_path TEXT, file_line INTEGER, write_tier TEXT NOT NULL DEFAULT 'full' CHECK(write_tier IN ('skip', 'construct', 'full')), indexed INTEGER NOT NULL DEFAULT 1, promoted_at TEXT DEFAULT NULL);
 
 CREATE INDEX idx_memories_agent ON memories(agent_id);
 
@@ -65,13 +65,19 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
     tokenize='porter unicode61'
 );
 
-CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN
+CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories WHEN new.indexed = 1 BEGIN
     INSERT INTO memories_fts(rowid, content, category, tags) VALUES (new.id, new.content, new.category, new.tags);
 END;
 
-CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content, category, tags) VALUES('delete', old.id, old.content, old.category, old.tags);
-    INSERT INTO memories_fts(rowid, content, category, tags) VALUES (new.id, new.content, new.category, new.tags);
+-- Split into two triggers so 0→1 promotion correctly adds to FTS without double-delete.
+CREATE TRIGGER memories_fts_update_delete AFTER UPDATE ON memories WHEN old.indexed = 1 BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content, category, tags)
+    VALUES ('delete', old.id, old.content, old.category, old.tags);
+END;
+
+CREATE TRIGGER memories_fts_update_insert AFTER UPDATE ON memories WHEN new.indexed = 1 BEGIN
+    INSERT INTO memories_fts(rowid, content, category, tags)
+    VALUES (new.id, new.content, new.category, new.tags);
 END;
 
 CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
@@ -1633,3 +1639,19 @@ CREATE TABLE IF NOT EXISTS consolidation_forecasts (
 CREATE INDEX IF NOT EXISTS idx_forecasts_agent ON consolidation_forecasts(agent_id, predicted_demand_at);
 CREATE INDEX IF NOT EXISTS idx_forecasts_memory ON consolidation_forecasts(memory_id);
 CREATE INDEX IF NOT EXISTS idx_forecasts_fulfilled ON consolidation_forecasts(fulfilled_at);
+
+-- -------------------------------------------------------------------------
+-- D-MEM RPE routing (issue #31)
+-- memory_stats: per-(agent, category, scope) recall rate for long-term utility
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    avg_recall_rate REAL NOT NULL DEFAULT 0.5,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    UNIQUE(agent_id, category, scope)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_stats_agent ON memory_stats(agent_id, category, scope);
