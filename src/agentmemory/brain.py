@@ -129,6 +129,7 @@ class Brain:
         # Secure file permissions — only owner can read/write
         import stat
         self.db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _log.info("brain.db created at %s", self.db_path)
 
     def _db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
