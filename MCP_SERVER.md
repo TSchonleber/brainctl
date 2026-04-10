@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (183)
+## Available Tools (186)
 
 | Tool | Description |
 |------|-------------|
@@ -88,6 +88,9 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `quarantine_list` | List memories under immunity review with reason and contradiction evidence |
 | `quarantine_review` | Mark a quarantined memory safe, malicious, or uncertain |
 | `quarantine_purge` | Permanently delete a malicious memory and retract derived beliefs |
+| `consolidation_schedule` | Predict memories likely to be needed soon and store forecasts |
+| `allostatic_prime` | Boost replay_priority for pending forecasts before demand arrives |
+| `demand_forecast` | Show consolidation forecasts with signal_source and confidence |
 
 ## Environment Variables
 
