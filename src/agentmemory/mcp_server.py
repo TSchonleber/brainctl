@@ -656,7 +656,8 @@ _SEMANTIC_CONFIDENCE_BONUS = 1.1  # CLS: semantic memories get a mild ranking bo
 
 def tool_memory_search(agent_id: str, query: str, category: str = None,
                        scope: str = None, limit: int = 20,
-                       memory_type: str = None) -> dict:
+                       memory_type: str = None,
+                       pagerank_boost: float = 0.0) -> dict:
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     db = get_db()
@@ -710,6 +711,32 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             results = _quantum_rerank(results, db_path=str(DB_PATH))
         except Exception:
             pass
+
+    # SR/PageRank re-ranking — boost results by cached graph centrality score.
+    # pagerank_boost=0 (default) leaves ranking unchanged.
+    # pagerank_boost=1.0 weights FTS rank and PageRank equally.
+    # Implements Millidge 2025: Personalized PageRank == Successor Representation.
+    if pagerank_boost > 0.0 and results:
+        pr_keys = [f"pagerank_memories_{r['id']}" for r in results]
+        key_placeholders = ",".join("?" * len(pr_keys))
+        pr_rows = db.execute(
+            f"SELECT key, value FROM agent_state WHERE key IN ({key_placeholders})",
+            pr_keys,
+        ).fetchall()
+        pr_scores = {}
+        for row in pr_rows:
+            try:
+                pr_scores[row["key"]] = json.loads(row["value"]).get("score", 0.0)
+            except Exception:
+                pass
+        for i, r in enumerate(results):
+            pr = pr_scores.get(f"pagerank_memories_{r['id']}", 0.0)
+            # Combine FTS rank position (inverted) with PageRank score
+            fts_rank = 1.0 - (i / max(len(results), 1))
+            r["_sr_score"] = fts_rank + pagerank_boost * pr
+        results.sort(key=lambda r: -r.get("_sr_score", 0.0))
+        for r in results:
+            r.pop("_sr_score", None)
 
     log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
     db.commit(); db.close()
@@ -1576,7 +1603,7 @@ TOOLS = [
     ),
     Tool(
         name="memory_search",
-        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling). Set memory_type to filter to one store; unset applies a 1.1x CLS confidence bonus to semantic memories.",
+        description="Search memories in brain.db using full-text search. Returns matching memories ranked by relevance. Result count is capped at 7 × agent attention_budget_tier (theta-gamma coupling). Set memory_type to filter to one CLS store; unset applies a 1.1x semantic confidence bonus. Set pagerank_boost > 0 for SR-style retrieval (Millidge 2025: PageRank == Successor Representation).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1585,6 +1612,7 @@ TOOLS = [
                 "scope": {"type": "string"},
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
+                "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
             },
             "required": ["query"],
         },
