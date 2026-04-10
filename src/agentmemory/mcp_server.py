@@ -8,6 +8,8 @@ Same database, same logic, structured JSON protocol.
 Usage:
   brainctl-mcp                  # stdio transport (for Claude Desktop, VS Code, etc.)
   brainctl-mcp --list-tools     # print available tools and exit
+  brainctl-mcp --doctor         # diagnose installation and configuration
+  brainctl-mcp --doctor --json  # also output JSON results
 """
 
 import json
@@ -2017,10 +2019,131 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
+def _run_doctor() -> None:
+    """Diagnose brainctl-mcp installation and configuration."""
+    import sys as _sys
+
+    checks = []
+    all_ok = True
+
+    def check(name: str, ok: bool, detail: str, fix: str = "") -> None:
+        nonlocal all_ok
+        status = "OK" if ok else "FAIL"
+        if not ok:
+            all_ok = False
+        checks.append({"check": name, "status": status, "detail": detail, "fix": fix})
+        symbol = "✓" if ok else "✗"
+        print(f"  {symbol} {name}: {detail}", file=_sys.stderr)
+        if not ok and fix:
+            print(f"    → {fix}", file=_sys.stderr)
+
+    print("brainctl-mcp doctor\n", file=_sys.stderr)
+
+    # 1. Python version
+    v = _sys.version_info
+    py_ok = v >= (3, 11)
+    check("Python version", py_ok,
+          f"{v.major}.{v.minor}.{v.micro}",
+          "brainctl requires Python 3.11+. Upgrade your Python installation.")
+
+    # 2. MCP package importable
+    try:
+        import mcp  # noqa: F401
+        check("mcp package", True, "installed")
+    except ImportError:
+        check("mcp package", False, "not found",
+              "pip install brainctl[mcp]")
+
+    # 3. DB file exists
+    db_exists = DB_PATH.exists()
+    check("brain.db", db_exists,
+          str(DB_PATH) + (" (exists)" if db_exists else " (missing)"),
+          f"brainctl init --path {DB_PATH}  OR  set BRAIN_DB env var")
+
+    # 4. DB readable and valid SQLite
+    if db_exists:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(DB_PATH), timeout=3)
+            conn.execute("SELECT count(*) FROM memories").fetchone()
+            conn.close()
+            check("DB readable", True, "memories table accessible")
+        except Exception as exc:
+            check("DB readable", False, str(exc),
+                  "Database may be corrupted. Try: brainctl migrate  or  brainctl init --path <new-path>")
+
+    # 5. BRAINCTL_HOME / BRAIN_DB env
+    import os
+    brain_db_env = os.environ.get("BRAIN_DB", "")
+    brainctl_home_env = os.environ.get("BRAINCTL_HOME", "")
+    if brain_db_env:
+        check("BRAIN_DB env", True, brain_db_env)
+    elif brainctl_home_env:
+        check("BRAINCTL_HOME env", True, brainctl_home_env)
+    else:
+        check("DB path config", True, f"using default: {DB_PATH}")
+
+    # 6. Ollama reachable (optional — only warn, not fail)
+    ollama_ok = False
+    try:
+        import urllib.request
+        req = urllib.request.Request(OLLAMA_EMBED_URL.replace("/api/embed", ""),
+                                      method="GET")
+        urllib.request.urlopen(req, timeout=2)
+        ollama_ok = True
+    except Exception:
+        pass
+    # Ollama is optional — only info-level
+    symbol = "✓" if ollama_ok else "i"
+    detail = "reachable" if ollama_ok else f"not reachable at {OLLAMA_EMBED_URL}"
+    hint = "" if ollama_ok else "Vector search will be disabled. Start Ollama or set BRAINCTL_OLLAMA_URL."
+    print(f"  {symbol} Ollama (optional): {detail}", file=_sys.stderr)
+    if hint:
+        print(f"    → {hint}", file=_sys.stderr)
+    checks.append({"check": "Ollama (optional)", "status": "OK" if ollama_ok else "INFO",
+                   "detail": detail, "fix": hint})
+
+    # 7. sqlite-vec extension (optional)
+    vec_ok = VEC_DYLIB is not None
+    check_sym = "✓" if vec_ok else "i"
+    print(f"  {check_sym} sqlite-vec (optional): {'found at ' + str(VEC_DYLIB) if vec_ok else 'not found'}",
+          file=_sys.stderr)
+    if not vec_ok:
+        print("    → pip install brainctl[vec]  to enable vector search", file=_sys.stderr)
+    checks.append({"check": "sqlite-vec (optional)", "status": "OK" if vec_ok else "INFO",
+                   "detail": "found" if vec_ok else "not found",
+                   "fix": "pip install brainctl[vec]"})
+
+    print(file=_sys.stderr)
+    if all_ok:
+        print("All checks passed. brainctl-mcp is ready.", file=_sys.stderr)
+    else:
+        print("Some checks failed. Fix the issues above, then run brainctl-mcp.", file=_sys.stderr)
+
+    # Output JSON for programmatic use if --json flag present
+    if "--json" in _sys.argv:
+        import json
+        print(json.dumps({"ok": all_ok, "checks": checks}, indent=2))
+
+    _sys.exit(0 if all_ok else 1)
+
+
 async def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        print("\nFlags:")
+        print("  --list-tools    Print all available tools and exit")
+        print("  --doctor        Diagnose installation and configuration")
+        print("  --doctor --json Also output JSON results")
+        return
+
     if "--list-tools" in sys.argv:
         for t in TOOLS:
             print(f"  {t.name}: {t.description[:80]}")
+        return
+
+    if "--doctor" in sys.argv:
+        _run_doctor()
         return
 
     async with stdio_server() as (read_stream, write_stream):
