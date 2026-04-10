@@ -13153,6 +13153,10 @@ def build_parser():
                              help="Fork to background (if supported), otherwise run in foreground")
     sched_start.add_argument("--agent", default="hippocampus", help="Agent ID for event attribution")
 
+    # --- obsidian ---
+    from agentmemory.commands.obsidian import register_parser as _obs_register
+    _obs_register(sub)
+
     return p
 
 # ---------------------------------------------------------------------------
@@ -13851,6 +13855,23 @@ def main():
         return
     elif args.command == "schedule":
         cmd_schedule(args)
+        return
+    elif args.command == "obsidian":
+        from agentmemory.commands.obsidian import (
+            cmd_obsidian_export, cmd_obsidian_import,
+            cmd_obsidian_watch, cmd_obsidian_status,
+        )
+        obs_dispatch = {
+            "export": cmd_obsidian_export,
+            "import": cmd_obsidian_import,
+            "watch":  cmd_obsidian_watch,
+            "status": cmd_obsidian_status,
+        }
+        fn = obs_dispatch.get(args.obs_cmd)
+        if fn:
+            fn(args)
+        else:
+            parser.print_help()
         return
     else:
         fn = dispatch.get(args.command)
