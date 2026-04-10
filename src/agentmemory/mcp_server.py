@@ -711,7 +711,8 @@ _SEMANTIC_CONFIDENCE_BONUS = 1.1  # CLS: semantic memories get a mild ranking bo
 def tool_memory_search(agent_id: str, query: str, category: str = None,
                        scope: str = None, limit: int = 20,
                        memory_type: str = None,
-                       pagerank_boost: float = 0.0) -> dict:
+                       pagerank_boost: float = 0.0,
+                       borrow_from: str = None) -> dict:
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     db = get_db()
@@ -731,6 +732,11 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 
     conditions = ["m.retired_at IS NULL"]
     params = [fts_q]
+    if borrow_from:
+        # Cross-agent borrow: restrict to the other agent's globally-scoped memories
+        conditions.append("m.agent_id = ?")
+        params.append(borrow_from)
+        conditions.append("m.scope = 'global'")
     if category:
         conditions.append("m.category = ?")
         params.append(category)
@@ -792,7 +798,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
         for r in results:
             r.pop("_sr_score", None)
 
-    log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
+    if borrow_from:
+        log_access(db, agent_id, "borrow", "memories", query=f"{query} [from:{borrow_from}]", result_count=len(results))
+    else:
+        log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
 
     # Ebbinghaus retrieval strengthening — each recalled memory gets a confidence
     # boost via apply_recall_boost (diminishing-returns Bayesian formula).
@@ -814,8 +823,11 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             pass
 
     db.commit(); db.close()
-    return {"ok": True, "count": len(results), "memories": results,
-            "slot_cap": max_slots, "tier": tier}
+    result = {"ok": True, "count": len(results), "memories": results,
+              "slot_cap": max_slots, "tier": tier}
+    if borrow_from:
+        result["borrowed_from"] = borrow_from
+    return result
 
 
 _LABILE_RESCUE_THRESHOLD = 0.8   # importance >= this triggers retroactive labile tagging
@@ -1710,6 +1722,7 @@ TOOLS = [
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
                 "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
+                "borrow_from": {"type": "string", "description": "Agent ID to borrow from. When set, searches only that agent's scope='global' memories and logs the cross-agent access in access_log."},
             },
             "required": ["query"],
         },

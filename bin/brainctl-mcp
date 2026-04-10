@@ -521,7 +521,8 @@ _SEMANTIC_CONFIDENCE_BONUS = 1.1  # CLS: semantic memories get a mild ranking bo
 def tool_memory_search(agent_id: str, query: str, category: str = None,
                        scope: str = None, limit: int = 20,
                        memory_type: str = None,
-                       pagerank_boost: float = 0.0) -> dict:
+                       pagerank_boost: float = 0.0,
+                       borrow_from: str = None) -> dict:
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     db = get_db()
@@ -539,6 +540,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
 
     conditions = ["m.retired_at IS NULL"]
     params = [fts_q]
+    if borrow_from:
+        conditions.append("m.agent_id = ?")
+        params.append(borrow_from)
+        conditions.append("m.scope = 'global'")
     if category:
         conditions.append("m.category = ?")
         params.append(category)
@@ -595,7 +600,10 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
         for r in results:
             r.pop("_sr_score", None)
 
-    log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
+    if borrow_from:
+        log_access(db, agent_id, "borrow", "memories", query=f"{query} [from:{borrow_from}]", result_count=len(results))
+    else:
+        log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
 
     # Ebbinghaus retrieval strengthening — record recall event, reset forgetting curve.
     # Uses the same Bayesian diminishing-returns formula as apply_recall_boost():
@@ -632,8 +640,11 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
                 pass
 
     db.commit(); db.close()
-    return {"ok": True, "count": len(results), "memories": results,
-            "slot_cap": max_slots, "tier": tier}
+    result = {"ok": True, "count": len(results), "memories": results,
+              "slot_cap": max_slots, "tier": tier}
+    if borrow_from:
+        result["borrowed_from"] = borrow_from
+    return result
 
 
 _LABILE_RESCUE_THRESHOLD = 0.8   # importance >= this triggers retroactive labile tagging
@@ -1323,6 +1334,7 @@ TOOLS = [
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
                 "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
+                "borrow_from": {"type": "string", "description": "Agent ID to borrow from. When set, searches only that agent's scope='global' memories and logs the cross-agent access in access_log."},
             },
             "required": ["query"],
         },
@@ -1732,6 +1744,31 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="free_energy_check",
+        description=(
+            "Return an agent's epistemic drive and knowledge gap summary from agent_uncertainty_log. "
+            "Epistemic drive = mean free_energy of unresolved gaps (high = strong curiosity signal). "
+            "Pragmatic drive = resolution rate over past 7 days. "
+            "Grounded in Friston (2010): free_energy = (1 - confidence) * importance."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max gap records to return (default 20)",
+                    "default": 20,
+                },
+                "unresolved_only": {
+                    "type": "boolean",
+                    "description": "Return only unresolved gaps (default true)",
+                    "default": True,
+                },
+            },
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2053,6 +2090,76 @@ def tool_consolidation_run(
 
 
 # ---------------------------------------------------------------------------
+# Free energy / epistemic drive check (#15)
+# ---------------------------------------------------------------------------
+
+def tool_free_energy_check(agent_id="mcp-client", limit=20, unresolved_only=True, **kw):
+    """Return agent's epistemic drive and knowledge gaps from agent_uncertainty_log."""
+    limit = max(1, min(200, int(limit)))
+    try:
+        db = get_db()
+        where_parts = ["agent_id = ?"]
+        params = [agent_id]
+        if unresolved_only:
+            where_parts.append("resolved_at IS NULL")
+        where = " AND ".join(where_parts)
+
+        rows = db.execute(
+            f"SELECT id, gap_topic, domain, free_energy, query, result_count, "
+            f"avg_confidence, temporal_class, created_at, resolved_at, resolved_by "
+            f"FROM agent_uncertainty_log WHERE {where} "
+            f"ORDER BY free_energy DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+
+        gaps = [dict(r) for r in rows]
+        fe_values = [g["free_energy"] for g in gaps if g["free_energy"] is not None]
+        epistemic_drive = round(sum(fe_values) / len(fe_values), 4) if fe_values else 0.0
+
+        domain_freq = {}
+        for g in gaps:
+            d = g.get("domain") or "unknown"
+            domain_freq[d] = domain_freq.get(d, 0) + 1
+        top_domains = sorted(domain_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        from datetime import timedelta
+        seven_days_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        total_7d = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log WHERE agent_id = ? AND created_at >= ?",
+            (agent_id, seven_days_ago),
+        ).fetchone()[0]
+        resolved_7d = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log "
+            "WHERE agent_id = ? AND created_at >= ? AND resolved_at IS NOT NULL",
+            (agent_id, seven_days_ago),
+        ).fetchone()[0]
+        pragmatic_drive = round(resolved_7d / total_7d, 4) if total_7d else 0.0
+
+        total_unresolved = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log WHERE agent_id = ? AND resolved_at IS NULL",
+            (agent_id,),
+        ).fetchone()[0]
+        db.close()
+
+        return {
+            "ok": True, "agent_id": agent_id,
+            "unresolved_gaps": total_unresolved,
+            "epistemic_drive": epistemic_drive,
+            "epistemic_label": (
+                "high" if epistemic_drive > 0.5
+                else "moderate" if epistemic_drive > 0.2
+                else "low"
+            ),
+            "pragmatic_drive": pragmatic_drive,
+            "resolution_rate_7d": f"{resolved_7d}/{total_7d}",
+            "top_domains": [{"domain": d, "count": c} for d, c in top_domains],
+            "gaps": gaps,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Affect tools
 # ---------------------------------------------------------------------------
 
@@ -2188,6 +2295,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "memory_calibration": tool_memory_calibration,
         "attention_snapshot": tool_attention_snapshot,
         "consolidation_run": tool_consolidation_run,
+        "free_energy_check": tool_free_energy_check,
     }
 
     fn = dispatch.get(name)
