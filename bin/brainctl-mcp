@@ -131,6 +131,19 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def _now_ts() -> str:
+    """ISO 8601 timestamp without microseconds — satisfies the events trigger."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _ensure_agent(conn, agent_id: str, display_name: str = None, agent_type: str = "mcp-client") -> None:
+    """INSERT OR IGNORE the agent so FK constraints don't fail on first use."""
+    conn.execute(
+        "INSERT OR IGNORE INTO agents (id, display_name, agent_type, created_at, updated_at) VALUES (?,?,?,?,?)",
+        (agent_id, display_name or agent_id, agent_type, _now_ts(), _now_ts())
+    )
+
+
 def log_access(conn, agent_id, action, target_table=None, target_id=None, query=None, result_count=None):
     conn.execute(
         "INSERT INTO access_log (agent_id, action, target_table, target_id, query, result_count) VALUES (?,?,?,?,?,?)",
@@ -281,10 +294,34 @@ def _surprise_score_mcp(db, content: str, blob=None):
         return 0.7, "fts5_error"
 
 
+# Source trust weights for the W(m) gate multiplier (issue #24).
+# Lower-trust sources must carry higher surprise to pass the same worthiness threshold.
+_SOURCE_TRUST_WEIGHTS: dict = {
+    "human_verified": 1.0,
+    "mcp_tool":       0.85,
+    "llm_inference":  0.7,
+    "external_doc":   0.5,
+}
+_VALID_SOURCES = tuple(_SOURCE_TRUST_WEIGHTS)
+
+
 def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "global",
                     confidence: float = 1.0, tags: str = None, memory_type: str = "episodic",
-                    force: bool = False, supersedes_id: int = None) -> dict:
-    """Add a memory with W(m) worthiness gate and PII recency gate."""
+                    force: bool = False, supersedes_id: int = None,
+                    source: str = "mcp_tool") -> dict:
+    """Add a memory with W(m) worthiness gate and PII recency gate.
+
+    Args:
+        source: Origin of the memory content. Controls trust_score at write time.
+                One of: 'human_verified', 'mcp_tool', 'llm_inference', 'external_doc'.
+                Lower-trust sources face a higher effective worthiness bar.
+    """
+    if source not in _SOURCE_TRUST_WEIGHTS:
+        return {"ok": False, "error": f"Invalid source: {source}. Must be one of: {', '.join(_VALID_SOURCES)}"}
+
+    # Resolve source trust weight — lower trust requires higher novelty to pass the gate.
+    source_trust = _SOURCE_TRUST_WEIGHTS[source]
+
     db = get_db()
     tags_json = json.dumps(tags.split(",")) if tags else None
 
@@ -316,15 +353,15 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         pass
 
-    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy) * valence
+    # Lightweight W(m) pre-check: worthiness = surprise * importance * source_trust * (1 - redundancy) * valence
     importance_estimate = confidence
     _pre_redundancy = 0.5 if (surprise is not None and surprise < 0.2) else 0.0
-    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _valence_scale
+    _pre_worthiness = (surprise or 0.7) * importance_estimate * source_trust * (1.0 - _pre_redundancy) * _valence_scale
     if _pre_worthiness < 0.3 and not force:
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'observation', ?, ?, datetime('now'))",
+                "VALUES (?, 'observation', ?, ?, ?)",
                 (agent_id,
                  f"Memory rejected by W(m) gate: {content[:60]}",
                  json.dumps({
@@ -334,9 +371,12 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "importance_estimate": round(importance_estimate, 4),
                      "valence_scale": round(_valence_scale, 4),
                      "pre_worthiness": round(_pre_worthiness, 4),
+                     "source": source,
+                     "source_trust": source_trust,
                      "category": category,
                      "scope": scope,
-                 }))
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -348,6 +388,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             "surprise_score": surprise,
             "surprise_method": surprise_method,
             "pre_worthiness": round(_pre_worthiness, 4),
+            "source": source,
+            "source_trust": source_trust,
             "reason": "Low surprise/worthiness — memory is too similar to existing content.",
             "hint": "Pass force=true to bypass the gate.",
         }
@@ -386,7 +428,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         try:
             db.execute(
                 "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
-                "VALUES (?, 'write_rejected', ?, ?, datetime('now'))",
+                "VALUES (?, 'write_rejected', ?, ?, ?)",
                 (agent_id,
                  f"W(m) gate rejected: {worthiness_reason} (score={worthiness_score})",
                  json.dumps({
@@ -395,7 +437,10 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "scope": scope,
                      "score": worthiness_score,
                      "reason": worthiness_reason,
-                 }))
+                     "source": source,
+                     "source_trust": source_trust,
+                 }),
+                 _now_ts())
             )
             db.commit()
         except Exception:
@@ -428,9 +473,9 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
 
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha) VALUES (?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, trust_score) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor))
+         supersedes_id, float(alpha_floor), source_trust)
     )
     mid = cur.lastrowid
 
@@ -460,7 +505,9 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         pass
     db.commit(); db.close()
-    result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score, "surprise_score": surprise, "surprise_method": surprise_method}
+    result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score,
+              "surprise_score": surprise, "surprise_method": surprise_method,
+              "source": source, "trust_score": source_trust}
     if _valence_scale != 1.0:
         result["valence_scale"] = round(_valence_scale, 4)
     if pii_gate_info:
@@ -789,7 +836,7 @@ def tool_entity_observe(agent_id: str, identifier: str, observations: str) -> di
     new_obs = [o.strip() for o in observations.split(";") if o.strip()]
     added = [o for o in new_obs if o not in current]
     current.extend(added)
-    db.execute("UPDATE entities SET observations=?, updated_at=datetime('now') WHERE id=?", (json.dumps(current), eid))
+    db.execute("UPDATE entities SET observations=?, updated_at=? WHERE id=?", (json.dumps(current), _now_ts(), eid))
     log_access(db, agent_id, "write", "entities", eid)
     db.commit(); db.close()
     return {"ok": True, "entity_id": eid, "added": added, "total_observations": len(current)}
@@ -832,7 +879,7 @@ def tool_trigger_list(agent_id: str, status: str = None) -> dict:
 def tool_trigger_check(agent_id: str, query: str) -> dict:
     db = get_db()
     # Expire overdue
-    db.execute("UPDATE memory_triggers SET status='expired' WHERE status='active' AND expires_at IS NOT NULL AND expires_at < datetime('now')")
+    db.execute("UPDATE memory_triggers SET status='expired' WHERE status='active' AND expires_at IS NOT NULL AND expires_at < ?", (_now_ts(),))
     rows = db.execute("SELECT * FROM memory_triggers WHERE status='active'").fetchall()
     query_lower = query.lower()
     query_words = set(query_lower.split())
@@ -1235,7 +1282,9 @@ TOOLS = [
         description=(
             "Add a durable memory to brain.db. Passes through a W(m) worthiness gate "
             "that rejects low-novelty or redundant writes. Pass force=true to bypass. "
-            "Use for facts, lessons, conventions, preferences that should persist."
+            "Use for facts, lessons, conventions, preferences that should persist. "
+            "Set source to reflect the origin of the content — lower-trust sources face "
+            "a higher worthiness bar and record a lower trust_score on the memory."
         ),
         inputSchema={
             "type": "object",
@@ -1248,6 +1297,16 @@ TOOLS = [
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "default": "episodic"},
                 "force": {"type": "boolean", "description": "Bypass W(m) worthiness gate", "default": False},
                 "supersedes_id": {"type": "integer", "description": "ID of memory being superseded; triggers PII recency gate"},
+                "source": {
+                    "type": "string",
+                    "enum": list(_SOURCE_TRUST_WEIGHTS),
+                    "default": "mcp_tool",
+                    "description": (
+                        "Origin of the memory content. Controls trust_score at write time. "
+                        "'human_verified'=1.0, 'mcp_tool'=0.85, 'llm_inference'=0.7, 'external_doc'=0.5. "
+                        "Lower-trust sources face a higher effective W(m) worthiness bar."
+                    ),
+                },
             },
             "required": ["content", "category"],
         },
@@ -1684,8 +1743,12 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    # Inject agent_id from arguments or default
-    agent_id = arguments.pop("agent_id", "mcp-client")
+    # Inject agent_id from arguments or default, then ensure the agent exists
+    agent_id = arguments.pop("agent_id", "claude-code")
+    _db = get_db()
+    _ensure_agent(_db, agent_id)
+    _db.commit()
+    _db.close()
 
     dispatch = {
         "memory_add": tool_memory_add,

@@ -461,10 +461,28 @@ def _surprise_score_mcp(db, content: str, blob=None):
         return 0.7, "fts5_error"
 
 
+# Source trust weights for the W(m) gate multiplier (issue #24).
+# Lower-trust sources must carry higher surprise to pass the same worthiness threshold.
+_SOURCE_TRUST_WEIGHTS: dict[str, float] = {
+    "human_verified": 1.0,
+    "mcp_tool":       0.85,
+    "llm_inference":  0.7,
+    "external_doc":   0.5,
+}
+_VALID_SOURCES = tuple(_SOURCE_TRUST_WEIGHTS)
+
+
 def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "global",
                     confidence: float = 1.0, tags: str = None, memory_type: str = "episodic",
-                    force: bool = False, supersedes_id: int = None) -> dict:
-    """Add a memory with W(m) worthiness gate and PII recency gate."""
+                    force: bool = False, supersedes_id: int = None,
+                    source: str = "mcp_tool") -> dict:
+    """Add a memory with W(m) worthiness gate and PII recency gate.
+
+    Args:
+        source: Origin of the memory content. Controls trust_score at write time.
+                One of: 'human_verified', 'mcp_tool', 'llm_inference', 'external_doc'.
+                Lower-trust sources face a higher effective worthiness bar.
+    """
     if category not in VALID_MEMORY_CATEGORIES:
         return {"ok": False, "error": f"Invalid category: {category}. Must be one of: {', '.join(VALID_MEMORY_CATEGORIES)}"}
     if not (0.0 <= confidence <= 1.0):
@@ -473,6 +491,12 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
     if scope != "global" and not scope.startswith("project:") and not scope.startswith("agent:"):
         return {"ok": False, "error": "scope must be 'global', 'project:<name>', or 'agent:<id>'"}
+    if source not in _SOURCE_TRUST_WEIGHTS:
+        return {"ok": False, "error": f"Invalid source: {source}. Must be one of: {', '.join(_VALID_SOURCES)}"}
+
+    # Resolve source trust weight — lower trust requires higher novelty to pass the gate.
+    source_trust = _SOURCE_TRUST_WEIGHTS[source]
+
     db = get_db()
     ensure_agent(db, agent_id)
     tags_json = json.dumps(tags.split(",")) if tags else None
@@ -517,10 +541,10 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         pass
 
-    # Lightweight W(m) pre-check: worthiness = surprise * importance * (1 - redundancy) * arousal * valence
+    # Lightweight W(m) pre-check: worthiness = surprise * importance * source_trust * (1 - redundancy) * arousal * valence
     importance_estimate = confidence
     _pre_redundancy = 0.5 if (surprise is not None and surprise < 0.2) else 0.0
-    _pre_worthiness = (surprise or 0.7) * importance_estimate * (1.0 - _pre_redundancy) * _arousal_gain * _valence_scale
+    _pre_worthiness = (surprise or 0.7) * importance_estimate * source_trust * (1.0 - _pre_redundancy) * _arousal_gain * _valence_scale
     if _pre_worthiness < 0.3 and not force:
         try:
             db.execute(
@@ -535,6 +559,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "importance_estimate": round(importance_estimate, 4),
                      "valence_scale": round(_valence_scale, 4),
                      "pre_worthiness": round(_pre_worthiness, 4),
+                     "source": source,
+                     "source_trust": source_trust,
                      "category": category,
                      "scope": scope,
                  }),
@@ -550,6 +576,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             "surprise_score": surprise,
             "surprise_method": surprise_method,
             "pre_worthiness": round(_pre_worthiness, 4),
+            "source": source,
+            "source_trust": source_trust,
             "reason": "Low surprise/worthiness — memory is too similar to existing content.",
             "hint": "Pass force=true to bypass the gate.",
         }
@@ -598,6 +626,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                      "scope": scope,
                      "score": worthiness_score,
                      "reason": worthiness_reason,
+                     "source": source,
+                     "source_trust": source_trust,
                  }),
                  _now_ts())
             )
@@ -633,9 +663,9 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     created_at = _now_ts()
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, trust_score, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor), created_at, created_at)
+         supersedes_id, float(alpha_floor), source_trust, created_at, created_at)
     )
     mid = cur.lastrowid
 
@@ -665,7 +695,9 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     except Exception:
         pass
     db.commit(); db.close()
-    result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score, "surprise_score": surprise, "surprise_method": surprise_method}
+    result = {"ok": True, "memory_id": mid, "embedded": embedded, "worthiness_score": worthiness_score,
+              "surprise_score": surprise, "surprise_method": surprise_method,
+              "source": source, "trust_score": source_trust}
     if _valence_scale != 1.0:
         result["valence_scale"] = round(_valence_scale, 4)
     if pii_gate_info:
@@ -1637,7 +1669,9 @@ TOOLS = [
         description=(
             "Add a durable memory to brain.db. Passes through a W(m) worthiness gate "
             "that rejects low-novelty or redundant writes. Pass force=true to bypass. "
-            "Use for facts, lessons, conventions, preferences that should persist."
+            "Use for facts, lessons, conventions, preferences that should persist. "
+            "Set source to reflect the origin of the content — lower-trust sources face "
+            "a higher worthiness bar and record a lower trust_score on the memory."
         ),
         inputSchema={
             "type": "object",
@@ -1650,6 +1684,16 @@ TOOLS = [
                 "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "default": "episodic"},
                 "force": {"type": "boolean", "description": "Bypass W(m) worthiness gate", "default": False},
                 "supersedes_id": {"type": "integer", "description": "ID of memory being superseded; triggers PII recency gate"},
+                "source": {
+                    "type": "string",
+                    "enum": list(_SOURCE_TRUST_WEIGHTS),
+                    "default": "mcp_tool",
+                    "description": (
+                        "Origin of the memory content. Controls trust_score at write time. "
+                        "'human_verified'=1.0, 'mcp_tool'=0.85, 'llm_inference'=0.7, 'external_doc'=0.5. "
+                        "Lower-trust sources face a higher effective W(m) worthiness bar."
+                    ),
+                },
             },
             "required": ["content", "category"],
         },
