@@ -1630,6 +1630,92 @@ def experience_replay(
     return {"replayed": len(replayed_ids), "ids": replayed_ids, "skipped_permanent": skipped}
 
 
+def mine_causal_chains(db, now=None, max_depth=5):
+    """Causal chain mining pass.
+
+    Walks the caused_by_event_id chains in the events table and writes
+    transitive causal relationships as edges in knowledge_edges.
+
+    For each event E with a cause C:
+    - depth 1: direct_cause edge  (E → C,  weight 1.0)
+    - depth 2+: transitive_cause edge (E → ancestor, weight 1.0 / depth)
+
+    Edges are upserted: existing edges get their weight averaged toward the
+    newly computed value so repeated mining runs are idempotent.
+    """
+    if now is None:
+        now = datetime.now()
+    now_sql = now.strftime("%Y-%m-%dT%H:%M:%S")
+
+    stats = {"events_scanned": 0, "edges_created": 0, "edges_updated": 0}
+
+    # All events that are part of a causal chain (have a parent)
+    caused_events = db.execute(
+        "SELECT id, caused_by_event_id, agent_id FROM events WHERE caused_by_event_id IS NOT NULL"
+    ).fetchall()
+
+    for row in caused_events:
+        child_id = row["id"]
+        parent_id = row["caused_by_event_id"]
+        agent_id = row["agent_id"] or "hippocampus"
+        stats["events_scanned"] += 1
+
+        current_id = parent_id
+        depth = 1
+        visited = {child_id}  # cycle guard
+
+        while current_id is not None and depth <= max_depth:
+            if current_id in visited:
+                break
+            visited.add(current_id)
+
+            relation = "direct_cause" if depth == 1 else "transitive_cause"
+            weight = 1.0 / depth
+
+            existing = db.execute(
+                """
+                SELECT id, weight FROM knowledge_edges
+                WHERE source_table = 'events' AND source_id = ?
+                  AND target_table = 'events' AND target_id = ?
+                  AND relation_type = ?
+                """,
+                (child_id, current_id, relation),
+            ).fetchone()
+
+            if existing:
+                # Convergent-average toward the computed weight
+                new_weight = round((existing["weight"] + weight) / 2.0, 4)
+                db.execute(
+                    "UPDATE knowledge_edges SET weight = ?, last_reinforced_at = ?, weight_updated_at = ? WHERE id = ?",
+                    (new_weight, now_sql, now_sql, existing["id"]),
+                )
+                stats["edges_updated"] += 1
+            else:
+                db.execute(
+                    """
+                    INSERT INTO knowledge_edges
+                      (source_table, source_id, target_table, target_id,
+                       relation_type, weight, agent_id, created_at,
+                       last_reinforced_at, weight_updated_at)
+                    VALUES ('events', ?, 'events', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (child_id, current_id, relation, weight, agent_id,
+                     now_sql, now_sql, now_sql),
+                )
+                stats["edges_created"] += 1
+
+            # Walk up the chain
+            parent_row = db.execute(
+                "SELECT caused_by_event_id FROM events WHERE id = ?", (current_id,)
+            ).fetchone()
+            if parent_row is None:
+                break
+            current_id = parent_row["caused_by_event_id"]
+            depth += 1
+
+    return stats
+
+
 def cmd_consolidation_cycle(args):
     """Full consolidation cycle: decay -> demotion -> contradictions -> merge -> compress -> event log.
 
@@ -1679,7 +1765,10 @@ def cmd_consolidation_cycle(args):
     # Pass 9: Hebbian edge strengthening — co-retrieval pattern learning
     hebbian_stats = run_hebbian_pass(db, now=now)
 
-    # Pass 10: Dream pass — creative synthesis via cross-scope bisociation
+    # Pass 10: Causal chain mining — walk caused_by_event_id chains, write transitive edges
+    causal_stats = mine_causal_chains(db, now=now)
+
+    # Pass 11: Dream pass — creative synthesis via cross-scope bisociation
     dream_agent = resolve_event_agent(db, args.agent)
     dream_stats = run_dream_pass(db, agent_id=dream_agent)
 
@@ -1718,6 +1807,7 @@ def cmd_consolidation_cycle(args):
         },
         "experience_replay": replay_stats,
         "hebbian": hebbian_stats,
+        "causal_chain_mining": causal_stats,
         "dream": dream_stats,
         "store_health": health,
     }
@@ -1748,6 +1838,7 @@ def cmd_consolidation_cycle(args):
                 f"replayed={replay_stats.get('replayed', 0)}, "
                 f"hebb_created={hebbian_stats.get('edges_created', 0)}, "
                 f"hebb_strengthened={hebbian_stats.get('edges_strengthened', 0)}, "
+                f"causal_edges={causal_stats.get('edges_created', 0) + causal_stats.get('edges_updated', 0)}, "
                 f"dream_created={dream_stats.get('hypotheses_created', 0)}, "
                 f"snr={health['signal_to_noise']}"
             ),
