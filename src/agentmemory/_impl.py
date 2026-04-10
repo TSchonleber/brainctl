@@ -13005,6 +13005,19 @@ def build_parser():
     out_rep.add_argument("--json", action="store_true")
     out_rep.add_argument("--save", action="store_true", help="Persist calibration snapshot to memory_outcome_calibration")
 
+    # --- config ---
+    p_config = sub.add_parser("config", help="Manage brainctl configuration")
+    config_sub = p_config.add_subparsers(dest="config_cmd")
+    p_config_init = config_sub.add_parser("init", help="Create default config file")
+    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing config")
+    config_sub.add_parser("show", help="Show effective configuration")
+
+    # --- migrate ---
+    p_migrate = sub.add_parser("migrate", help="Apply pending database migrations")
+    p_migrate.add_argument("--status", action="store_true", help="Show migration status without applying")
+    p_migrate.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing")
+    p_migrate.add_argument("--path", help="Path to brain.db (default: from env/config)")
+
     return p
 
 # ---------------------------------------------------------------------------
@@ -13080,6 +13093,37 @@ def cmd_outcome_report(args):
     print(f"  Brier score:                    {_f2(brier)}  {DIM}(0=perfect, 1=worst){RESET}")
     print(f"  Precision@5:                    {_f2(p5)}")
     print()
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+def cmd_config(args):
+    from agentmemory.config import init_config_file, show as config_show
+    sub = getattr(args, 'config_cmd', None)
+    if sub == 'init':
+        force = getattr(args, 'force', False)
+        created, path = init_config_file(force=force)
+        json_out({"ok": True, "created": created, "path": path})
+    elif sub == 'show':
+        json_out(config_show())
+    else:
+        json_out({"error": "Usage: brainctl config [init|show]"})
+
+
+def cmd_migrate(args):
+    from agentmemory.migrate import run as migrate_run, status as migrate_status
+    db = str(getattr(args, 'path', None) or DB_PATH)
+
+    if args.status:
+        result = migrate_status(db)
+        json_out(result)
+        return
+
+    dry_run = getattr(args, 'dry_run', False)
+    result = migrate_run(db, dry_run=dry_run)
+    json_out(result)
+
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -13393,6 +13437,11 @@ def main():
         fn = dispatch.get(world_cmd)
         if fn is None:
             fn = cmd_world_status  # default subcommand
+    elif args.command == "config":
+        fn = cmd_config
+    elif args.command == "migrate":
+        cmd_migrate(args)
+        return
     else:
         fn = dispatch.get(args.command)
 
