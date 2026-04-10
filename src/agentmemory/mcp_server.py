@@ -834,7 +834,7 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
         labile_rescued = rescued.rowcount
 
     db.commit(); db.close()
-    result = {"ok": True, "event_id": eid}
+    result = {"ok": True, "event_id": eid, "created_at": now_ts}
     if labile_rescued:
         result["labile_rescued"] = labile_rescued
 
