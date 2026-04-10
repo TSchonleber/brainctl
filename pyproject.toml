@@ -27,7 +27,8 @@ classifiers = [
 [project.optional-dependencies]
 mcp = ["mcp>=1.27.0"]
 vec = ["sqlite-vec>=0.1.0"]
-all = ["mcp>=1.27.0", "sqlite-vec>=0.1.0"]
+obsidian = ["watchdog>=3.0.0"]
+all = ["mcp>=1.27.0", "sqlite-vec>=0.1.0", "watchdog>=3.0.0"]
 
 [project.scripts]
 brainctl = "agentmemory.cli:main"

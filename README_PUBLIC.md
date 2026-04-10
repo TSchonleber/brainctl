@@ -109,6 +109,33 @@ Write Gate (W(m))
 └── Force flag          — bypass for explicit writes
 ```
 
+## Obsidian Integration
+
+Bidirectional sync between brain.db and an [Obsidian](https://obsidian.md) vault.
+brain.db is the source of truth; Obsidian is the navigable wiki layer.
+
+```bash
+# Export brain to vault
+brainctl obsidian export ~/Documents/MyVault
+
+# Check drift between brain.db and vault
+brainctl obsidian status ~/Documents/MyVault
+
+# Import new notes you wrote in Obsidian
+brainctl obsidian import ~/Documents/MyVault
+
+# Watch vault for new/modified notes and auto-ingest
+pip install brainctl[obsidian]
+brainctl obsidian watch ~/Documents/MyVault
+```
+
+Vault layout under `<vault>/brainctl/`:
+- `memories/<id>-<slug>.md` — one file per active memory with frontmatter
+- `entities/<name>.md` — one file per entity, observations listed, `[[wikilinks]]` ready
+- `events/YYYY-MM-DD.md` — daily note grouping all events for that date
+
+Export is idempotent (skips existing files unless `--force`). Import skips any file that already has a `brainctl_id:` frontmatter field.
+
 ## Vector Search (Optional)
 
 brainctl works without embeddings. For vector search, install Ollama and sqlite-vec:
