@@ -1894,6 +1894,41 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="quarantine_list",
+        description="List memories in the immunity quarantine. Filter by verdict: pending (unreviewed), safe, malicious, or uncertain.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["pending", "safe", "malicious", "uncertain"]},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
+        name="quarantine_review",
+        description="Review a quarantined memory: mark it safe, malicious, or uncertain. safe → memory restored. malicious → flagged for purge.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "quarantine_id": {"type": "integer"},
+                "verdict": {"type": "string", "enum": ["safe", "malicious", "uncertain"]},
+            },
+            "required": ["quarantine_id", "verdict"],
+        },
+    ),
+    Tool(
+        name="quarantine_purge",
+        description="Permanently delete a memory marked malicious and retract all derived knowledge edges. Requires verdict='malicious'. Use dry_run=true to preview.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "quarantine_id": {"type": "integer"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["quarantine_id"],
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2374,6 +2409,128 @@ def tool_affect_monitor(agent_id="mcp-client", **kw):
     return fleet_affect_summary(agent_states)
 
 # ---------------------------------------------------------------------------
+# Memory immunity / quarantine tools (issue #24)
+# ---------------------------------------------------------------------------
+
+def _ensure_quarantine_table_bmc(conn):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS memory_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL,
+            source_trust REAL,
+            contradiction_count INTEGER DEFAULT 0,
+            quarantined_by TEXT NOT NULL DEFAULT 'system',
+            reviewed_by TEXT DEFAULT NULL,
+            reviewed_at TEXT DEFAULT NULL,
+            verdict TEXT DEFAULT NULL CHECK(verdict IN ('safe','malicious','uncertain')),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_quarantine_memory_id ON memory_quarantine(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_quarantine_verdict ON memory_quarantine(verdict);
+        CREATE INDEX IF NOT EXISTS idx_quarantine_created ON memory_quarantine(created_at DESC);
+    """)
+    conn.commit()
+
+
+def tool_quarantine_list(agent_id="mcp-client", verdict=None, limit=20, **kw):
+    if verdict and verdict not in ("safe", "malicious", "uncertain", "pending"):
+        return {"ok": False, "error": "verdict must be safe, malicious, uncertain, or pending"}
+    db = get_db()
+    _ensure_quarantine_table_bmc(db)
+    try:
+        conditions = []
+        params = []
+        if verdict == "pending":
+            conditions.append("q.verdict IS NULL")
+        elif verdict:
+            conditions.append("q.verdict = ?")
+            params.append(verdict)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        rows = db.execute(
+            f"""SELECT q.id, q.memory_id, q.reason, q.source_trust, q.contradiction_count,
+                   q.quarantined_by, q.verdict, q.reviewed_by, q.reviewed_at, q.created_at,
+                   m.content, m.category, m.confidence, m.agent_id as memory_agent_id
+            FROM memory_quarantine q JOIN memories m ON m.id = q.memory_id
+            {where} ORDER BY q.created_at DESC LIMIT ?""",
+            params + [limit],
+        ).fetchall()
+        return {"ok": True, "count": len(rows), "items": [dict(r) for r in rows]}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_quarantine_review(agent_id="mcp-client", quarantine_id=None, verdict=None, **kw):
+    if quarantine_id is None:
+        return {"ok": False, "error": "quarantine_id required"}
+    if verdict not in ("safe", "malicious", "uncertain"):
+        return {"ok": False, "error": "verdict must be safe, malicious, or uncertain"}
+    db = get_db()
+    _ensure_quarantine_table_bmc(db)
+    try:
+        row = db.execute("SELECT * FROM memory_quarantine WHERE id = ?", (quarantine_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": f"quarantine record {quarantine_id} not found"}
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            "UPDATE memory_quarantine SET verdict = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+            (verdict, agent_id, now, quarantine_id),
+        )
+        if verdict == "safe":
+            db.execute(
+                "UPDATE memories SET retired_at = NULL WHERE id = ? AND retired_at IS NOT NULL",
+                (row["memory_id"],),
+            )
+        db.commit()
+        return {"ok": True, "quarantine_id": quarantine_id, "memory_id": row["memory_id"],
+                "verdict": verdict, "reviewed_by": agent_id, "reviewed_at": now}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_quarantine_purge(agent_id="mcp-client", quarantine_id=None, dry_run=False, **kw):
+    if quarantine_id is None:
+        return {"ok": False, "error": "quarantine_id required"}
+    db = get_db()
+    _ensure_quarantine_table_bmc(db)
+    try:
+        row = db.execute("SELECT * FROM memory_quarantine WHERE id = ?", (quarantine_id,)).fetchone()
+        if not row:
+            return {"ok": False, "error": f"quarantine record {quarantine_id} not found"}
+        if row["verdict"] != "malicious":
+            return {"ok": False, "error": f"verdict is '{row['verdict']}', not 'malicious' — review first"}
+        memory_id = row["memory_id"]
+        ke_count = db.execute(
+            "SELECT COUNT(*) FROM knowledge_edges "
+            "WHERE (source_table='memories' AND source_id=?) OR (target_table='memories' AND target_id=?)",
+            (memory_id, memory_id),
+        ).fetchone()[0]
+        if dry_run:
+            return {"ok": True, "dry_run": True, "memory_id": memory_id,
+                    "knowledge_edges_to_retract": ke_count}
+        db.execute(
+            "DELETE FROM knowledge_edges "
+            "WHERE (source_table='memories' AND source_id=?) OR (target_table='memories' AND target_id=?)",
+            (memory_id, memory_id),
+        )
+        db.execute(
+            "UPDATE memories SET retired_at = ? WHERE id = ?",
+            (datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"), memory_id),
+        )
+        db.commit()
+        return {"ok": True, "dry_run": False, "memory_id": memory_id,
+                "knowledge_edges_retracted": ke_count}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
 
@@ -2421,6 +2578,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "attention_snapshot": tool_attention_snapshot,
         "consolidation_run": tool_consolidation_run,
         "free_energy_check": tool_free_energy_check,
+        "quarantine_list": tool_quarantine_list,
+        "quarantine_review": tool_quarantine_review,
+        "quarantine_purge": tool_quarantine_purge,
     }
 
     fn = dispatch.get(name)
