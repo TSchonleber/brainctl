@@ -206,14 +206,39 @@ def detect_epoch_boundaries(
     min_window: int = 4,
     topic_shift_threshold: float = 0.2,
     min_boundary_distance: int = 8,
+    context_decay: float = 0.7,
+    cosine_divergence_threshold: float = 0.55,
 ) -> list[dict]:
+    """Detect epoch boundaries using time-gap and cosine-divergence signals.
+
+    The topic-shift signal uses a rolling context Counter (exponential decay
+    λ=context_decay) instead of comparing fixed left/right windows.  Each
+    incoming event is scored against the accumulated context; a high divergence
+    (1 - cosine_similarity > cosine_divergence_threshold) flags a boundary —
+    analogous to prediction error in temporal context models.
+    """
     candidates = []
     if len(events) < 2:
         return candidates
 
+    # Rolling context counter — exponential decay per event.
+    # context = decay * context + (1 - decay) * new_event_tokens
+    context_counter: Counter = Counter()
+
     for idx in range(1, len(events)):
         prev_ts = _parse_timestamp(events[idx - 1].get("created_at"))
         curr_ts = _parse_timestamp(events[idx].get("created_at"))
+
+        # Blend previous event's tokens into rolling context before checking current.
+        prev_tokens = _event_topic_tokens(events[idx - 1])
+        if not context_counter:
+            # Bootstrap on first event.
+            context_counter = Counter({k: float(v) for k, v in prev_tokens.items()})
+        else:
+            decayed = Counter({k: v * context_decay for k, v in context_counter.items()})
+            scaled_new = Counter({k: v * (1.0 - context_decay) for k, v in prev_tokens.items()})
+            context_counter = decayed + scaled_new
+
         if prev_ts is None or curr_ts is None:
             continue
 
@@ -223,40 +248,19 @@ def detect_epoch_boundaries(
         if gap_signal:
             reasons.append("time_gap")
 
-        left_slice = events[max(0, idx - window_size):idx]
-        right_slice = events[idx:min(len(events), idx + window_size)]
-        topic_similarity = None
+        # Cosine-divergence signal: how much does the current event diverge from context?
+        curr_tokens = _event_topic_tokens(events[idx])
+        cosine_div: float | None = None
+        topic_similarity: float | None = None
         topic_signal = False
-        left_top = None
-        right_top = None
-        if len(left_slice) >= min_window and len(right_slice) >= min_window:
-            left_counter: Counter = Counter()
-            right_counter: Counter = Counter()
-            left_projects = Counter(str(r.get("project")).strip().lower() for r in left_slice if r.get("project"))
-            right_projects = Counter(str(r.get("project")).strip().lower() for r in right_slice if r.get("project"))
-            for row in left_slice:
-                left_counter.update(_event_topic_tokens(row))
-            for row in right_slice:
-                right_counter.update(_event_topic_tokens(row))
-            topic_similarity = _counter_cosine(left_counter, right_counter)
-            left_top = left_counter.most_common(1)[0][0] if left_counter else None
-            right_top = right_counter.most_common(1)[0][0] if right_counter else None
-            strong_project_shift = False
-            if left_projects and right_projects:
-                left_proj, left_proj_count = left_projects.most_common(1)[0]
-                right_proj, right_proj_count = right_projects.most_common(1)[0]
-                left_share = left_proj_count / len(left_slice)
-                right_share = right_proj_count / len(right_slice)
-                strong_project_shift = left_proj != right_proj and left_share >= 0.5 and right_share >= 0.5
-            topic_signal = (
-                (strong_project_shift and topic_similarity <= max(topic_shift_threshold, 0.3))
-                or topic_similarity <= (topic_shift_threshold / 2.0)
-            ) and (
-                left_top
-                and right_top
-                and left_top != right_top
-                and gap_h >= 6
-            )
+        left_top = context_counter.most_common(1)[0][0] if context_counter else None
+        right_top = curr_tokens.most_common(1)[0][0] if curr_tokens else None
+
+        if context_counter and curr_tokens:
+            cosine_sim = _counter_cosine(curr_tokens, context_counter)
+            topic_similarity = round(cosine_sim, 3)
+            cosine_div = round(1.0 - cosine_sim, 3)
+            topic_signal = cosine_div > cosine_divergence_threshold and gap_h >= 1.0
             if topic_signal:
                 reasons.append("topic_shift")
 
@@ -266,15 +270,16 @@ def detect_epoch_boundaries(
         score = 0.0
         if gap_signal:
             score += min(gap_h / gap_hours, 3.0)
-        if topic_signal and topic_similarity is not None:
-            score += max(0.0, 1.0 - topic_similarity)
+        if topic_signal and cosine_div is not None:
+            score += cosine_div
 
         candidates.append({
             "boundary_index": idx,
             "boundary_at": events[idx].get("created_at"),
             "reasons": reasons,
             "gap_hours": round(gap_h, 2),
-            "topic_similarity": None if topic_similarity is None else round(topic_similarity, 3),
+            "topic_similarity": topic_similarity,
+            "cosine_divergence": cosine_div,
             "left_topic": left_top,
             "right_topic": right_top,
             "score": round(score, 3),
