@@ -322,6 +322,110 @@ def tool_reconsolidate(
         return {"ok": False, "error": str(exc)}
 
 
+def tool_consolidation_run(
+    agent_id: str = "mcp-client",
+    limit: int = 50,
+    min_priority: float = 0.1,
+    scope: str | None = None,
+    promote_threshold_ripple: int = 3,
+    promote_threshold_confidence: float = 0.7,
+    run_causal_mining: bool = True,
+    **kw,
+) -> dict:
+    """Run a consolidation pass over the replay queue.
+
+    Implements the SWR-driven offline consolidation cycle:
+    1. Fetch top-N memories by replay_priority (the accumulated SWR tag score).
+    2. Promote episodic→semantic for memories that have sufficient ripple endorsement
+       and confidence (analogous to cortical transfer during slow-wave sleep).
+    3. Optionally mine causal chains in the events table (writes direct_cause /
+       transitive_cause edges to knowledge_edges).
+    4. Zero out replay_priority for all processed memories, resetting the queue.
+
+    Returns stats: processed, promoted, causal edges created/updated.
+
+    Args:
+        limit: Max memories to process per pass (default 50, max 500).
+        min_priority: Ignore memories below this replay_priority (default 0.1).
+        scope: Limit pass to a specific scope (e.g. 'project:foo').
+        promote_threshold_ripple: Min ripple_tags for episodic→semantic promotion (default 3).
+        promote_threshold_confidence: Min confidence for promotion (default 0.7).
+        run_causal_mining: Whether to run mine_causal_chains after the memory pass (default True).
+    """
+    limit = max(1, min(500, int(limit)))
+    min_priority = float(min_priority)
+    promote_threshold_ripple = max(1, int(promote_threshold_ripple))
+    promote_threshold_confidence = max(0.0, min(1.0, float(promote_threshold_confidence)))
+
+    try:
+        db = _db()
+
+        # Step 1: Fetch replay queue
+        where_parts = ["retired_at IS NULL", "replay_priority >= ?"]
+        params: list = [min_priority]
+        if scope:
+            where_parts.append("scope = ?")
+            params.append(scope)
+        where = " AND ".join(where_parts)
+
+        rows = db.execute(
+            f"SELECT id, memory_type, ripple_tags, confidence, replay_priority "
+            f"FROM memories WHERE {where} ORDER BY replay_priority DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+
+        processed_ids = [r["id"] for r in rows]
+
+        # Step 2: Promote episodic → semantic
+        promotion_ids: list[int] = []
+        for r in rows:
+            if (
+                r["memory_type"] == "episodic"
+                and (r["ripple_tags"] or 0) >= promote_threshold_ripple
+                and (r["confidence"] or 0.0) >= promote_threshold_confidence
+            ):
+                promotion_ids.append(r["id"])
+
+        if promotion_ids:
+            now = _now_sql()
+            for mid in promotion_ids:
+                db.execute(
+                    "UPDATE memories SET memory_type = 'semantic', updated_at = ? WHERE id = ?",
+                    (now, mid),
+                )
+
+        # Step 3: Zero out replay_priority for all processed memories
+        if processed_ids:
+            placeholders = ",".join("?" * len(processed_ids))
+            db.execute(
+                f"UPDATE memories SET replay_priority = 0.0 WHERE id IN ({placeholders})",
+                processed_ids,
+            )
+
+        db.commit()
+
+        # Step 4: Mine causal chains
+        causal_stats: dict = {"events_scanned": 0, "edges_created": 0, "edges_updated": 0}
+        if run_causal_mining:
+            from .hippocampus import mine_causal_chains
+            causal_stats = mine_causal_chains(db)
+            db.commit()
+
+        db.close()
+
+        return {
+            "ok": True,
+            "processed": len(processed_ids),
+            "promoted_to_semantic": len(promotion_ids),
+            "promotion_ids": promotion_ids[:20],
+            "causal_mining": causal_stats,
+            "scope": scope,
+            "min_priority": min_priority,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def tool_consolidation_stats(
     agent_id: str = "mcp-client",
     scope: str | None = None,
@@ -493,6 +597,51 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["memory_id", "new_content"],
+        },
+    ),
+    Tool(
+        name="consolidation_run",
+        description=(
+            "Run a consolidation pass over the replay queue. "
+            "Fetches top-N memories by replay_priority, promotes eligible episodic→semantic "
+            "(ripple_tags >= threshold and confidence >= threshold), mines causal chains in "
+            "the events table, then zeros out processed replay_priority scores. "
+            "Implements the SWR-driven offline consolidation cycle (cortical transfer analogue)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max memories to process per pass (default 50, max 500)",
+                    "default": 50,
+                },
+                "min_priority": {
+                    "type": "number",
+                    "description": "Ignore memories below this replay_priority (default 0.1)",
+                    "default": 0.1,
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Limit pass to a specific scope (e.g. 'project:foo')",
+                },
+                "promote_threshold_ripple": {
+                    "type": "integer",
+                    "description": "Min ripple_tags for episodic→semantic promotion (default 3)",
+                    "default": 3,
+                },
+                "promote_threshold_confidence": {
+                    "type": "number",
+                    "description": "Min confidence for episodic→semantic promotion (default 0.7)",
+                    "default": 0.7,
+                },
+                "run_causal_mining": {
+                    "type": "boolean",
+                    "description": "Run causal chain mining pass after memory processing (default true)",
+                    "default": True,
+                },
+            },
         },
     ),
     Tool(
@@ -814,6 +963,7 @@ def tool_attention_snapshot(
 
 
 DISPATCH: dict = {
+    "consolidation_run":       lambda agent_id=None, **kw: tool_consolidation_run(agent_id=agent_id or "mcp-client", **kw),
     "replay_boost":           lambda agent_id=None, **kw: tool_replay_boost(agent_id=agent_id or "mcp-client", **kw),
     "replay_queue":           lambda agent_id=None, **kw: tool_replay_queue(agent_id=agent_id or "mcp-client", **kw),
     "reconsolidation_check":  lambda agent_id=None, **kw: tool_reconsolidation_check(agent_id=agent_id or "mcp-client", **kw),

@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (178)
+## Available Tools (179)
 
 | Tool | Description |
 |------|-------------|
@@ -83,6 +83,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 | `consolidation_stats` | Replay queue depth, labile count, ripple event totals |
 | `memory_calibration` | Per-category Brier-score calibration, staleness, coverage gaps (metacognition) |
 | `attention_snapshot` | Synthesize agent attention state from recent searches and events |
+| `consolidation_run` | Run SWR-driven consolidation pass: promote episodic→semantic, mine causal chains |
 
 ## Environment Variables
 

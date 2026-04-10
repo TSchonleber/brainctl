@@ -1687,6 +1687,51 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="consolidation_run",
+        description=(
+            "Run a consolidation pass over the replay queue. "
+            "Fetches top-N memories by replay_priority, promotes eligible episodic→semantic "
+            "(ripple_tags >= threshold and confidence >= threshold), mines causal chains in "
+            "the events table, then zeros out processed replay_priority scores. "
+            "Implements the SWR-driven offline consolidation cycle (cortical transfer analogue)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max memories to process per pass (default 50, max 500)",
+                    "default": 50,
+                },
+                "min_priority": {
+                    "type": "number",
+                    "description": "Ignore memories below this replay_priority (default 0.1)",
+                    "default": 0.1,
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "Limit pass to a specific scope (e.g. 'project:foo')",
+                },
+                "promote_threshold_ripple": {
+                    "type": "integer",
+                    "description": "Min ripple_tags for episodic→semantic promotion (default 3)",
+                    "default": 3,
+                },
+                "promote_threshold_confidence": {
+                    "type": "number",
+                    "description": "Min confidence for episodic→semantic promotion (default 0.7)",
+                    "default": 0.7,
+                },
+                "run_causal_mining": {
+                    "type": "boolean",
+                    "description": "Run causal chain mining pass after memory processing (default true)",
+                    "default": True,
+                },
+            },
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1853,6 +1898,161 @@ def tool_attention_snapshot(agent_id="mcp-client", window_minutes=30, top_n=5, *
 
 
 # ---------------------------------------------------------------------------
+# Consolidation tools (inlined — brainctl-mcp does not import the package module)
+# ---------------------------------------------------------------------------
+
+def _mine_causal_chains_inline(db, max_depth=5):
+    """Inline port of hippocampus.mine_causal_chains for brainctl-mcp."""
+    from datetime import datetime as _dt
+    now_sql = _dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+    stats = {"events_scanned": 0, "edges_created": 0, "edges_updated": 0}
+
+    caused_events = db.execute(
+        "SELECT id, caused_by_event_id, agent_id FROM events WHERE caused_by_event_id IS NOT NULL"
+    ).fetchall()
+
+    for row in caused_events:
+        child_id = row["id"]
+        parent_id = row["caused_by_event_id"]
+        agent = row["agent_id"] or "hippocampus"
+        stats["events_scanned"] += 1
+
+        current_id = parent_id
+        depth = 1
+        visited = {child_id}
+
+        while current_id is not None and depth <= max_depth:
+            if current_id in visited:
+                break
+            visited.add(current_id)
+
+            relation = "direct_cause" if depth == 1 else "transitive_cause"
+            weight = 1.0 / depth
+
+            existing = db.execute(
+                "SELECT id, weight FROM knowledge_edges "
+                "WHERE source_table = 'events' AND source_id = ? "
+                "AND target_table = 'events' AND target_id = ? AND relation_type = ?",
+                (child_id, current_id, relation),
+            ).fetchone()
+
+            if existing:
+                new_weight = round((existing["weight"] + weight) / 2.0, 4)
+                db.execute(
+                    "UPDATE knowledge_edges SET weight = ?, last_reinforced_at = ?, weight_updated_at = ? WHERE id = ?",
+                    (new_weight, now_sql, now_sql, existing["id"]),
+                )
+                stats["edges_updated"] += 1
+            else:
+                db.execute(
+                    "INSERT INTO knowledge_edges "
+                    "(source_table, source_id, target_table, target_id, "
+                    "relation_type, weight, agent_id, created_at, last_reinforced_at, weight_updated_at) "
+                    "VALUES ('events', ?, 'events', ?, ?, ?, ?, ?, ?, ?)",
+                    (child_id, current_id, relation, weight, agent,
+                     now_sql, now_sql, now_sql),
+                )
+                stats["edges_created"] += 1
+
+            parent_row = db.execute(
+                "SELECT caused_by_event_id FROM events WHERE id = ?", (current_id,)
+            ).fetchone()
+            if parent_row is None:
+                break
+            current_id = parent_row["caused_by_event_id"]
+            depth += 1
+
+    return stats
+
+
+def tool_consolidation_run(
+    agent_id="mcp-client",
+    limit=50,
+    min_priority=0.1,
+    scope=None,
+    promote_threshold_ripple=3,
+    promote_threshold_confidence=0.7,
+    run_causal_mining=True,
+    **kw,
+):
+    """Run a consolidation pass over the replay queue.
+
+    Fetches top-N memories by replay_priority, promotes eligible episodic→semantic,
+    mines causal chains, then zeros out processed replay_priority scores.
+    """
+    limit = max(1, min(500, int(limit)))
+    min_priority = float(min_priority)
+    promote_threshold_ripple = max(1, int(promote_threshold_ripple))
+    promote_threshold_confidence = max(0.0, min(1.0, float(promote_threshold_confidence)))
+
+    try:
+        db = get_db()
+
+        where_parts = ["retired_at IS NULL", "replay_priority >= ?"]
+        params = [min_priority]
+        if scope:
+            where_parts.append("scope = ?")
+            params.append(scope)
+        where = " AND ".join(where_parts)
+
+        rows = db.execute(
+            f"SELECT id, memory_type, ripple_tags, confidence, replay_priority "
+            f"FROM memories WHERE {where} ORDER BY replay_priority DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+
+        processed_ids = [r["id"] for r in rows]
+
+        # Promote episodic → semantic
+        promotion_ids = []
+        for r in rows:
+            if (
+                r["memory_type"] == "episodic"
+                and (r["ripple_tags"] or 0) >= promote_threshold_ripple
+                and (r["confidence"] or 0.0) >= promote_threshold_confidence
+            ):
+                promotion_ids.append(r["id"])
+
+        if promotion_ids:
+            now_sql = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            for mid in promotion_ids:
+                db.execute(
+                    "UPDATE memories SET memory_type = 'semantic', updated_at = ? WHERE id = ?",
+                    (now_sql, mid),
+                )
+
+        # Zero out replay_priority for processed memories
+        if processed_ids:
+            placeholders = ",".join("?" * len(processed_ids))
+            db.execute(
+                f"UPDATE memories SET replay_priority = 0.0 WHERE id IN ({placeholders})",
+                processed_ids,
+            )
+
+        db.commit()
+
+        # Mine causal chains
+        causal_stats = {"events_scanned": 0, "edges_created": 0, "edges_updated": 0}
+        if run_causal_mining:
+            causal_stats = _mine_causal_chains_inline(db)
+            db.commit()
+
+        db.close()
+
+        return {
+            "ok": True,
+            "processed": len(processed_ids),
+            "promoted_to_semantic": len(promotion_ids),
+            "promotion_ids": promotion_ids[:20],
+            "causal_mining": causal_stats,
+            "scope": scope,
+            "min_priority": min_priority,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Affect tools
 # ---------------------------------------------------------------------------
 
@@ -1987,6 +2187,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "affect_monitor": tool_affect_monitor,
         "memory_calibration": tool_memory_calibration,
         "attention_snapshot": tool_attention_snapshot,
+        "consolidation_run": tool_consolidation_run,
     }
 
     fn = dispatch.get(name)
