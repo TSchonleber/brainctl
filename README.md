@@ -100,6 +100,47 @@ brain.wrap_up("what I accomplished")  # session end: logs event + creates handof
 
 See [examples/](examples/) for runnable scripts and [docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md) for the full agent integration guide.
 
+## Framework Integrations
+
+### LangChain
+
+```bash
+pip install brainctl langchain-core
+```
+
+```python
+from agentmemory.integrations.langchain import BrainctlChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+
+chain_with_history = RunnableWithMessageHistory(
+    runnable=my_chain,
+    get_session_history=lambda sid: BrainctlChatMessageHistory(session_id=sid),
+)
+```
+
+Chat messages persist in brain.db. The Brain instance is accessible via `history.brain` for knowledge operations beyond chat (entities, decisions, triggers, search).
+
+### CrewAI
+
+```bash
+pip install brainctl crewai
+```
+
+```python
+from crewai import Crew
+from crewai.memory import ShortTermMemory, LongTermMemory, EntityMemory
+from agentmemory.integrations.crewai import BrainctlStorage
+
+crew = Crew(
+    agents=[...], tasks=[...], memory=True,
+    short_term_memory=ShortTermMemory(storage=BrainctlStorage("short-term")),
+    long_term_memory=LongTermMemory(storage=BrainctlStorage("long-term")),
+    entity_memory=EntityMemory(storage=BrainctlStorage("entity")),
+)
+```
+
+All crew memory goes to a single brain.db. FTS5 search out of the box, optional vector search with `pip install brainctl[vec]`.
+
 ## Python API (21 methods)
 
 | Method | What it does |
