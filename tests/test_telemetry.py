@@ -182,7 +182,7 @@ class TestMcpDispatchWorks:
         monkeypatch.setattr(tmod, "DB_PATH", brain.db_path)
 
         fn = tmod.DISPATCH["telemetry"]
-        result = fn({})
+        result = fn()
 
         assert result["ok"] is True
         assert "health_score" in result
@@ -197,7 +197,7 @@ class TestMcpDispatchWorks:
         monkeypatch.setattr(tmod, "DB_PATH", brain.db_path)
 
         fn = tmod.DISPATCH["telemetry"]
-        result = fn({"agent_id": "dispatch-agent"})
+        result = fn(agent_id="dispatch-agent")
 
         assert result["ok"] is True
         assert result["memory"]["count"] == 1

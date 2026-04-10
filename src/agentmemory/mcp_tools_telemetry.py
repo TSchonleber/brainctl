@@ -64,5 +64,5 @@ TOOLS: list[Tool] = [
 ]
 
 DISPATCH: dict = {
-    "telemetry": lambda args: tool_telemetry(agent_id=args.get("agent_id")),
+    "telemetry": lambda agent_id=None, **kw: tool_telemetry(agent_id=agent_id),
 }

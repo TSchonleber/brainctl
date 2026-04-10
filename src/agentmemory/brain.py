@@ -27,6 +27,13 @@ from typing import Any, Dict, List, Optional, Union
 from agentmemory.affect import classify_affect
 from agentmemory.paths import get_db_path
 
+try:
+    from agentmemory import vec as _vec
+    _VEC_AVAILABLE = True
+except ImportError:
+    _vec = None  # type: ignore[assignment]
+    _VEC_AVAILABLE = False
+
 _INIT_SQL_PATH = Path(__file__).parent / "db" / "init_schema.sql"
 
 
@@ -123,6 +130,13 @@ class Brain:
         )
         db.commit()
         mid = cur.lastrowid
+        if _VEC_AVAILABLE:
+            try:
+                _vec.index_memory(db, mid, content)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "vec.index_memory failed for memory %s: %s", mid, exc
+                )
         db.close()
         return mid
     

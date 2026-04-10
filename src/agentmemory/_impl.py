@@ -13128,6 +13128,30 @@ def build_parser():
     p_merge.add_argument("--tables", default=None, metavar="TABLE1,TABLE2",
                          help="Only merge specific tables (comma-separated)")
 
+    # --- schedule ---
+    p_sched = sub.add_parser("schedule", help="Hippocampus consolidation scheduler daemon")
+    sched_sub = p_sched.add_subparsers(dest="sched_cmd")
+
+    sched_sub.add_parser("status", help="Show schedule config and last/next run times")
+
+    sched_run = sched_sub.add_parser("run", help="Run one consolidation cycle now")
+    sched_run.add_argument("--agent", default="hippocampus", help="Agent ID for event attribution")
+
+    sched_set = sched_sub.add_parser("set", help="Configure the schedule")
+    sched_set.add_argument("--interval", type=int, default=None, metavar="N",
+                           help="Interval in minutes between consolidation runs")
+    sched_set.add_argument("--enabled", dest="enabled", action="store_true", default=None,
+                           help="Enable the scheduled daemon")
+    sched_set.add_argument("--disabled", dest="enabled", action="store_false",
+                           help="Disable the scheduled daemon")
+
+    sched_start = sched_sub.add_parser("start", help="Start daemon loop (runs consolidation on interval)")
+    sched_start.add_argument("--interval", type=int, default=None, metavar="N",
+                             help="Override interval in minutes (default: from config, else 60)")
+    sched_start.add_argument("--daemon", action="store_true",
+                             help="Fork to background (if supported), otherwise run in foreground")
+    sched_start.add_argument("--agent", default="hippocampus", help="Agent ID for event attribution")
+
     return p
 
 # ---------------------------------------------------------------------------
@@ -13424,6 +13448,81 @@ def cmd_monitor(args):
 
     except KeyboardInterrupt:
         print("\n[monitor] stopped.", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Schedule command
+# ---------------------------------------------------------------------------
+
+
+def cmd_schedule(args):
+    """Route schedule subcommands."""
+    from agentmemory.scheduler import (
+        ConsolidationScheduler,
+        get_schedule_config,
+        set_schedule_config,
+    )
+
+    sched_cmd = getattr(args, "sched_cmd", None)
+    db_path = str(DB_PATH)
+    agent_id = getattr(args, "agent", "hippocampus")
+
+    if sched_cmd == "status":
+        config = get_schedule_config(db_path)
+        json_out({"ok": True, **config})
+
+    elif sched_cmd == "run":
+        config = get_schedule_config(db_path)
+        scheduler = ConsolidationScheduler(
+            db_path=db_path,
+            interval_minutes=config.get("interval_minutes", 60),
+            agent_id=agent_id,
+        )
+        result = scheduler.run_once()
+        json_out(result)
+
+    elif sched_cmd == "set":
+        config = get_schedule_config(db_path)
+        interval = getattr(args, "interval", None)
+        if interval is None:
+            interval = config.get("interval_minutes", 60)
+        enabled = getattr(args, "enabled", None)
+        if enabled is None:
+            enabled = config.get("enabled", False)
+        saved = set_schedule_config(db_path=db_path, interval_minutes=interval, enabled=enabled, agent_id=agent_id)
+        json_out({"ok": True, "config": saved})
+
+    elif sched_cmd == "start":
+        config = get_schedule_config(db_path)
+        interval = getattr(args, "interval", None) or config.get("interval_minutes", 60)
+        daemon_mode = getattr(args, "daemon", False)
+
+        if daemon_mode:
+            import subprocess
+            cmd = [
+                sys.executable, "-m", "agentmemory.scheduler",
+                "--db-path", db_path,
+                "--interval", str(interval),
+                "--agent", agent_id,
+            ]
+            proc = subprocess.Popen(cmd, start_new_session=True,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            json_out({"ok": True, "daemonized": True, "pid": proc.pid,
+                      "interval_minutes": interval, "agent_id": agent_id})
+        else:
+            print(f"[schedule] Starting consolidation daemon (interval={interval}m). Press Ctrl+C to stop.",
+                  flush=True)
+            scheduler = ConsolidationScheduler(
+                db_path=db_path,
+                interval_minutes=interval,
+                agent_id=agent_id,
+            )
+            try:
+                scheduler.run_daemon()
+            except KeyboardInterrupt:
+                json_out({"ok": True, "stopped": True, "runs_completed": scheduler._runs_completed})
+    else:
+        json_out({"error": "Usage: brainctl schedule [status|run|set|start]"})
 
 
 # ---------------------------------------------------------------------------
@@ -13748,6 +13847,9 @@ def main():
         return
     elif args.command == "merge":
         cmd_merge(args)
+        return
+    elif args.command == "schedule":
+        cmd_schedule(args)
         return
     else:
         fn = dispatch.get(args.command)

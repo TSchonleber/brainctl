@@ -37,6 +37,7 @@ try:
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
         mcp_tools_expertise,
+        mcp_tools_federation,
         mcp_tools_health,
         mcp_tools_knowledge,
         mcp_tools_lifecycle,
@@ -47,6 +48,7 @@ try:
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
+        mcp_tools_scheduler,
         mcp_tools_telemetry,
         mcp_tools_temporal,
         mcp_tools_tom,
@@ -60,6 +62,7 @@ try:
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
         mcp_tools_expertise,
+        mcp_tools_federation,
         mcp_tools_health,
         mcp_tools_knowledge,
         mcp_tools_lifecycle,
@@ -70,6 +73,7 @@ try:
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
+        mcp_tools_scheduler,
         mcp_tools_telemetry,
         mcp_tools_temporal,
         mcp_tools_tom,
@@ -677,8 +681,8 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
     db = get_db()
     ensure_agent(db, agent_id)
     cur = db.execute(
-        "INSERT INTO events (agent_id, event_type, summary, detail, project, importance) VALUES (?,?,?,?,?,?)",
-        (agent_id, event_type, summary, detail, project, importance)
+        "INSERT INTO events (agent_id, event_type, summary, detail, project, importance, created_at) VALUES (?,?,?,?,?,?,?)",
+        (agent_id, event_type, summary, detail, project, importance, _now_ts())
     )
     eid = cur.lastrowid
     log_access(db, agent_id, "write", "events", eid)
@@ -834,7 +838,7 @@ def tool_entity_observe(agent_id: str, identifier: str, observations: str) -> di
     new_obs = [o.strip() for o in observations.split(";") if o.strip()]
     added = [o for o in new_obs if o not in current]
     current.extend(added)
-    db.execute("UPDATE entities SET observations=?, updated_at=datetime('now') WHERE id=?", (json.dumps(current), eid))
+    db.execute("UPDATE entities SET observations=?, updated_at=? WHERE id=?", (json.dumps(current), _now_ts(), eid))
     log_access(db, agent_id, "write", "entities", eid)
     db.commit(); db.close()
     return {"ok": True, "entity_id": eid, "added": added, "total_observations": len(current)}
@@ -878,7 +882,7 @@ def tool_trigger_list(agent_id: str, status: str = None) -> dict:
 def tool_trigger_check(agent_id: str, query: str) -> dict:
     db = get_db()
     # Expire overdue
-    db.execute("UPDATE memory_triggers SET status='expired' WHERE status='active' AND expires_at IS NOT NULL AND expires_at < datetime('now')")
+    db.execute("UPDATE memory_triggers SET status='expired' WHERE status='active' AND expires_at IS NOT NULL AND expires_at < ?", (_now_ts(),))
     rows = db.execute("SELECT * FROM memory_triggers WHERE status='active'").fetchall()
     query_lower = query.lower()
     query_words = set(query_lower.split())
