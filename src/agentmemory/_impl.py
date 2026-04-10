@@ -5533,6 +5533,101 @@ def cmd_dashboard(args):
     print()
 
 
+def cmd_doctor(args):
+    """Quick diagnostic: is the brain working?"""
+    use_color = sys.stdout.isatty() and not getattr(args, "json", False)
+    ok = lambda s: f"\033[32m{s}\033[0m" if use_color else s
+    fail = lambda s: f"\033[31m{s}\033[0m" if use_color else s
+    info = lambda s: f"\033[33m{s}\033[0m" if use_color else s
+
+    issues = []
+
+    # DB existence
+    if not DB_PATH.exists():
+        print(fail(f"  brain.db not found at {DB_PATH}"))
+        print(f"  Run: brainctl init")
+        json_out({"ok": False, "error": f"brain.db not found at {DB_PATH}"})
+        return
+    print(ok(f"  database: {DB_PATH}"))
+    db_size = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
+    print(f"  size: {db_size} MB")
+
+    db = get_db()
+
+    # Core tables
+    existing = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    required = ["memories", "events", "entities", "decisions", "agents",
+                 "handoff_packets", "memory_triggers", "affect_log", "knowledge_edges"]
+    for tbl in required:
+        if tbl not in existing:
+            issues.append(f"Missing table: {tbl}")
+
+    # FTS5
+    if "memories_fts" in existing:
+        print(ok("  FTS5 search: available"))
+    else:
+        issues.append("Missing FTS5 table: memories_fts")
+        print(fail("  FTS5 search: missing"))
+
+    # Integrity
+    try:
+        integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity == "ok":
+            print(ok("  integrity: ok"))
+        else:
+            issues.append(f"Integrity check: {integrity}")
+            print(fail(f"  integrity: {integrity}"))
+    except Exception as e:
+        issues.append(f"Integrity error: {e}")
+
+    # Counts
+    try:
+        active = db.execute("SELECT count(*) FROM memories WHERE retired_at IS NULL").fetchone()[0]
+        events = db.execute("SELECT count(*) FROM events").fetchone()[0]
+        entities = db.execute("SELECT count(*) FROM entities WHERE retired_at IS NULL").fetchone()[0]
+        print(f"  memories: {active} active | events: {events} | entities: {entities}")
+    except Exception:
+        pass
+
+    # Vec
+    try:
+        import sqlite_vec  # noqa: F401
+        print(ok("  vector search: available (sqlite-vec installed)"))
+        vec_available = True
+    except ImportError:
+        print(info("  vector search: not available (pip install brainctl[vec])"))
+        vec_available = False
+
+    # Ollama
+    try:
+        import urllib.request
+        req = urllib.request.Request(OLLAMA_EMBED_URL.replace("/api/embed", "/api/tags"), method="GET")
+        with urllib.request.urlopen(req, timeout=3):
+            print(ok("  Ollama: reachable"))
+    except Exception:
+        print(info("  Ollama: not reachable (optional — needed for vector search)"))
+
+    db.close()
+
+    # Verdict
+    if issues:
+        print(fail(f"\n  {len(issues)} issue(s) found:"))
+        for i in issues:
+            print(fail(f"    - {i}"))
+    else:
+        print(ok("\n  All checks passed."))
+
+    if getattr(args, "json", False):
+        json_out({
+            "ok": True,
+            "healthy": len(issues) == 0,
+            "issues": issues,
+            "db_path": str(DB_PATH),
+            "db_size_mb": db_size,
+            "vec_available": vec_available,
+        })
+
+
 def cmd_stats(args):
     db = get_db()
     stats = {}
@@ -5637,6 +5732,15 @@ def cmd_init(args):
         conn.close()
 
         json_out({"ok": True, "path": str(target), "tables": len(tables), "table_list": tables})
+        # Welcome message for interactive use
+        if sys.stdout.isatty():
+            print(f"\n  brain.db created at {target} ({len(tables)} tables)")
+            print(f"  Next steps:")
+            print(f"    brainctl doctor                  # check everything works")
+            print(f"    brainctl memory add 'fact' -c lesson  # store your first memory")
+            print(f"    brainctl search 'fact'           # find it")
+            print(f"    brainctl stats                   # see what's in the brain")
+            print(f"\n  Full guide: https://github.com/TSchonleber/brainctl/blob/main/docs/AGENT_ONBOARDING.md")
     except Exception as e:
         json_out({"ok": False, "error": str(e)})
 
@@ -12451,6 +12555,10 @@ def build_parser():
     init_p.add_argument("--path", help="Custom path for brain.db (default: ~/agentmemory/db/brain.db)")
     init_p.add_argument("--force", action="store_true", help="Overwrite existing database")
 
+    # --- diagnostics ---
+    doc_p = sub.add_parser("doctor", help="Quick diagnostic — is the brain working?")
+    doc_p.add_argument("--json", action="store_true", help="Output JSON")
+
     # --- maintenance ---
     sub.add_parser("backup", help="Backup database")
     sub.add_parser("stats", help="Show database statistics")
@@ -13570,6 +13678,7 @@ def main():
         "search": cmd_search,
         "backup": cmd_backup,
         "init": cmd_init,
+        "doctor": cmd_doctor,
         "stats": cmd_stats,
         "cost": cmd_cost,
         "affect": None,  # subcommand dispatch below
