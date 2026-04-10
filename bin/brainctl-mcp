@@ -1638,7 +1638,219 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="memory_calibration",
+        description=(
+            "Return per-category memory calibration diagnostics (agent metacognition). "
+            "Surfaces confidence distribution, Brier-score calibration error "
+            "(predicted confidence vs. actual recall engagement), staleness distribution, "
+            "and coverage gaps. Use to diagnose where an agent's memory quality is weakest."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "scope": {
+                    "type": "string",
+                    "description": "Limit to a specific scope (e.g. 'project:foo')",
+                },
+                "staleness_days": {
+                    "type": "integer",
+                    "description": "Mark memories not updated in this many days as stale (default 30)",
+                    "default": 30,
+                },
+            },
+        },
+    ),
+    Tool(
+        name="attention_snapshot",
+        description=(
+            "Synthesize an agent's current attention state from recent access_log and events. "
+            "Returns top query topics, active project, focus score (0=scattered, 1=focused), "
+            "and recent event summaries. Gives an agent visibility into its own recent "
+            "attention pattern without requiring a separate attention_state table."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "window_minutes": {
+                    "type": "integer",
+                    "description": "Look-back window in minutes (default 30, max 1440)",
+                    "default": 30,
+                },
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of top topics / events to return (default 5)",
+                    "default": 5,
+                },
+            },
+        },
+    ),
 ]
+
+# ---------------------------------------------------------------------------
+# Metacognition tools
+# ---------------------------------------------------------------------------
+
+def tool_memory_calibration(agent_id="mcp-client", scope=None, staleness_days=30, **kw):
+    """Per-category confidence calibration diagnostics (agent metacognition)."""
+    staleness_days = max(1, int(staleness_days))
+    try:
+        db = get_db()
+        where_parts = ["retired_at IS NULL"]
+        params = []
+        if scope:
+            where_parts.append("scope = ?")
+            params.append(scope)
+        if agent_id and agent_id != "mcp-client":
+            where_parts.append("agent_id = ?")
+            params.append(agent_id)
+        where = " AND ".join(where_parts)
+
+        rows = db.execute(
+            f"SELECT id, category, confidence, recalled_count, updated_at, memory_type "
+            f"FROM memories WHERE {where}",
+            params,
+        ).fetchall()
+
+        if not rows:
+            db.close()
+            return {"ok": True, "scope": scope, "agent_id": agent_id, "total_memories": 0,
+                    "categories": {}, "overall": {}}
+
+        from datetime import timedelta
+        stale_cutoff = (datetime.now() - timedelta(days=staleness_days)).strftime("%Y-%m-%dT%H:%M:%S")
+
+        cat_data = {}
+        total_cal_err_sq = 0.0
+        total = 0
+
+        for r in rows:
+            cat = r["category"] or "uncategorized"
+            if cat not in cat_data:
+                cat_data[cat] = {"count": 0, "confidence_sum": 0.0, "confidence_min": 1.0,
+                                 "confidence_max": 0.0, "cal_err_sq_sum": 0.0,
+                                 "stale_count": 0, "episodic": 0, "semantic": 0}
+            d = cat_data[cat]
+            conf = r["confidence"] or 0.0
+            recalled = r["recalled_count"] or 0
+            recall_ratio = recalled / (recalled + 1)
+            cal_err_sq = (conf - recall_ratio) ** 2
+
+            d["count"] += 1
+            d["confidence_sum"] += conf
+            d["confidence_min"] = min(d["confidence_min"], conf)
+            d["confidence_max"] = max(d["confidence_max"], conf)
+            d["cal_err_sq_sum"] += cal_err_sq
+            if r["updated_at"] and r["updated_at"] < stale_cutoff:
+                d["stale_count"] += 1
+            if r["memory_type"] == "semantic":
+                d["semantic"] += 1
+            else:
+                d["episodic"] += 1
+
+            total_cal_err_sq += cal_err_sq
+            total += 1
+
+        categories = {}
+        for cat, d in cat_data.items():
+            n = d["count"]
+            brier = round(d["cal_err_sq_sum"] / n, 4)
+            categories[cat] = {
+                "count": n, "avg_confidence": round(d["confidence_sum"] / n, 4),
+                "confidence_min": round(d["confidence_min"], 4),
+                "confidence_max": round(d["confidence_max"], 4),
+                "brier_score": brier,
+                "stale_count": d["stale_count"],
+                "stale_pct": round(d["stale_count"] / n * 100, 1),
+                "episodic": d["episodic"], "semantic": d["semantic"],
+            }
+
+        coverage_gaps = [cat for cat, c in categories.items() if c["count"] < 3 or c["brier_score"] > 0.15]
+        overall_brier = round(total_cal_err_sq / total, 4) if total else 0.0
+        db.close()
+
+        return {
+            "ok": True, "scope": scope, "agent_id": agent_id,
+            "total_memories": total, "staleness_threshold_days": staleness_days,
+            "overall": {
+                "brier_score": overall_brier,
+                "calibration_quality": (
+                    "good" if overall_brier < 0.05
+                    else "fair" if overall_brier < 0.15
+                    else "poor"
+                ),
+            },
+            "categories": categories, "coverage_gaps": coverage_gaps,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def tool_attention_snapshot(agent_id="mcp-client", window_minutes=30, top_n=5, **kw):
+    """Synthesize an agent's current attention state from recent access_log and events."""
+    window_minutes = max(1, min(1440, int(window_minutes)))
+    top_n = max(1, min(50, int(top_n)))
+    try:
+        db = get_db()
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%S")
+
+        search_rows = db.execute(
+            "SELECT query, created_at FROM access_log "
+            "WHERE agent_id = ? AND action = 'search' AND query IS NOT NULL "
+            "AND created_at >= ? ORDER BY created_at DESC LIMIT 200",
+            (agent_id, cutoff),
+        ).fetchall()
+
+        import re as _re
+        term_freq = {}
+        all_terms = []
+        for r in search_rows:
+            q = r["query"] or ""
+            terms = [t.lower() for t in _re.split(r"\W+", q) if len(t) > 2]
+            all_terms.extend(terms)
+            for t in terms:
+                term_freq[t] = term_freq.get(t, 0) + 1
+
+        top_topics = sorted(term_freq.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        focus_score = round(max(0.0, 1.0 - len(set(all_terms)) / len(all_terms)), 4) if all_terms else 0.0
+
+        event_rows = db.execute(
+            "SELECT summary, project, event_type, created_at FROM events "
+            "WHERE agent_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 50",
+            (agent_id, cutoff),
+        ).fetchall()
+
+        project_freq = {}
+        for r in event_rows:
+            p = r["project"]
+            if p:
+                project_freq[p] = project_freq.get(p, 0) + 1
+        active_project = max(project_freq, key=lambda p: project_freq[p]) if project_freq else None
+        db.close()
+
+        return {
+            "ok": True, "agent_id": agent_id, "window_minutes": window_minutes,
+            "searches_found": len(search_rows), "events_found": len(event_rows),
+            "top_topics": [{"term": t, "count": c} for t, c in top_topics],
+            "focus_score": focus_score,
+            "focus_label": (
+                "focused" if focus_score >= 0.6
+                else "moderate" if focus_score >= 0.3
+                else "scattered"
+            ),
+            "active_project": active_project,
+            "recent_events": [
+                {"summary": r["summary"], "project": r["project"],
+                 "event_type": r["event_type"], "created_at": r["created_at"]}
+                for r in event_rows[:top_n]
+            ],
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
 
 # ---------------------------------------------------------------------------
 # Affect tools
@@ -1773,6 +1985,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "affect_log": tool_affect_log,
         "affect_check": tool_affect_check,
         "affect_monitor": tool_affect_monitor,
+        "memory_calibration": tool_memory_calibration,
+        "attention_snapshot": tool_attention_snapshot,
     }
 
     fn = dispatch.get(name)
