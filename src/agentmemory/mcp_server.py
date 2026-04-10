@@ -33,6 +33,7 @@ from mcp.server import Server
 try:
     from agentmemory import (
         mcp_tools_agents,
+        mcp_tools_allostatic,
         mcp_tools_analytics,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,
@@ -61,6 +62,7 @@ try:
     )
     _EXT_MODULES = [
         mcp_tools_agents,
+        mcp_tools_allostatic,
         mcp_tools_analytics,
         mcp_tools_belief_merge,
         mcp_tools_beliefs,

@@ -1929,6 +1929,40 @@ TOOLS = [
             "required": ["quarantine_id"],
         },
     ),
+    Tool(
+        name="consolidation_schedule",
+        description="Predict the next N memories likely to be needed soon (project_activity, access_recency, temporal_pattern signals) and store forecasts. Use allostatic_prime to boost their replay_priority.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10},
+                "horizon_hours": {"type": "integer", "default": 24},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+        },
+    ),
+    Tool(
+        name="allostatic_prime",
+        description="Boost replay_priority for all pending forecasts, preloading predicted memories into the consolidation queue before demand arrives.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "boost_delta": {"type": "number", "default": 1.5},
+                "limit": {"type": "integer", "default": 10},
+            },
+        },
+    ),
+    Tool(
+        name="demand_forecast",
+        description="Show pending consolidation forecasts with signal_source and confidence. Explains why each memory is predicted to be needed soon.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "include_fulfilled": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2531,6 +2565,175 @@ def tool_quarantine_purge(agent_id="mcp-client", quarantine_id=None, dry_run=Fal
 
 
 # ---------------------------------------------------------------------------
+# Allostatic scheduling tools (issue #9)
+# ---------------------------------------------------------------------------
+
+_FORECAST_HORIZON_H_BMC = 24
+
+
+def _ensure_forecasts_table_bmc(conn):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS consolidation_forecasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
+            agent_id TEXT NOT NULL,
+            predicted_demand_at TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.5 CHECK(confidence >= 0.0 AND confidence <= 1.0),
+            signal_source TEXT NOT NULL,
+            fulfilled_at TEXT DEFAULT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_forecasts_agent ON consolidation_forecasts(agent_id, predicted_demand_at);
+        CREATE INDEX IF NOT EXISTS idx_forecasts_memory ON consolidation_forecasts(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_forecasts_fulfilled ON consolidation_forecasts(fulfilled_at);
+    """)
+    conn.commit()
+
+
+def _predict_memories_bmc(db, agent_id, limit):
+    from datetime import timedelta as _td
+    now_dt = datetime.utcnow()
+    horizon = (now_dt + _td(hours=_FORECAST_HORIZON_H_BMC)).strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_24h = (now_dt - _td(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_week = (now_dt - _td(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+    candidates = {}
+
+    def _add(mid, source, conf):
+        if mid not in candidates or conf > candidates[mid]["confidence"]:
+            candidates[mid] = {"memory_id": mid, "signal_source": source,
+                                "confidence": round(conf, 3), "predicted_demand_at": horizon}
+
+    recent_cats = db.execute(
+        "SELECT m.category, COUNT(*) as cnt FROM access_log a JOIN memories m ON m.id = a.target_id "
+        "WHERE a.agent_id = ? AND a.created_at >= ? AND a.target_table = 'memories' "
+        "GROUP BY m.category ORDER BY cnt DESC LIMIT 1", (agent_id, cutoff_24h),
+    ).fetchone()
+    if recent_cats:
+        rows = db.execute(
+            "SELECT id, replay_priority FROM memories WHERE agent_id = ? AND category = ? "
+            "AND retired_at IS NULL AND replay_priority < 3.0 ORDER BY replay_priority ASC LIMIT ?",
+            (agent_id, recent_cats["category"], limit),
+        ).fetchall()
+        for r in rows:
+            _add(r["id"], "project_activity", 0.65)
+
+    rows = db.execute(
+        "SELECT DISTINCT m.id, m.replay_priority FROM access_log a JOIN memories m ON m.id = a.target_id "
+        "WHERE a.agent_id = ? AND a.created_at >= ? AND a.target_table = 'memories' "
+        "AND m.retired_at IS NULL AND m.replay_priority < 2.0 ORDER BY a.created_at DESC LIMIT ?",
+        (agent_id, cutoff_24h, limit),
+    ).fetchall()
+    for r in rows:
+        _add(r["id"], "access_recency", 0.55)
+
+    rows = db.execute(
+        "SELECT m.id, m.ripple_tags FROM memories m WHERE m.agent_id = ? AND m.retired_at IS NULL "
+        "AND m.ripple_tags >= 2 AND m.id NOT IN ("
+        "  SELECT DISTINCT target_id FROM access_log "
+        "  WHERE agent_id = ? AND target_table = 'memories' AND created_at >= ?"
+        ") ORDER BY m.ripple_tags DESC LIMIT ?",
+        (agent_id, agent_id, cutoff_week, limit),
+    ).fetchall()
+    for r in rows:
+        _add(r["id"], "temporal_pattern", min(0.9, 0.5 + r["ripple_tags"] * 0.1))
+
+    return sorted(candidates.values(), key=lambda x: -x["confidence"])[:limit]
+
+
+def tool_consolidation_schedule(agent_id="mcp-client", limit=10, horizon_hours=24,
+                                  dry_run=False, **kw):
+    db = get_db()
+    _ensure_forecasts_table_bmc(db)
+    try:
+        candidates = _predict_memories_bmc(db, agent_id, limit)
+        if not candidates:
+            return {"ok": True, "forecast_count": 0, "forecasts": [],
+                    "note": "No candidates found — insufficient access history"}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "forecast_count": len(candidates),
+                    "forecasts": candidates}
+        from datetime import timedelta as _td
+        horizon = (datetime.utcnow() + _td(hours=horizon_hours)).strftime("%Y-%m-%dT%H:%M:%S")
+        written = 0
+        for c in candidates:
+            existing = db.execute(
+                "SELECT id FROM consolidation_forecasts WHERE memory_id = ? AND agent_id = ? "
+                "AND fulfilled_at IS NULL", (c["memory_id"], agent_id),
+            ).fetchone()
+            if existing:
+                continue
+            db.execute(
+                "INSERT INTO consolidation_forecasts (memory_id, agent_id, predicted_demand_at, "
+                "confidence, signal_source) VALUES (?, ?, ?, ?, ?)",
+                (c["memory_id"], agent_id, horizon, c["confidence"], c["signal_source"]),
+            )
+            written += 1
+        db.commit()
+        return {"ok": True, "forecast_count": written, "forecasts": candidates}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_allostatic_prime(agent_id="mcp-client", boost_delta=1.5, limit=10, **kw):
+    if boost_delta <= 0:
+        return {"ok": False, "error": "boost_delta must be positive"}
+    db = get_db()
+    _ensure_forecasts_table_bmc(db)
+    try:
+        rows = db.execute(
+            "SELECT DISTINCT memory_id FROM consolidation_forecasts "
+            "WHERE agent_id = ? AND fulfilled_at IS NULL ORDER BY confidence DESC LIMIT ?",
+            (agent_id, limit),
+        ).fetchall()
+        if not rows:
+            return {"ok": True, "primed": 0, "note": "No pending forecasts — run consolidation_schedule first"}
+        boosted = 0
+        for r in rows:
+            db.execute(
+                "UPDATE memories SET replay_priority = MIN(10.0, replay_priority + ?) WHERE id = ?",
+                (boost_delta, r["memory_id"]),
+            )
+            boosted += 1
+        db.commit()
+        return {"ok": True, "primed": boosted, "boost_delta": boost_delta}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_demand_forecast(agent_id="mcp-client", include_fulfilled=False, limit=20, **kw):
+    db = get_db()
+    _ensure_forecasts_table_bmc(db)
+    try:
+        conditions = ["f.agent_id = ?"]
+        params = [agent_id]
+        if not include_fulfilled:
+            conditions.append("f.fulfilled_at IS NULL")
+        rows = db.execute(
+            f"SELECT f.id, f.memory_id, f.predicted_demand_at, f.confidence, f.signal_source, "
+            f"f.fulfilled_at, f.created_at, m.content, m.category "
+            f"FROM consolidation_forecasts f JOIN memories m ON m.id = f.memory_id "
+            f"WHERE {' AND '.join(conditions)} ORDER BY f.confidence DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        all_rows = db.execute(
+            "SELECT signal_source, COUNT(*) as cnt FROM consolidation_forecasts "
+            "WHERE agent_id = ? AND fulfilled_at IS NULL GROUP BY signal_source",
+            (agent_id,),
+        ).fetchall()
+        signal_breakdown = {r["signal_source"]: r["cnt"] for r in all_rows}
+        return {"ok": True, "pending_count": sum(signal_breakdown.values()),
+                "signal_breakdown": signal_breakdown, "forecasts": [dict(r) for r in rows]}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
 
@@ -2581,6 +2784,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "quarantine_list": tool_quarantine_list,
         "quarantine_review": tool_quarantine_review,
         "quarantine_purge": tool_quarantine_purge,
+        "consolidation_schedule": tool_consolidation_schedule,
+        "allostatic_prime": tool_allostatic_prime,
+        "demand_forecast": tool_demand_forecast,
     }
 
     fn = dispatch.get(name)
