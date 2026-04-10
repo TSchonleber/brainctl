@@ -710,6 +710,31 @@ TOOLS: list[Tool] = [
             },
         },
     ),
+    Tool(
+        name="free_energy_check",
+        description=(
+            "Return an agent's epistemic drive and knowledge gap summary from agent_uncertainty_log. "
+            "Epistemic drive = mean free_energy of unresolved gaps (high = strong curiosity signal). "
+            "Pragmatic drive = resolution rate over past 7 days. "
+            "Grounded in Friston (2010): free_energy = (1 - confidence) * importance."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max gap records to return (default 20)",
+                    "default": 20,
+                },
+                "unresolved_only": {
+                    "type": "boolean",
+                    "description": "Return only unresolved gaps (default true)",
+                    "default": True,
+                },
+            },
+        },
+    ),
 ]
 
 def tool_memory_calibration(
@@ -962,6 +987,98 @@ def tool_attention_snapshot(
         return {"ok": False, "error": str(exc)}
 
 
+def tool_free_energy_check(
+    agent_id: str = "mcp-client",
+    limit: int = 20,
+    unresolved_only: bool = True,
+    **kw,
+) -> dict:
+    """Return a summary of an agent's epistemic drive and knowledge gaps.
+
+    Reads agent_uncertainty_log to surface:
+    - Active knowledge gaps (unresolved free_energy entries)
+    - Epistemic drive: mean free_energy of unresolved gaps (high = strong curiosity signal)
+    - Pragmatic drive: resolution rate over the past 7 days
+    - Top unresolved domains / gap topics
+
+    Grounded in Friston (2010): free_energy = (1 - confidence) * importance.
+    Higher free_energy = stronger signal to explore/resolve the gap.
+
+    Args:
+        limit: Max unresolved gaps to return (default 20).
+        unresolved_only: When True (default), return only gaps not yet resolved.
+    """
+    limit = max(1, min(200, int(limit)))
+
+    try:
+        db = _db()
+
+        where_parts = ["agent_id = ?"]
+        params: list = [agent_id]
+        if unresolved_only:
+            where_parts.append("resolved_at IS NULL")
+        where = " AND ".join(where_parts)
+
+        rows = db.execute(
+            f"SELECT id, gap_topic, domain, free_energy, query, result_count, "
+            f"avg_confidence, temporal_class, created_at, resolved_at, resolved_by "
+            f"FROM agent_uncertainty_log WHERE {where} "
+            f"ORDER BY free_energy DESC NULLS LAST LIMIT ?",
+            params + [limit],
+        ).fetchall()
+
+        gaps = [dict(r) for r in rows]
+
+        # Aggregate stats
+        fe_values = [g["free_energy"] for g in gaps if g["free_energy"] is not None]
+        epistemic_drive = round(sum(fe_values) / len(fe_values), 4) if fe_values else 0.0
+
+        # Top domains
+        domain_freq: dict = {}
+        for g in gaps:
+            d = g.get("domain") or "unknown"
+            domain_freq[d] = domain_freq.get(d, 0) + 1
+        top_domains = sorted(domain_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        # Pragmatic drive: resolution rate in last 7 days
+        seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        total_7d = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log WHERE agent_id = ? AND created_at >= ?",
+            (agent_id, seven_days_ago),
+        ).fetchone()[0]
+        resolved_7d = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log "
+            "WHERE agent_id = ? AND created_at >= ? AND resolved_at IS NOT NULL",
+            (agent_id, seven_days_ago),
+        ).fetchone()[0]
+        pragmatic_drive = round(resolved_7d / total_7d, 4) if total_7d else 0.0
+
+        total_unresolved = db.execute(
+            "SELECT COUNT(*) FROM agent_uncertainty_log WHERE agent_id = ? AND resolved_at IS NULL",
+            (agent_id,),
+        ).fetchone()[0]
+
+        db.close()
+
+        return {
+            "ok": True,
+            "agent_id": agent_id,
+            "unresolved_gaps": total_unresolved,
+            "epistemic_drive": epistemic_drive,
+            "epistemic_label": (
+                "high" if epistemic_drive > 0.5
+                else "moderate" if epistemic_drive > 0.2
+                else "low"
+            ),
+            "pragmatic_drive": pragmatic_drive,
+            "resolution_rate_7d": f"{resolved_7d}/{total_7d}",
+            "top_domains": [{"domain": d, "count": c} for d, c in top_domains],
+            "gaps": gaps,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 DISPATCH: dict = {
     "consolidation_run":       lambda agent_id=None, **kw: tool_consolidation_run(agent_id=agent_id or "mcp-client", **kw),
     "replay_boost":           lambda agent_id=None, **kw: tool_replay_boost(agent_id=agent_id or "mcp-client", **kw),
@@ -971,4 +1088,5 @@ DISPATCH: dict = {
     "consolidation_stats":    lambda agent_id=None, **kw: tool_consolidation_stats(agent_id=agent_id or "mcp-client", **kw),
     "memory_calibration":     lambda agent_id=None, **kw: tool_memory_calibration(agent_id=agent_id or "mcp-client", **kw),
     "attention_snapshot":     lambda agent_id=None, **kw: tool_attention_snapshot(agent_id=agent_id or "mcp-client", **kw),
+    "free_energy_check":      lambda agent_id=None, **kw: tool_free_energy_check(agent_id=agent_id or "mcp-client", **kw),
 }
