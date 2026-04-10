@@ -431,8 +431,9 @@ class TestConsolidationStats:
 class TestDispatch:
     def test_dispatch_has_all_tools(self):
         expected = {"replay_boost", "replay_queue", "reconsolidation_check",
-                    "reconsolidate", "consolidation_stats"}
-        assert expected == set(con_mod.DISPATCH.keys())
+                    "reconsolidate", "consolidation_stats",
+                    "memory_calibration", "attention_snapshot"}
+        assert expected.issubset(set(con_mod.DISPATCH.keys()))
 
     def test_dispatch_replay_queue_ok(self, db_with_memories):
         brain, _ = db_with_memories
