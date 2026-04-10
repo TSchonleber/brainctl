@@ -739,6 +739,20 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             r.pop("_sr_score", None)
 
     log_access(db, agent_id, "search", "memories", query=query, result_count=len(results))
+
+    # Ebbinghaus retrieval strengthening — each recalled memory gets a confidence
+    # boost via apply_recall_boost (diminishing-returns Bayesian formula).
+    # This records the retrieval event and resets the forgetting curve clock.
+    if results:
+        try:
+            from agentmemory.hippocampus import apply_recall_boost as _recall_boost
+            for r in results:
+                mid = r.get("id")
+                if mid:
+                    _recall_boost(db, mid)
+        except Exception:
+            pass
+
     db.commit(); db.close()
     return {"ok": True, "count": len(results), "memories": results,
             "slot_cap": max_slots, "tier": tier}
