@@ -330,6 +330,7 @@ def tool_consolidation_run(
     promote_threshold_ripple: int = 3,
     promote_threshold_confidence: float = 0.7,
     run_causal_mining: bool = True,
+    run_transitive_inference: bool = True,
     **kw,
 ) -> dict:
     """Run a consolidation pass over the replay queue.
@@ -351,6 +352,7 @@ def tool_consolidation_run(
         promote_threshold_ripple: Min ripple_tags for episodic→semantic promotion (default 3).
         promote_threshold_confidence: Min confidence for promotion (default 0.7).
         run_causal_mining: Whether to run mine_causal_chains after the memory pass (default True).
+        run_transitive_inference: Whether to run 2-hop KG transitive inference (default True).
     """
     limit = max(1, min(500, int(limit)))
     min_priority = float(min_priority)
@@ -411,6 +413,104 @@ def tool_consolidation_run(
             causal_stats = mine_causal_chains(db)
             db.commit()
 
+        # Step 5: Transitive KG inference (compositional replay, issue #7).
+        # For each processed memory, find its entity relations, then compose 2-hop
+        # paths A→B→C into derived edges A→(rel1+rel2)→C.
+        # Score = confidence(A→B) × confidence(B→C). Prune if score < 0.3.
+        # Store as knowledge_edges with source='compositional_replay'.
+        transitive_stats: dict = {"paths_scanned": 0, "edges_derived": 0}
+        if run_transitive_inference and processed_ids:
+            try:
+                now_ts = _now_sql()
+                paths_scanned = 0
+                edges_derived = 0
+
+                # For each entity that appears in knowledge_edges, walk 2-hop paths
+                # Extract entities linked to processed memories (via entity_relations or knowledge_edges)
+                placeholder = ",".join("?" * len(processed_ids))
+                linked_entities = db.execute(
+                    f"SELECT DISTINCT entity_id FROM entity_relations WHERE memory_id IN ({placeholder})",
+                    processed_ids,
+                ).fetchall()
+                linked_entity_ids = [r["entity_id"] if hasattr(r, "keys") else r[0] for r in linked_entities]
+
+                if not linked_entity_ids:
+                    # Fall back: check knowledge_edges for any entity with high centrality
+                    linked_entity_ids = [
+                        r["source_id"] if hasattr(r, "keys") else r[0]
+                        for r in db.execute(
+                            "SELECT DISTINCT source_id FROM knowledge_edges WHERE source_table='entities' LIMIT 20"
+                        ).fetchall()
+                    ]
+
+                for entity_a in linked_entity_ids[:50]:  # cap at 50 to prevent explosion
+                    # Get first-degree outgoing edges from A
+                    ab_edges = db.execute(
+                        "SELECT target_id, relation_type, confidence FROM knowledge_edges "
+                        "WHERE source_table='entities' AND source_id=? AND target_table='entities' "
+                        "AND confidence IS NOT NULL",
+                        (entity_a,),
+                    ).fetchall()
+
+                    for ab in ab_edges:
+                        entity_b = ab["target_id"] if hasattr(ab, "keys") else ab[1]
+                        rel_ab = ab["relation_type"] if hasattr(ab, "keys") else ab[2]
+                        conf_ab = float(ab["confidence"] if hasattr(ab, "keys") else ab[3] or 0.5)
+
+                        # Get first-degree outgoing edges from B (excluding back to A)
+                        bc_edges = db.execute(
+                            "SELECT target_id, relation_type, confidence FROM knowledge_edges "
+                            "WHERE source_table='entities' AND source_id=? AND target_table='entities' "
+                            "AND target_id != ? AND confidence IS NOT NULL LIMIT 10",
+                            (entity_b, entity_a),
+                        ).fetchall()
+
+                        for bc in bc_edges:
+                            paths_scanned += 1
+                            entity_c = bc["target_id"] if hasattr(bc, "keys") else bc[1]
+                            rel_bc = bc["relation_type"] if hasattr(bc, "keys") else bc[2]
+                            conf_bc = float(bc["confidence"] if hasattr(bc, "keys") else bc[3] or 0.5)
+
+                            derived_score = round(conf_ab * conf_bc, 4)
+                            if derived_score < 0.3:
+                                continue  # prune low-confidence derived edges
+
+                            # Check if this derived edge already exists (avoid duplicates)
+                            existing = db.execute(
+                                "SELECT id, confidence FROM knowledge_edges "
+                                "WHERE source_table='entities' AND source_id=? "
+                                "AND target_table='entities' AND target_id=? "
+                                "AND source='compositional_replay'",
+                                (entity_a, entity_c),
+                            ).fetchone()
+
+                            derived_rel = f"{rel_ab}+{rel_bc}"[:120] if rel_ab and rel_bc else "transitive"
+
+                            if existing:
+                                existing_conf = float(existing["confidence"] if hasattr(existing, "keys") else existing[1] or 0.0)
+                                if derived_score > existing_conf:
+                                    db.execute(
+                                        "UPDATE knowledge_edges SET confidence=?, relation_type=?, updated_at=? WHERE id=?",
+                                        (derived_score, derived_rel, now_ts,
+                                         existing["id"] if hasattr(existing, "keys") else existing[0]),
+                                    )
+                                    edges_derived += 1
+                            else:
+                                db.execute(
+                                    "INSERT INTO knowledge_edges "
+                                    "(source_table, source_id, target_table, target_id, relation_type, "
+                                    "confidence, source, created_at, updated_at) "
+                                    "VALUES ('entities',?,'entities',?,?,?,?,?,?)",
+                                    (entity_a, entity_c, derived_rel, derived_score,
+                                     "compositional_replay", now_ts, now_ts),
+                                )
+                                edges_derived += 1
+
+                db.commit()
+                transitive_stats = {"paths_scanned": paths_scanned, "edges_derived": edges_derived}
+            except Exception:
+                pass
+
         db.close()
 
         return {
@@ -419,6 +519,7 @@ def tool_consolidation_run(
             "promoted_to_semantic": len(promotion_ids),
             "promotion_ids": promotion_ids[:20],
             "causal_mining": causal_stats,
+            "transitive_inference": transitive_stats,
             "scope": scope,
             "min_priority": min_priority,
         }
