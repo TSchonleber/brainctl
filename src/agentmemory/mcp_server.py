@@ -698,6 +698,11 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             "slot_cap": max_slots, "tier": tier}
 
 
+_LABILE_RESCUE_THRESHOLD = 0.8   # importance >= this triggers retroactive labile tagging
+_LABILE_RESCUE_WINDOW_HOURS = 2  # look back this many hours for memories to rescue
+_LABILE_DURATION_HOURS = 2       # labile window extends this far past event write time
+
+
 def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = None,
                    project: str = None, importance: float = 0.5) -> dict:
     if event_type not in VALID_EVENT_TYPES:
@@ -706,14 +711,45 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
         return {"ok": False, "error": "importance must be between 0.0 and 1.0"}
     db = get_db()
     ensure_agent(db, agent_id)
+    now_ts = _now_ts()
     cur = db.execute(
         "INSERT INTO events (agent_id, event_type, summary, detail, project, importance, created_at) VALUES (?,?,?,?,?,?,?)",
-        (agent_id, event_type, summary, detail, project, importance, _now_ts())
+        (agent_id, event_type, summary, detail, project, importance, now_ts)
     )
     eid = cur.lastrowid
     log_access(db, agent_id, "write", "events", eid)
+
+    labile_rescued = 0
+    if importance >= _LABILE_RESCUE_THRESHOLD:
+        # Behavioral tagging retroactive rescue (Redondo & Morris 2011):
+        # A high-salience event retroactively stabilizes memories written
+        # in the preceding window by extending their decay immunity.
+        from datetime import timedelta
+        try:
+            now_dt = datetime.fromisoformat(now_ts)
+        except Exception:
+            now_dt = datetime.utcnow()
+        window_start = (now_dt - timedelta(hours=_LABILE_RESCUE_WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+        labile_until = (now_dt + timedelta(hours=_LABILE_DURATION_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+        rescued = db.execute(
+            """
+            UPDATE memories
+            SET labile_until = ?, labile_agent_id = ?
+            WHERE agent_id = ?
+              AND created_at >= ?
+              AND created_at <= ?
+              AND retired_at IS NULL
+              AND (labile_until IS NULL OR labile_until < ?)
+            """,
+            (labile_until, agent_id, agent_id, window_start, now_ts, labile_until),
+        )
+        labile_rescued = rescued.rowcount
+
     db.commit(); db.close()
-    return {"ok": True, "event_id": eid}
+    result = {"ok": True, "event_id": eid}
+    if labile_rescued:
+        result["labile_rescued"] = labile_rescued
+    return result
 
 
 def tool_event_search(agent_id: str, query: str = None, event_type: str = None,
@@ -1535,7 +1571,7 @@ TOOLS = [
     ),
     Tool(
         name="event_add",
-        description="Log an event to brain.db. Events are timestamped records of what happened.",
+        description="Log an event to brain.db. Events are timestamped records of what happened. If importance >= 0.8, retroactively tags memories written in the prior 2 hours with a labile window (behavioral tagging rescue), protecting them from decay until 2 hours after this event.",
         inputSchema={
             "type": "object",
             "properties": {
