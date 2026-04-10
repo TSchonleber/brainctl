@@ -204,82 +204,82 @@ def detect_epoch_boundaries(
     gap_hours: float = 48.0,
     window_size: int = 8,
     min_window: int = 4,
-    topic_shift_threshold: float = 0.2,
+    topic_shift_threshold: float = 0.45,
     min_boundary_distance: int = 8,
     context_decay: float = 0.7,
     cosine_divergence_threshold: float = 0.55,
 ) -> list[dict]:
-    """Detect epoch boundaries using time-gap and cosine-divergence signals.
+    """Detect event boundaries from divergence against recent context.
 
-    The topic-shift signal uses a rolling context Counter (exponential decay
-    λ=context_decay) instead of comparing fixed left/right windows.  Each
-    incoming event is scored against the accumulated context; a high divergence
-    (1 - cosine_similarity > cosine_divergence_threshold) flags a boundary —
-    analogous to prediction error in temporal context models.
+    ``window_size`` controls the left-side context window. The right side uses a
+    short smoothing lookahead of ``min(window_size, 3)`` events to reduce noise
+    from one-off vocabulary spikes while still honoring smaller caller-supplied
+    windows.
+
+    ``context_decay`` and ``cosine_divergence_threshold`` are kept for backward
+    compatibility with earlier rolling-context experiments, but the public
+    threshold is now ``topic_shift_threshold`` again.
     """
     candidates = []
     if len(events) < 2:
         return candidates
 
-    # Rolling context counter — exponential decay per event.
-    # context = decay * context + (1 - decay) * new_event_tokens
-    context_counter: Counter = Counter()
-
     for idx in range(1, len(events)):
         prev_ts = _parse_timestamp(events[idx - 1].get("created_at"))
         curr_ts = _parse_timestamp(events[idx].get("created_at"))
-
-        # Blend previous event's tokens into rolling context before checking current.
-        prev_tokens = _event_topic_tokens(events[idx - 1])
-        if not context_counter:
-            # Bootstrap on first event.
-            context_counter = Counter({k: float(v) for k, v in prev_tokens.items()})
-        else:
-            decayed = Counter({k: v * context_decay for k, v in context_counter.items()})
-            scaled_new = Counter({k: v * (1.0 - context_decay) for k, v in prev_tokens.items()})
-            context_counter = decayed + scaled_new
-
         if prev_ts is None or curr_ts is None:
             continue
 
         gap_h = (curr_ts - prev_ts).total_seconds() / 3600.0
         gap_signal = gap_h >= gap_hours
+        left_slice = events[max(0, idx - window_size):idx]
+        right_window = max(1, min(3, window_size))
+        right_slice = events[idx:min(len(events), idx + right_window)]
+
+        context_similarity = None
+        context_divergence = None
+        left_top = None
+        right_top = None
         reasons = []
+
+        if len(left_slice) >= min_window:
+            context_counter: Counter = Counter()
+            for row in left_slice:
+                context_counter.update(_event_topic_tokens(row))
+
+            current_counter: Counter = Counter()
+            for row in right_slice:
+                current_counter.update(_event_topic_tokens(row))
+
+            if context_counter and current_counter:
+                context_similarity = _counter_cosine(context_counter, current_counter)
+                context_divergence = max(0.0, 1.0 - context_similarity)
+                if context_divergence >= topic_shift_threshold:
+                    reasons.append("context_divergence")
+                    left_top = context_counter.most_common(1)[0][0] if context_counter else None
+                    right_top = current_counter.most_common(1)[0][0] if current_counter else None
+                    if left_top and right_top and left_top != right_top:
+                        reasons.append("prediction_error")
+
         if gap_signal:
             reasons.append("time_gap")
-
-        # Cosine-divergence signal: how much does the current event diverge from context?
-        curr_tokens = _event_topic_tokens(events[idx])
-        cosine_div: float | None = None
-        topic_similarity: float | None = None
-        topic_signal = False
-        left_top = context_counter.most_common(1)[0][0] if context_counter else None
-        right_top = curr_tokens.most_common(1)[0][0] if curr_tokens else None
-
-        if context_counter and curr_tokens:
-            cosine_sim = _counter_cosine(curr_tokens, context_counter)
-            topic_similarity = round(cosine_sim, 3)
-            cosine_div = round(1.0 - cosine_sim, 3)
-            topic_signal = cosine_div > cosine_divergence_threshold and gap_h >= 1.0
-            if topic_signal:
-                reasons.append("topic_shift")
 
         if not reasons:
             continue
 
         score = 0.0
+        if context_divergence is not None and "context_divergence" in reasons:
+            score += context_divergence
         if gap_signal:
-            score += min(gap_h / gap_hours, 3.0)
-        if topic_signal and cosine_div is not None:
-            score += cosine_div
+            score += min(gap_h / gap_hours, 1.0)
 
         candidates.append({
             "boundary_index": idx,
             "boundary_at": events[idx].get("created_at"),
             "reasons": reasons,
             "gap_hours": round(gap_h, 2),
-            "topic_similarity": topic_similarity,
-            "cosine_divergence": cosine_div,
+            "topic_similarity": None if context_similarity is None else round(context_similarity, 3),
+            "context_divergence": None if context_divergence is None else round(context_divergence, 3),
             "left_topic": left_top,
             "right_topic": right_top,
             "score": round(score, 3),
@@ -296,7 +296,7 @@ def detect_epoch_boundaries(
         if idx_distance >= min_boundary_distance:
             filtered.append(cand)
             continue
-        if cand["score"] > prev["score"] + 0.35:
+        if cand["score"] > prev["score"] + 0.2:
             filtered[-1] = cand
     return filtered
 
@@ -1150,7 +1150,7 @@ def _handle(name: str, args: dict) -> Any:
             gap_hours=float(args.get("gap_hours", 48.0)),
             window_size=int(args.get("window_size", 8)),
             min_window=int(args.get("min_window", 4)),
-            topic_shift_threshold=float(args.get("topic_shift_threshold", 0.2)),
+            topic_shift_threshold=float(args.get("topic_shift_threshold", 0.45)),
             min_boundary_distance=int(args.get("min_boundary_distance", 8)),
             min_events=int(args.get("min_events", 5)),
             verbose=bool(args.get("verbose", False)),
@@ -1276,16 +1276,16 @@ TOOLS: list[Tool] = [
     Tool(
         name="epoch_detect",
         description=(
-            "Auto-detect epoch boundaries from event history using time gaps and topic shifts. "
+            "Auto-detect epoch boundaries from event history using time gaps and recent-context divergence. "
             "Returns suggested epoch ranges but does not create them."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "gap_hours": {"type": "number", "default": 48.0, "description": "Time gap (hours) that triggers a boundary"},
-                "window_size": {"type": "integer", "default": 8, "description": "Events on each side for topic comparison"},
-                "min_window": {"type": "integer", "default": 4, "description": "Minimum events needed for topic analysis"},
-                "topic_shift_threshold": {"type": "number", "default": 0.2, "description": "Cosine-similarity threshold for topic shift"},
+                "gap_hours": {"type": "number", "default": 48.0, "description": "Time gap (hours) that triggers a boundary even without contextual signal"},
+                "window_size": {"type": "integer", "default": 8, "description": "Left-side context window size; right-side smoothing lookahead is min(window_size, 3)"},
+                "min_window": {"type": "integer", "default": 4, "description": "Minimum events needed on the left side before divergence analysis runs"},
+                "topic_shift_threshold": {"type": "number", "default": 0.45, "description": "Minimum recent-context divergence threshold required to flag a non-gap boundary"},
                 "min_boundary_distance": {"type": "integer", "default": 8, "description": "Minimum event distance between boundaries"},
                 "min_events": {"type": "integer", "default": 5, "description": "Minimum events per suggested epoch"},
                 "verbose": {"type": "boolean", "default": False, "description": "Include raw boundary details in response"},

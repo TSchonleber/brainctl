@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from agentmemory.brain import Brain
+import agentmemory._impl as impl
 import agentmemory.mcp_tools_temporal as mt
 
 
@@ -151,6 +152,64 @@ class TestEpochDetect:
         assert result["ok"] is True
         assert result["event_count"] == 0
         assert result["suggested_epochs"] == []
+
+    def test_detect_epoch_boundaries_flags_context_divergence_without_time_gap(self):
+        events = [
+            {"created_at": "2026-04-10T10:00:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:01:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:02:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:03:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:04:00", "event_type": "observation", "summary": "orchid soil watering greenhouse", "detail": "orchid soil watering greenhouse", "project": "garden", "refs": None},
+        ]
+
+        boundaries = mt.detect_epoch_boundaries(events, window_size=4, min_window=4, topic_shift_threshold=0.45, min_boundary_distance=1)
+
+        assert len(boundaries) == 1
+        assert boundaries[0]["boundary_index"] == 4
+        assert "context_divergence" in boundaries[0]["reasons"]
+        assert boundaries[0]["context_divergence"] >= 0.45
+
+    def test_detect_epoch_boundaries_ignores_same_context_continuation(self):
+        events = [
+            {"created_at": "2026-04-10T10:00:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:01:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:02:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:03:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:04:00", "event_type": "observation", "summary": "deploy api build green pipeline", "detail": "deploy api build green pipeline", "project": "release", "refs": None},
+        ]
+
+        boundaries = mt.detect_epoch_boundaries(events, window_size=4, min_window=4, topic_shift_threshold=0.45, min_boundary_distance=1)
+
+        assert boundaries == []
+
+    def test_detect_epoch_boundaries_preserves_large_gap_with_empty_event(self):
+        events = [
+            {"created_at": "2026-01-01T10:00:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-01-01T10:01:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-01-01T10:02:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-01-01T10:03:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:04:00", "event_type": "", "summary": "", "detail": "", "project": None, "refs": None},
+        ]
+
+        boundaries = mt.detect_epoch_boundaries(events, gap_hours=48.0, window_size=4, min_window=4, topic_shift_threshold=0.45, min_boundary_distance=1)
+
+        assert len(boundaries) == 1
+        assert boundaries[0]["boundary_index"] == 4
+        assert boundaries[0]["reasons"] == ["time_gap"]
+        assert boundaries[0]["context_divergence"] is None
+
+    def test_detect_epoch_boundaries_matches_cli_impl(self):
+        events = [
+            {"created_at": "2026-04-10T10:00:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:01:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:02:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:03:00", "event_type": "observation", "summary": "deploy api build green", "detail": "deploy api build green", "project": "release", "refs": None},
+            {"created_at": "2026-04-10T10:04:00", "event_type": "observation", "summary": "orchid soil watering greenhouse", "detail": "orchid soil watering greenhouse", "project": "garden", "refs": None},
+        ]
+
+        kwargs = dict(window_size=4, min_window=4, topic_shift_threshold=0.45, min_boundary_distance=1)
+
+        assert impl.detect_epoch_boundaries(events, **kwargs) == mt.detect_epoch_boundaries(events, **kwargs)
 
     def test_few_events_no_boundaries(self, patch_db):
         conn = _conn(patch_db)

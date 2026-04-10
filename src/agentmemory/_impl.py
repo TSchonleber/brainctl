@@ -2459,9 +2459,16 @@ def detect_epoch_boundaries(
     gap_hours: float = 48.0,
     window_size: int = 8,
     min_window: int = 4,
-    topic_shift_threshold: float = 0.2,
+    topic_shift_threshold: float = 0.45,
     min_boundary_distance: int = 8,
 ):
+    """Detect event boundaries from divergence against recent context.
+
+    ``window_size`` controls the left-side context window. The right side uses a
+    short smoothing lookahead of ``min(window_size, 3)`` events to reduce noise
+    from one-off vocabulary spikes while still honoring smaller caller-supplied
+    windows.
+    """
     candidates = []
     if len(events) < 2:
         return candidates
@@ -2474,55 +2481,45 @@ def detect_epoch_boundaries(
 
         gap_h = (curr_ts - prev_ts).total_seconds() / 3600.0
         gap_signal = gap_h >= gap_hours
-        reasons = []
-        if gap_signal:
-            reasons.append("time_gap")
-
         left_slice = events[max(0, idx - window_size):idx]
-        right_slice = events[idx:min(len(events), idx + window_size)]
-        topic_similarity = None
-        topic_signal = False
+        right_window = max(1, min(3, window_size))
+        right_slice = events[idx:min(len(events), idx + right_window)]
+
+        context_similarity = None
+        context_divergence = None
         left_top = None
         right_top = None
-        if len(left_slice) >= min_window and len(right_slice) >= min_window:
+        reasons = []
+
+        if len(left_slice) >= min_window:
             left_counter = Counter()
             right_counter = Counter()
-            left_projects = Counter(str(r.get("project")).strip().lower() for r in left_slice if r.get("project"))
-            right_projects = Counter(str(r.get("project")).strip().lower() for r in right_slice if r.get("project"))
             for row in left_slice:
                 left_counter.update(_event_topic_tokens(row))
             for row in right_slice:
                 right_counter.update(_event_topic_tokens(row))
-            topic_similarity = _counter_cosine(left_counter, right_counter)
-            left_top = left_counter.most_common(1)[0][0] if left_counter else None
-            right_top = right_counter.most_common(1)[0][0] if right_counter else None
-            strong_project_shift = False
-            if left_projects and right_projects:
-                left_proj, left_proj_count = left_projects.most_common(1)[0]
-                right_proj, right_proj_count = right_projects.most_common(1)[0]
-                left_share = left_proj_count / len(left_slice)
-                right_share = right_proj_count / len(right_slice)
-                strong_project_shift = left_proj != right_proj and left_share >= 0.5 and right_share >= 0.5
-            topic_signal = (
-                (strong_project_shift and topic_similarity <= max(topic_shift_threshold, 0.3))
-                or topic_similarity <= (topic_shift_threshold / 2.0)
-            ) and (
-                left_top
-                and right_top
-                and left_top != right_top
-                and gap_h >= 6
-            )
-            if topic_signal:
-                reasons.append("topic_shift")
+
+            if left_counter and right_counter:
+                context_similarity = _counter_cosine(left_counter, right_counter)
+                context_divergence = max(0.0, 1.0 - context_similarity)
+                if context_divergence >= topic_shift_threshold:
+                    reasons.append("context_divergence")
+                    left_top = left_counter.most_common(1)[0][0] if left_counter else None
+                    right_top = right_counter.most_common(1)[0][0] if right_counter else None
+                    if left_top and right_top and left_top != right_top:
+                        reasons.append("prediction_error")
+
+        if gap_signal:
+            reasons.append("time_gap")
 
         if not reasons:
             continue
 
         score = 0.0
+        if context_divergence is not None and "context_divergence" in reasons:
+            score += context_divergence
         if gap_signal:
-            score += min(gap_h / gap_hours, 3.0)
-        if topic_signal and topic_similarity is not None:
-            score += max(0.0, 1.0 - topic_similarity)
+            score += min(gap_h / gap_hours, 1.0)
 
         candidates.append(
             {
@@ -2530,7 +2527,8 @@ def detect_epoch_boundaries(
                 "boundary_at": events[idx].get("created_at"),
                 "reasons": reasons,
                 "gap_hours": round(gap_h, 2),
-                "topic_similarity": None if topic_similarity is None else round(topic_similarity, 3),
+                "topic_similarity": None if context_similarity is None else round(context_similarity, 3),
+                "context_divergence": None if context_divergence is None else round(context_divergence, 3),
                 "left_topic": left_top,
                 "right_topic": right_top,
                 "score": round(score, 3),
@@ -2548,7 +2546,7 @@ def detect_epoch_boundaries(
         if idx_distance >= min_boundary_distance:
             filtered.append(cand)
             continue
-        if cand["score"] > prev["score"] + 0.35:
+        if cand["score"] > prev["score"] + 0.2:
             filtered[-1] = cand
     return filtered
 
@@ -12412,12 +12410,12 @@ def build_parser():
     epoch_sub = epoch.add_subparsers(dest="epoch_cmd")
 
     epoch_detect = epoch_sub.add_parser("detect", help="Suggest epoch boundaries from event history")
-    epoch_detect.add_argument("--gap-hours", type=float, default=48.0, help="Minimum inactivity gap to trigger boundary")
-    epoch_detect.add_argument("--window-size", type=int, default=8, help="Events per side for topic-shift evaluation")
-    epoch_detect.add_argument("--min-window", type=int, default=4, help="Minimum events per side to evaluate shift")
-    epoch_detect.add_argument("--topic-shift-threshold", type=float, default=0.2, help="Cosine similarity threshold for topic shift")
+    epoch_detect.add_argument("--gap-hours", type=float, default=48.0, help="Minimum inactivity gap to trigger boundary even without contextual signal")
+    epoch_detect.add_argument("--window-size", type=int, default=8, help="Left-side context window size; right-side smoothing lookahead is min(window_size, 3)")
+    epoch_detect.add_argument("--min-window", type=int, default=4, help="Minimum events needed on the left side before divergence analysis runs")
+    epoch_detect.add_argument("--topic-shift-threshold", type=float, default=0.45, help="Minimum recent-context divergence threshold required to flag a non-gap boundary")
     epoch_detect.add_argument("--min-boundary-distance", type=int, default=8, help="Min events between accepted boundaries")
-    epoch_detect.add_argument("--min-events", type=int, default=8, help="Minimum events per suggested epoch")
+    epoch_detect.add_argument("--min-events", type=int, default=5, help="Minimum events per suggested epoch")
     epoch_detect.add_argument("--verbose", action="store_true", help="Include raw boundary diagnostics")
 
     epoch_create = epoch_sub.add_parser("create", help="Create an epoch and backfill matching records")
