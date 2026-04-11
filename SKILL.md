@@ -1,7 +1,7 @@
 ---
 name: brainctl
 description: "Unified agent memory CLI — read, write, search, and maintain the shared memory spine (brain.db). Use for persistent cross-session memory, knowledge graph, event logging, decisions, affect tracking, and consolidation."
-version: 1.1.0
+version: 1.1.2
 tags: [memory, agents, sqlite, knowledge-graph, mcp, cli]
 trigger: "When you need to store durable facts, log events, track entities/relations, record decisions, search past context, or orient yourself in a multi-agent environment."
 ---
@@ -15,7 +15,7 @@ brainctl is the single interface for agent memory. One SQLite file (`brain.db`),
 - **GitHub:** https://github.com/TSchonleber/brainctl
 - **Database:** `~/agentmemory/db/brain.db` (override with `BRAIN_DB` env var)
 - **CLI binary:** `~/bin/brainctl` or `~/.local/bin/brainctl`
-- **MCP server:** `brainctl-mcp` (12 tools, same DB)
+- **MCP server:** `brainctl-mcp` (192 tools, same DB)
 
 Already installed on this machine. If missing, see GitHub README for install instructions.
 
@@ -159,7 +159,7 @@ brainctl-consolidate sweep             # full maintenance cycle
 
 Also includes: Hebbian co-retrieval strengthening, temporal demotion, EWC importance locking, recall boost, experience replay. All pure SQLite math — no external calls.
 
-## MCP Server (12 tools)
+## MCP Server (192 tools)
 
 If your adapter supports MCP, configure `brainctl-mcp` as an MCP server:
 
@@ -167,9 +167,11 @@ If your adapter supports MCP, configure `brainctl-mcp` as an MCP server:
 {"mcpServers": {"brainctl": {"command": "brainctl-mcp"}}}
 ```
 
-Tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_create`, `entity_get`, `entity_search`, `entity_observe`, `entity_relate`, `decision_add`, `search`, `stats`
+Core tools: `memory_add`, `memory_search`, `event_add`, `event_search`, `entity_create`, `entity_get`, `entity_search`, `entity_observe`, `entity_relate`, `decision_add`, `search`, `stats`, `handoff_add`, `handoff_latest`, `trigger_check`
 
-All tools accept optional `agent_id`. CLI and MCP are fully interchangeable — same DB.
+192 tools total covering memory, events, entities, decisions, triggers, handoffs, consolidation, affect, beliefs, temporal reasoning, and more. See [MCP_SERVER.md](MCP_SERVER.md) for the full list and decision tree.
+
+All tools accept optional `agent_id` and `profile` (task-scoped search presets). CLI and MCP are fully interchangeable — same DB.
 
 ## Post-Checkout Orientation (Task-Based Agents)
 

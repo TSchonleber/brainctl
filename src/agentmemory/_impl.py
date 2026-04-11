@@ -96,7 +96,7 @@ except Exception:
 DB_PATH = get_db_path()
 BLOBS_DIR = get_blobs_dir()
 BACKUPS_DIR = get_backups_dir()
-VERSION = "1.0.1"
+VERSION = "1.1.2"
 
 VALID_MEMORY_CATEGORIES = {
     "identity", "user", "environment", "convention",

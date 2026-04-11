@@ -3,12 +3,12 @@
 ## What This Is
 Unified agent memory system. SQLite-backed (brain.db) with FTS5, vector embeddings (sqlite-vec + Ollama nomic-embed-text), knowledge graph, affect tracking, belief collapse mechanics, and AGM conflict resolution.
 
-Published as `brainctl` on PyPI (v1.0.1).
+Published as `brainctl` on PyPI (v1.1.2).
 
 ## Key Paths
 - **DB:** `db/brain.db` (WAL mode, foreign keys ON)
 - **CLI:** `bin/brainctl` — main CLI entry
-- **MCP server:** `bin/brainctl-mcp` — stdio MCP server (23 tools). Run with `python3`
+- **MCP server:** `bin/brainctl-mcp` — stdio MCP server (192 tools). Run with `python3`
 - **Source:** `src/agentmemory/` — Python package
 - **Config:** `config/` — quiet hours, consolidation schedules
 - **Agents:** `agents/` — per-agent config (pipeline, engram, etc.)
