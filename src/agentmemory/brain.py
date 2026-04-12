@@ -620,6 +620,32 @@ class Brain:
     # Vector search (optional — requires sqlite-vec + Ollama)
     # ------------------------------------------------------------------
 
+    def think(
+        self,
+        query: str,
+        seed_limit: int = 5,
+        hops: int = 2,
+        decay: float = 0.6,
+        top_k: int = 20,
+    ) -> Dict[str, Any]:
+        """Spreading-activation recall — distinct from semantic search.
+
+        Searches the FTS index for `query` to pick seed memories, then
+        traverses knowledge_edges outward with decaying activation. Returns
+        a dict with `seeds` and `activated` (ranked by activation).
+
+        Use `search()` to find what you remember about a topic.
+        Use `think()` to find what your memory associates with that topic.
+        """
+        from agentmemory.dream import think_from_query
+        db = self._db()
+        try:
+            return think_from_query(
+                db, query, seed_limit=seed_limit, hops=hops, decay=decay, top_k=top_k
+            )
+        finally:
+            db.close()
+
     def vsearch(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Vector similarity search. Returns [] if sqlite-vec is unavailable.
 

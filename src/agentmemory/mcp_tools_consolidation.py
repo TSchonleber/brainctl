@@ -588,6 +588,70 @@ def tool_consolidation_stats(
         return {"ok": False, "error": str(exc)}
 
 
+def tool_dream_cycle(
+    agent_id: str = "mcp-client",
+    phase: str = "all",
+    **kw,
+) -> dict:
+    """Run the three-phase dream cycle (NREM / REM / Insight).
+
+    NREM replays high-recall memories, strengthens co-active edges, prunes
+    dead ones. REM does cross-scope bisociation and proposes bridge edges
+    from isolated memories. Insight runs community detection and writes new
+    abstract bridge-insight memories from high-betweenness nodes.
+
+    Args:
+        phase: 'nrem', 'rem', 'insight', or 'all' (default 'all').
+    """
+    try:
+        from agentmemory.dream import run_dream_cycle
+        if phase not in ("nrem", "rem", "insight", "all"):
+            return {"ok": False, "error": f"invalid phase: {phase}"}
+        db = _db()
+        result = run_dream_cycle(db, agent_id=agent_id, phase=phase)
+        db.close()
+        return {"ok": True, **result}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def tool_think(
+    agent_id: str = "mcp-client",
+    query: str = "",
+    seed_limit: int = 5,
+    hops: int = 2,
+    decay: float = 0.6,
+    top_k: int = 20,
+    **kw,
+) -> dict:
+    """Spreading-activation recall — distinct from semantic search.
+
+    Searches the FTS index for `query`, picks the top matches as seed
+    memories, then traverses knowledge_edges outward with decaying
+    activation. Use search() to find what you remember about a topic;
+    use think() to find what your memory associates with that topic.
+
+    Args:
+        query: Text query used to pick seed memories.
+        seed_limit: How many seed memories to pull from FTS (default 5).
+        hops: Edge-traversal depth (default 2).
+        decay: Per-hop activation decay multiplier (default 0.6).
+        top_k: Maximum activated nodes to return (default 20).
+    """
+    try:
+        from agentmemory.dream import think_from_query
+        if not query or not query.strip():
+            return {"ok": False, "error": "query is required"}
+        db = _db()
+        result = think_from_query(
+            db, query, seed_limit=seed_limit, hops=hops, decay=decay, top_k=top_k
+        )
+        db.close()
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------
@@ -834,6 +898,66 @@ TOOLS: list[Tool] = [
                     "default": True,
                 },
             },
+        },
+    ),
+    Tool(
+        name="dream_cycle",
+        description=(
+            "Run the three-phase dream cycle (NREM / REM / Insight). "
+            "NREM: replay high-recall memories, strengthen co-active edges, prune dead ones. "
+            "REM: cross-scope bisociation + isolated-memory bridge discovery. "
+            "Insight: community detection + abstract bridge-insight memories from high-betweenness nodes. "
+            "Lighter and faster than consolidation_run; designed to be called on idle triggers or via the dream-daemon."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "phase": {
+                    "type": "string",
+                    "enum": ["nrem", "rem", "insight", "all"],
+                    "description": "Run a single phase or all three (default 'all')",
+                    "default": "all",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="think",
+        description=(
+            "Spreading-activation recall — distinct from semantic search. "
+            "Searches the FTS index for `query` to pick seed memories, then traverses "
+            "knowledge_edges outward with decaying activation. Use search() to find what "
+            "you remember about a topic; use think() to find what your memory associates "
+            "with that topic. Based on Collins & Loftus (1975)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "default": "mcp-client"},
+                "query": {"type": "string", "description": "Text query used to pick seed memories"},
+                "seed_limit": {
+                    "type": "integer",
+                    "description": "How many seed memories to pull from FTS (default 5)",
+                    "default": 5,
+                },
+                "hops": {
+                    "type": "integer",
+                    "description": "Edge-traversal depth (default 2)",
+                    "default": 2,
+                },
+                "decay": {
+                    "type": "number",
+                    "description": "Per-hop activation decay multiplier (default 0.6)",
+                    "default": 0.6,
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max activated nodes to return (default 20)",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
         },
     ),
 ]
@@ -1190,4 +1314,6 @@ DISPATCH: dict = {
     "memory_calibration":     lambda agent_id=None, **kw: tool_memory_calibration(agent_id=agent_id or "mcp-client", **kw),
     "attention_snapshot":     lambda agent_id=None, **kw: tool_attention_snapshot(agent_id=agent_id or "mcp-client", **kw),
     "free_energy_check":      lambda agent_id=None, **kw: tool_free_energy_check(agent_id=agent_id or "mcp-client", **kw),
+    "dream_cycle":            lambda agent_id=None, **kw: tool_dream_cycle(agent_id=agent_id or "mcp-client", **kw),
+    "think":                  lambda agent_id=None, **kw: tool_think(agent_id=agent_id or "mcp-client", **kw),
 }
