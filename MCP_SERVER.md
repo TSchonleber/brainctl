@@ -42,7 +42,7 @@ Add to `.vscode/mcp.json` or User Settings:
 docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/brainctl-mcp
 ```
 
-## Available Tools (192)
+## Available Tools (194)
 
 | Tool | Description |
 |------|-------------|
@@ -100,7 +100,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db ghcr.io/yourorg/br
 
 ## Which Tools Do I Need?
 
-192 tools is overwhelming. Most agents need ~15 on a daily basis. Here's how to find what you need.
+194 tools is overwhelming. Most agents need ~15 on a daily basis. Here's how to find what you need.
 
 ### Tier 1: Essential (daily use)
 
