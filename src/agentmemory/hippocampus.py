@@ -3462,6 +3462,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dream.set_defaults(func=cmd_dream_pass)
 
+    from agentmemory.dream import (
+        cmd_dream_cycle,
+        cmd_dream_daemon,
+        DEFAULT_IDLE_SECONDS as _DEFAULT_IDLE,
+        DEFAULT_MEMORY_THRESHOLD as _DEFAULT_MEM_THRESH,
+        DEFAULT_POLL_SECONDS as _DEFAULT_POLL,
+    )
+
+    dream_cycle = sub.add_parser(
+        "dream-cycle",
+        help="Run three-phase dream cycle (NREM replay+pruning, REM bisociation+bridges, Insight community-bridge memories)",
+    )
+    dream_cycle.add_argument("--agent", default="hippocampus", help="Agent id for written memories/events")
+    dream_cycle.add_argument(
+        "--phase", default="all", choices=["nrem", "rem", "insight", "all"],
+        help="Run a single phase or all three (default: all)",
+    )
+    dream_cycle.add_argument("--quiet", action="store_true", help="Suppress JSON output")
+    dream_cycle.set_defaults(func=cmd_dream_cycle)
+
+    dream_daemon = sub.add_parser(
+        "dream-daemon",
+        help="Run dream cycle as a long-lived daemon, triggering on idle or new-memory thresholds",
+    )
+    dream_daemon.add_argument("--agent", default="hippocampus", help="Agent id for written memories/events")
+    dream_daemon.add_argument(
+        "--phase", default="all", choices=["nrem", "rem", "insight", "all"],
+        help="Phase to run on each trigger (default: all)",
+    )
+    dream_daemon.add_argument(
+        "--idle", type=int, default=_DEFAULT_IDLE,
+        help=f"Seconds of event-table idle that fire a cycle (default: {_DEFAULT_IDLE})",
+    )
+    dream_daemon.add_argument(
+        "--memory-threshold", dest="memory_threshold", type=int, default=_DEFAULT_MEM_THRESH,
+        help=f"New-memory count since last cycle that fires a cycle (default: {_DEFAULT_MEM_THRESH})",
+    )
+    dream_daemon.add_argument(
+        "--poll", type=int, default=_DEFAULT_POLL,
+        help=f"Poll interval in seconds (default: {_DEFAULT_POLL})",
+    )
+    dream_daemon.add_argument(
+        "--once", action="store_true",
+        help="Run a single trigger check then exit (useful for cron / testing)",
+    )
+    dream_daemon.set_defaults(func=cmd_dream_daemon)
+
     propagate = sub.add_parser(
         "reflexion-propagate",
         help="Propagate generalizable reflexion lessons to matching agents",

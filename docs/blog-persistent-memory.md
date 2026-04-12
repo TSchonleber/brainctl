@@ -98,7 +98,7 @@ If you're using Claude Desktop, VS Code, or Cursor, brainctl ships an MCP server
 {"mcpServers": {"brainctl": {"command": "brainctl-mcp"}}}
 ```
 
-192 tools covering memory, events, entities, decisions, triggers, handoffs, consolidation, affect tracking, and more. But you don't need to learn all 192 — the [MCP docs](https://github.com/TSchonleber/brainctl/blob/main/MCP_SERVER.md) include a decision tree showing which ~15 tools you actually need.
+194 tools covering memory, events, entities, decisions, triggers, handoffs, consolidation, affect tracking, and more. But you don't need to learn all 194 — the [MCP docs](https://github.com/TSchonleber/brainctl/blob/main/MCP_SERVER.md) include a decision tree showing which ~15 tools you actually need.
 
 ## Framework Integrations
 
