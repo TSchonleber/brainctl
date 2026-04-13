@@ -84,7 +84,7 @@ brainctl stats
 }
 ```
 
-194 tools available. See [MCP_SERVER.md](MCP_SERVER.md) for the full list and a decision tree showing which tools to use when.
+196 tools available. See [MCP_SERVER.md](MCP_SERVER.md) for the full list and a decision tree showing which tools to use when.
 
 ## The Drop-In Pattern
 
@@ -326,7 +326,7 @@ docker run -v ./data:/data brainctl brainctl stats     # CLI
 |-----|---------------|
 | [Agent Onboarding Guide](docs/AGENT_ONBOARDING.md) | Step-by-step integration for agents |
 | [Agent Instructions](docs/AGENT_INSTRUCTIONS.md) | Copy-paste blocks for MCP, CLI, Python agents |
-| [MCP Server Reference](MCP_SERVER.md) | 194 tools with decision tree |
+| [MCP Server Reference](MCP_SERVER.md) | 196 tools with decision tree |
 | [Architecture](ARCHITECTURE.md) | Technical deep-dive |
 | [Cognitive Protocol](COGNITIVE_PROTOCOL.md) | The Orient-Work-Record pattern |
 | [Examples](examples/) | Runnable scripts (quickstart, lifecycle, multi-agent) |

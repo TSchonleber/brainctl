@@ -26,7 +26,7 @@ Key technical decisions:
 - Three-tier routing (skip/cache/full-index) inspired by D-MEM (Song & Xin 2025, arXiv 2603.14597)
 - Half-life decay per category — integration details fade in a month, identity persists for a year
 - Bayesian confidence scoring with alpha/beta tracking
-- MCP server included (194 tools for Claude Desktop / VS Code)
+- MCP server included (196 tools for Claude Desktop / VS Code)
 - LangChain and CrewAI adapters included
 
 Python 3.11+, MIT licensed, zero dependencies for core.
