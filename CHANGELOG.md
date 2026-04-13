@@ -3,9 +3,16 @@
 All notable changes to **brainctl** will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — 2026-04-10
+## [1.2.0] — 2026-04-13
 
 ### Added
+- **Hermes Agent memory provider plugin** — `plugins/hermes/brainctl/` ships a
+  drop-in `MemoryProvider` implementation for [Hermes Agent](https://hermes-agent.nousresearch.com).
+  Wraps `agentmemory.Brain`, exposes `brainctl_remember` / `search` / `think` /
+  `log` / `entity` / `decide` / `handoff` tools to the model, auto-prefetches
+  recall before each turn, auto-retains completed turns, runs `brain.orient()`
+  /`brain.wrap_up()` session bookends, mirrors built-in `MEMORY.md` writes into
+  `brain.db`, and persists pre-compression context as `lesson` memories.
 - **Context profiles** — task-scoped search presets via `--profile NAME` on `search` and `memory search`
   - 6 built-in profiles: `writing`, `meeting`, `research`, `ops`, `networking`, `review`
   - Each profile scopes tables + categories to what's relevant for that task mode (inspired by Koylan's progressive disclosure pattern)
