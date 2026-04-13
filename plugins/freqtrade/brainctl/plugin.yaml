@@ -1,0 +1,12 @@
+name: brainctl
+version: 0.1.0
+description: "brainctl persistent memory for Freqtrade strategies — logs trades, decisions, postmortems, and session handoffs to a SQLite brain that survives restarts, forks, and backtests."
+pip_dependencies:
+  - "brainctl>=1.2.0"
+requires_env: []
+hooks:
+  - bot_start
+  - confirm_trade_entry
+  - confirm_trade_exit
+  - order_filled
+  - on_shutdown
