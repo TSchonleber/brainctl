@@ -165,90 +165,108 @@ export class BrainctlService {
   }
 
   /**
-   * Compose an orient snapshot client-side. brainctl-mcp does not (yet)
-   * expose a single `orient` tool — we call the underlying primitives
-   * and assemble a session-start packet the provider can inject.
+   * Single-call session start. Delegates to the native `agent_orient`
+   * MCP tool in brainctl core which returns the pending handoff, recent
+   * events, active triggers, top memories, and stats in one shot.
    *
-   * TODO: once brainctl core adds a native `agent_orient` MCP tool,
-   * collapse this into a single `callTool("agent_orient", ...)`.
+   * Before brainctl core exposed `agent_orient` as a first-class tool,
+   * this method had to compose the snapshot client-side from
+   * `handoff_latest` + `event_search` primitives. Now it's a single
+   * MCP round-trip.
    */
-  async orient(project?: string): Promise<OrientSnapshot> {
+  async orient(project?: string, query?: string): Promise<OrientSnapshot> {
     const scope = project ?? this.config.project;
-    const snapshot: OrientSnapshot = {};
-
-    // Latest pending handoff (if any).
     try {
-      const h = await this.callTool<{
+      const raw = await this.callTool<{
+        ok?: boolean;
         handoff?: {
           goal?: string;
           current_state?: string;
-          open_loops?: string;
+          open_loops?: string | string[];
           next_step?: string;
-        };
-      }>("handoff_latest", {
-        status: "pending",
+        } | null;
+        recent_events?: Array<{
+          summary: string;
+          event_type?: string;
+          created_at?: string;
+        }>;
+        triggers?: Array<{
+          trigger_condition?: string;
+          action?: string;
+          priority?: string;
+        }>;
+        memories?: RecalledMemory[];
+        stats?: Record<string, unknown>;
+      }>("agent_orient", {
+        agent_id: this.config.agentId,
         project: scope,
+        query,
       });
-      if (h?.handoff) {
-        const open =
-          typeof h.handoff.open_loops === "string"
-            ? h.handoff.open_loops
+
+      if (!raw) return {};
+
+      const snapshot: OrientSnapshot = {};
+
+      if (raw.handoff) {
+        const openRaw = raw.handoff.open_loops;
+        const openLoops: string[] = Array.isArray(openRaw)
+          ? openRaw
+          : typeof openRaw === "string"
+            ? openRaw
                 .split("\n")
                 .map((s) => s.trim())
                 .filter(Boolean)
             : [];
         snapshot.handoff = {
-          goal: h.handoff.goal,
-          current_state: h.handoff.current_state,
-          open_loops: open,
-          next_step: h.handoff.next_step,
+          goal: raw.handoff.goal,
+          current_state: raw.handoff.current_state,
+          open_loops: openLoops,
+          next_step: raw.handoff.next_step,
         };
       }
-    } catch {
-      /* no handoff yet — that's fine for a fresh session */
-    }
 
-    // Recent events — uses the generic `search` primitive on events.
-    try {
-      const events = await this.callTool<{
-        results: Array<{ summary: string; event_type?: string; created_at?: string }>;
-      }>("event_search", { query: "", limit: 5, project: scope });
-      if (events?.results) snapshot.recent_events = events.results;
-    } catch {
-      /* noop */
-    }
+      if (raw.recent_events) snapshot.recent_events = raw.recent_events;
+      if (raw.triggers) {
+        snapshot.triggers = raw.triggers.map((t) => ({
+          name: t.trigger_condition ?? "",
+          action: t.action ?? "",
+        }));
+      }
+      if (raw.memories) snapshot.memories = raw.memories;
+      if (raw.stats) snapshot.stats = raw.stats;
 
-    return snapshot;
+      return snapshot;
+    } catch {
+      // Fresh session or brainctl unavailable — return empty snapshot.
+      return {};
+    }
   }
 
   /**
-   * Persist a session handoff packet. brainctl-mcp's `handoff_add` tool
-   * requires goal / current_state / open_loops / next_step. When the
-   * caller only has a summary string we synthesize reasonable defaults.
-   *
-   * TODO: once brainctl core adds a native `agent_wrap_up` MCP tool,
-   * collapse this into a single `callTool("agent_wrap_up", ...)`.
+   * Single-call session end. Delegates to the native `agent_wrap_up`
+   * MCP tool which logs a `session_end` event AND creates a pending
+   * handoff packet in one shot.
    */
   wrapUp(
     summary: string,
     project?: string,
     opts: {
       goal?: string;
-      current_state?: string;
       open_loops?: string;
       next_step?: string;
     } = {},
   ) {
-    return this.callTool<{ id: number }>("handoff_add", {
-      title: summary.slice(0, 80),
-      goal: opts.goal ?? summary,
-      current_state: opts.current_state ?? summary,
-      open_loops: opts.open_loops ?? "",
-      next_step: opts.next_step ?? "Resume work in next session.",
-      project: project ?? this.config.project,
-      scope: "global",
-      status: "pending",
-    });
+    return this.callTool<{ ok: boolean; event_id?: number; handoff_id?: number }>(
+      "agent_wrap_up",
+      {
+        agent_id: this.config.agentId,
+        summary,
+        goal: opts.goal,
+        open_loops: opts.open_loops,
+        next_step: opts.next_step,
+        project: project ?? this.config.project,
+      },
+    );
   }
 
   logEvent(
