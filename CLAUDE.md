@@ -8,7 +8,7 @@ Published as `brainctl` on PyPI (v1.1.2).
 ## Key Paths
 - **DB:** `db/brain.db` (WAL mode, foreign keys ON)
 - **CLI:** `bin/brainctl` — main CLI entry
-- **MCP server:** `bin/brainctl-mcp` — stdio MCP server (194 tools). Run with `python3`
+- **MCP server:** `bin/brainctl-mcp` — stdio MCP server (196 tools). Run with `python3`
 - **Source:** `src/agentmemory/` — Python package
 - **Config:** `config/` — quiet hours, consolidation schedules
 - **Agents:** `agents/` — per-agent config (pipeline, engram, etc.)
