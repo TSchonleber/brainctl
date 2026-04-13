@@ -3030,6 +3030,46 @@ def cmd_handoff_expire(args):
     json_out({"ok": True, "handoff_id": args.id, "status": "expired"})
 
 # ---------------------------------------------------------------------------
+# Session lifecycle commands — orient / wrap-up
+# ---------------------------------------------------------------------------
+#
+# Thin CLI wrappers around Brain.orient() / Brain.wrap_up() so shell-level
+# lifecycle hooks (Claude Code SessionStart / SessionEnd, cron jobs, etc.)
+# can get a full session-start snapshot or persist a handoff packet without
+# spinning up an MCP client or writing Python glue. Used by the
+# `plugins/claude-code/brainctl/` hook scripts.
+
+def cmd_orient(args):
+    """CLI wrapper: Brain.orient() — returns pending handoff, recent events,
+    triggers, memories, and stats as JSON on stdout."""
+    from agentmemory.brain import Brain
+    try:
+        brain = Brain(agent_id=args.agent, db_path=str(DB_PATH))
+        snap = brain.orient(project=args.project, query=args.query)
+        json_out({"ok": True, **snap}, compact=getattr(args, "compact", False))
+    except Exception as exc:
+        json_out({"ok": False, "error": str(exc)}, compact=getattr(args, "compact", False))
+
+
+def cmd_wrap_up(args):
+    """CLI wrapper: Brain.wrap_up() — logs session_end and creates a handoff
+    packet for the next session. Prints the resulting handoff_id as JSON."""
+    from agentmemory.brain import Brain
+    try:
+        brain = Brain(agent_id=args.agent, db_path=str(DB_PATH))
+        result = brain.wrap_up(
+            summary=args.summary,
+            goal=getattr(args, "goal", None),
+            open_loops=getattr(args, "open_loops", None),
+            next_step=getattr(args, "next_step", None),
+            project=getattr(args, "project", None),
+        )
+        json_out({"ok": True, **(result or {})})
+    except Exception as exc:
+        json_out({"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
 # STATE commands — per-agent key/value store
 # ---------------------------------------------------------------------------
 
@@ -12539,6 +12579,25 @@ def build_parser():
     hof_expire = hof_sub.add_parser("expire", help="Mark a handoff packet expired")
     hof_expire.add_argument("id", type=int)
 
+    # --- orient / wrap-up (session lifecycle) ---
+    orient_p = sub.add_parser(
+        "orient",
+        help="Single-call session start — pending handoff, recent events, triggers, stats",
+    )
+    orient_p.add_argument("--project", "-p", help="Project scope")
+    orient_p.add_argument("--query", "-q", help="Optional search query for relevant memories")
+    orient_p.add_argument("--compact", action="store_true", help="Compact (minified) JSON output")
+
+    wrap_p = sub.add_parser(
+        "wrap-up",
+        help="Single-call session end — logs session_end and creates handoff packet",
+    )
+    wrap_p.add_argument("--summary", "-s", required=True, help="Session summary (what was done)")
+    wrap_p.add_argument("--goal", "-g", help="Overarching goal for the next session")
+    wrap_p.add_argument("--open-loops", dest="open_loops", help="Unresolved items")
+    wrap_p.add_argument("--next-step", dest="next_step", help="Recommended next action")
+    wrap_p.add_argument("--project", "-p", help="Project scope")
+
     # --- state ---
     st = sub.add_parser("state", help="Per-agent key/value state")
     st_sub = st.add_subparsers(dest="state_cmd")
@@ -13936,6 +13995,12 @@ def main():
             "expire": cmd_handoff_expire,
         }
         fn = dispatch.get(args.handoff_cmd)
+    elif args.command == "orient":
+        cmd_orient(args)
+        return
+    elif args.command == "wrap-up":
+        cmd_wrap_up(args)
+        return
     elif args.command == "state":
         dispatch = {"get": cmd_state_get, "set": cmd_state_set}
         fn = dispatch.get(args.state_cmd)

@@ -1,0 +1,13 @@
+name: brainctl
+version: 0.1.0
+description: "Claude Code persistent memory via brainctl. Automatically orients each session with prior context, captures tool observations, and wraps up sessions into a handoff packet — all through Claude Code's lifecycle hooks."
+pip_dependencies:
+  - "brainctl>=1.2.0"
+requires_env:
+  - BRAIN_DB   # optional — defaults to ~/agentmemory/db/brain.db
+hooks:
+  - SessionStart
+  - UserPromptSubmit
+  - PostToolUse
+  - SessionEnd
+  - Stop
