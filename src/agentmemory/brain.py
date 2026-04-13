@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from agentmemory import _gates
 from agentmemory.affect import classify_affect
 from agentmemory.paths import get_db_path
 
@@ -62,10 +63,90 @@ def _now_ts() -> str:
     return _utc_now_iso()
 
 
+class GateRejected(Exception):
+    """Raised by Brain.remember(..., strict=True) when the W(m) gate rejects.
+
+    The :class:`~agentmemory._gates.GateDecision` is attached on
+    ``.decision`` so callers can introspect the rejection.
+    """
+
+    def __init__(self, decision) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(decision.reason if decision is not None else "gate rejected")
+        self.decision = decision
+
+
 def _safe_fts(query: str) -> str:
-    """Sanitize a query string for FTS5 MATCH syntax."""
-    safe = re.sub(r'[^\w\s]', ' ', query).strip()
-    return " OR ".join(safe.split()) if safe else ""
+    """Sanitize a query string for FTS5 MATCH.
+
+    Rules:
+
+    * Preserve quoted phrases: ``"release notes"`` stays a phrase.
+    * Preserve prefix matching: ``api*`` stays a prefix term.
+    * Preserve bare ``AND`` / ``OR`` / ``NOT`` uppercase operators.
+    * Drop any other FTS5 metacharacter (parens, colons, carets, etc.).
+    * Unbalanced quotes are dropped rather than raising.
+    * Degenerate input (only punctuation) returns ``""`` — the caller
+      must already fall through to LIKE in that case.
+    """
+    if not query or not query.strip():
+        return ""
+
+    # 1. Extract quoted phrases verbatim so they survive tokenization.
+    phrases: list[str] = []
+
+    def _grab_phrase(match: "re.Match[str]") -> str:
+        inner = match.group(1)
+        # Strip FTS5-dangerous chars from inside the phrase but keep words.
+        inner_clean = re.sub(r'[^\w\s\-]', ' ', inner)
+        inner_clean = re.sub(r'\s+', ' ', inner_clean).strip()
+        if not inner_clean:
+            return " "
+        phrases.append(inner_clean)
+        return f" \x00PHRASE{len(phrases) - 1}\x00 "
+
+    stripped = re.sub(r'"([^"]*)"', _grab_phrase, query)
+    # Any remaining bare quote is unbalanced — drop it.
+    stripped = stripped.replace('"', ' ')
+
+    # 2. Tokenize the rest. Preserve alphanum, underscore, hyphen, and
+    #    a trailing asterisk (prefix operator).
+    tokens: list[str] = []
+    for raw in stripped.split():
+        if raw.startswith("\x00PHRASE") and raw.endswith("\x00"):
+            idx = int(raw[len("\x00PHRASE"):-1])
+            tokens.append(f'"{phrases[idx]}"')
+            continue
+
+        # Bare boolean operators pass through untouched.
+        if raw in ("AND", "OR", "NOT"):
+            tokens.append(raw)
+            continue
+
+        # Detect trailing prefix asterisk.
+        has_prefix = raw.endswith("*")
+        core = raw[:-1] if has_prefix else raw
+
+        # Strip dangerous FTS5 operators and anything that isn't a word char.
+        core = re.sub(r'[^\w\-]', '', core)
+        if not core:
+            continue
+        # A lone hyphen isn't a valid token.
+        core = core.strip('-')
+        if not core:
+            continue
+
+        tokens.append(f"{core}*" if has_prefix else core)
+
+    if not tokens:
+        return ""
+
+    # 3. If we have only one token, return it as-is so FTS5 can stem.
+    if len(tokens) == 1:
+        return tokens[0]
+
+    # 4. Otherwise OR the tokens together (same default behaviour as
+    #    before for bag-of-words queries) while keeping phrases atomic.
+    return " OR ".join(tokens)
 
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -291,12 +372,123 @@ class Brain:
     # Core: remember, search, forget
     # ------------------------------------------------------------------
 
-    def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:
-        """Add a memory. Returns memory ID."""
-        tags_json = json.dumps(tags.split(",")) if isinstance(tags, str) else (json.dumps(tags) if tags else None)
+    def _embed_for_gate(self, text: str) -> Optional[bytes]:
+        """Best-effort embedding helper for the W(m) gate.
+
+        Returns None when sqlite-vec isn't wired up or the embedder is
+        unreachable. The gate gracefully falls back to word-overlap
+        surprise scoring when this returns None, so the Python API path
+        still runs without Ollama.
+        """
+        if not _VEC_AVAILABLE or _vec is None:
+            return None
+        try:
+            return _vec.embed_text(text)
+        except Exception as exc:
+            _log.debug("vec.embed_text unavailable, falling back to word-overlap surprise: %s", exc)
+            return None
+
+    def _get_vec_db(self) -> Optional[sqlite3.Connection]:
+        """Return a sqlite-vec-enabled connection, or None.
+
+        Passed to :func:`agentmemory._gates.evaluate_write` so the W(m)
+        gate can query ``vec_memories``. When sqlite-vec isn't available
+        the gate automatically falls back to word-overlap surprise.
+
+        This opens its own short-lived connection (separate from the
+        shared RLock-guarded instance connection) because sqlite-vec's
+        extension loading is per-connection and the shared connection
+        was opened without ``enable_load_extension``. WAL mode handles
+        the concurrent access.
+        """
+        if not _VEC_AVAILABLE or _vec is None:
+            return None
+        try:
+            dylib = _vec._find_vec_dylib()
+        except Exception:
+            return None
+        if not dylib:
+            return None
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.enable_load_extension(True)
+            conn.load_extension(dylib)
+            conn.enable_load_extension(False)
+            return conn
+        except Exception as exc:
+            _log.debug("Brain._get_vec_db failed: %s", exc)
+            return None
+
+    def remember(
+        self,
+        content: str,
+        category: str = "general",
+        tags: Optional[Union[str, List[str]]] = None,
+        confidence: float = 1.0,
+        *,
+        bypass_gate: bool = False,
+        strict: bool = False,
+        supersedes_id: Optional[int] = None,
+        source: str = "python_api",
+    ) -> Optional[int]:
+        """Add a memory. Returns the memory id, or ``None`` if the gate rejected.
+
+        Every call runs through the shared write gate in
+        :mod:`agentmemory._gates`, which mirrors the MCP write path:
+        reconsolidation lability check, surprise scoring, arousal/valence
+        modulation, a pre-worthiness floor, and the full W(m) semantic
+        gate (when embeddings are available).
+
+        Args:
+            content: The memory text.
+            category: Memory category (identity, decision, lesson, ...).
+            tags: Comma-separated string or list of tags.
+            confidence: Caller's confidence in the memory, 0-1.
+            bypass_gate: Skip the gate entirely. Intended for migration
+                tools and tests; never expose to end users.
+            strict: When True, a gate rejection raises :class:`GateRejected`
+                instead of returning ``None``.
+            supersedes_id: If this write is meant to overwrite an existing
+                memory (e.g. during reconsolidation), pass its id so the
+                lability window is enforced.
+            source: Trust bucket for the writer. Valid values are the keys
+                of :data:`agentmemory._gates.SOURCE_TRUST_WEIGHTS`.
+
+        Raises:
+            GateRejected: When ``strict=True`` and the write was rejected.
+        """
+        tags_json = (
+            json.dumps(tags.split(",")) if isinstance(tags, str)
+            else (json.dumps(tags) if tags else None)
+        )
         now = _now_ts()
         with self._lock:
             db = self._get_conn()
+
+            if not bypass_gate:
+                decision = _gates.evaluate_write(
+                    db,
+                    agent_id=self.agent_id,
+                    content=content,
+                    category=category,
+                    scope="global",
+                    confidence=confidence,
+                    source=source,
+                    force=False,
+                    supersedes_id=supersedes_id,
+                    embed_fn=self._embed_for_gate,
+                    get_vec_db_fn=self._get_vec_db,
+                )
+                if not decision.accepted:
+                    self._log_gate_rejection(db, content, category, decision)
+                    _log.warning(
+                        "Brain.remember rejected by W(m) gate: %s", decision.reason
+                    )
+                    if strict:
+                        raise GateRejected(decision)
+                    return None
+
             cur = db.execute(
                 "INSERT INTO memories (agent_id, category, content, confidence, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
                 (self.agent_id, category, content, confidence, tags_json, now, now)
@@ -314,6 +506,36 @@ class Brain:
                 except Exception as exc:
                     _log.warning("vec.index_memory failed for memory %s: %s", mid, exc)
         return mid
+
+    def _log_gate_rejection(self, db: sqlite3.Connection, content: str, category: str, decision) -> None:
+        """Record a ``write_rejected`` event for observability.
+
+        Mirrors the event mcp_server emits so downstream diagnostics see
+        rejections from either path. Failure to log is non-fatal.
+        """
+        try:
+            db.execute(
+                "INSERT INTO events (agent_id, event_type, summary, metadata, created_at) "
+                "VALUES (?, 'write_rejected', ?, ?, ?)",
+                (
+                    self.agent_id,
+                    f"Brain.remember rejected: {decision.reason[:120]}",
+                    json.dumps({
+                        "content_preview": content[:120],
+                        "category": category,
+                        "surprise": decision.surprise,
+                        "surprise_method": decision.surprise_method,
+                        "pre_worthiness": decision.pre_worthiness,
+                        "score": decision.score,
+                        "reason": decision.reason,
+                        "source": "python_api",
+                    }),
+                    _now_ts(),
+                ),
+            )
+            db.commit()
+        except Exception as exc:
+            _log.debug("Failed to log write_rejected event: %s", exc)
 
     def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Search memories using FTS5 full-text search with porter stemming.
@@ -335,8 +557,12 @@ class Brain:
                         (fts_q, limit)
                     ).fetchall()
                     return [dict(r) for r in rows]
-            except sqlite3.OperationalError:
-                pass  # FTS5 table missing — fall back to LIKE
+            except sqlite3.OperationalError as exc:
+                _log.warning(
+                    "FTS5 search failed at brain.py:search(), falling back to LIKE: %s",
+                    exc,
+                )
+            # Fallback: LIKE search
             rows = db.execute(
                 "SELECT id, content, category, confidence, created_at FROM memories "
                 "WHERE content LIKE ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
@@ -491,7 +717,8 @@ class Brain:
                 hq += " ORDER BY created_at DESC LIMIT 1"
                 hrow = db.execute(hq, hp).fetchone()
                 result["handoff"] = dict(hrow) if hrow else None
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                _log.warning("orient(): handoff lookup failed: %s", exc)
                 result["handoff"] = None
 
             # 2. Recent events (last 10)
@@ -503,7 +730,8 @@ class Brain:
                     ep.append(project)
                 eq += " ORDER BY created_at DESC LIMIT 10"
                 result["recent_events"] = [dict(r) for r in db.execute(eq, ep).fetchall()]
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                _log.warning("orient(): recent events lookup failed: %s", exc)
                 result["recent_events"] = []
 
             # 3. Active triggers
@@ -523,7 +751,8 @@ class Brain:
                     (self.agent_id,)
                 ).fetchall()
                 result["triggers"] = [dict(r) for r in trows]
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                _log.warning("orient(): trigger lookup failed: %s", exc)
                 result["triggers"] = []
 
             # 4. Search for relevant memories (if query or project given)
@@ -542,7 +771,10 @@ class Brain:
                         result["memories"] = [dict(r) for r in mrows]
                     else:
                         result["memories"] = []
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as exc:
+                    _log.warning(
+                        "orient(): FTS5 search failed, returning empty: %s", exc
+                    )
                     result["memories"] = []
             else:
                 result["memories"] = []
@@ -636,7 +868,10 @@ class Brain:
                     (now,)
                 )
                 db.commit()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                _log.warning(
+                    "check_triggers(): expiring overdue triggers failed: %s", exc
+                )
                 return []
             rows = db.execute(
                 "SELECT * FROM memory_triggers WHERE status = 'active' AND agent_id = ?",
@@ -646,7 +881,12 @@ class Brain:
             matches = []
             for row in rows:
                 kws = [k.strip().lower() for k in (row["trigger_keywords"] or "").split(",") if k.strip()]
-                matched = [k for k in kws if k in query_lower]
+                # Word-boundary match — prevents false positives like "deploy"
+                # matching "redeploy" or "re" matching "research".
+                matched = [
+                    k for k in kws
+                    if re.search(rf'\b{re.escape(k)}\b', query_lower)
+                ]
                 if matched:
                     m = dict(row)
                     m["matched_keywords"] = matched

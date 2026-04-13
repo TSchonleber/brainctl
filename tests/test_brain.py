@@ -71,7 +71,11 @@ class TestRemember:
         assert row[0] == "preference"
 
     def test_confidence(self, brain):
-        mid = brain.remember("uncertain", confidence=0.4)
+        # confidence=0.4 alone falls below the W(m) pre-worthiness floor
+        # (0.4 * 0.85 trust * 0.85 arousal ≈ 0.289 < 0.3), so this test
+        # bypasses the gate — its intent is to verify that confidence is
+        # stored faithfully, not to exercise gate acceptance.
+        mid = brain.remember("uncertain", confidence=0.4, bypass_gate=True)
         conn = sqlite3.connect(str(brain.db_path))
         row = conn.execute("SELECT confidence FROM memories WHERE id=?", (mid,)).fetchone()
         conn.close()

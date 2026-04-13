@@ -38,28 +38,9 @@ def _now_sql() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _is_labile(row: dict, agent_id: str) -> tuple[bool, str]:
-    """Return (is_labile, reason) for a memory row."""
-    labile_until = row.get("labile_until")
-    labile_agent = row.get("labile_agent_id")
-
-    if not labile_until:
-        return False, "no lability window open"
-
-    try:
-        exp = datetime.fromisoformat(labile_until.replace("Z", "+00:00"))
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        if now > exp:
-            return False, "lability window expired"
-    except Exception:
-        return False, "invalid labile_until timestamp"
-
-    if labile_agent and labile_agent != agent_id:
-        return False, f"lability opened by different agent ({labile_agent})"
-
-    return True, "lability window active"
+# _is_labile lives in agentmemory._gates so it can gate *writes* (not just
+# recall boosting). We re-export it here for backward compatibility.
+from agentmemory._gates import is_labile as _is_labile  # noqa: F401,E402
 
 
 # ---------------------------------------------------------------------------

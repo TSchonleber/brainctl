@@ -109,8 +109,14 @@ def test_multi_thread_remember_and_search(db_file):
     def worker(worker_id: int) -> None:
         try:
             for i in range(per_thread):
+                # bypass_gate=True: this test stresses the connection
+                # lifecycle under thread contention, not the W(m) gate.
+                # Near-duplicate content ("thread N memory M") would
+                # otherwise be rejected by semantic dedup.
                 brain.remember(
-                    f"thread {worker_id} memory {i}", category="lesson"
+                    f"thread {worker_id} memory {i}",
+                    category="lesson",
+                    bypass_gate=True,
                 )
                 results = brain.search(f"thread {worker_id}")
                 assert isinstance(results, list)
