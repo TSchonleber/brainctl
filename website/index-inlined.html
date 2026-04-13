@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>brainctl — persistent memory for AI agents</title>
+  <meta name="description" content="brainctl gives AI agents persistent memory. One SQLite file. No servers. No API keys. Open source. Now with a token." />
+  <meta property="og:title" content="brainctl — persistent memory for AI agents" />
+  <meta property="og:description" content="The open-source memory layer for autonomous agents. One file. Zero friction. Backed by neuroscience." />
+  <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#0a0014" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+:root {
+  --bg-0: #07000f;
+  --bg-1: #0b0018;
+  --bg-2: #130028;
+  --fg: #e9e6ff;
+  --muted: #9890c4;
+  --dim: #6b6590;
+  --line: rgba(170, 120, 255, 0.15);
+  --card: rgba(22, 8, 46, 0.55);
+  --card-border: rgba(170, 120, 255, 0.22);
+  --neon-1: #b46bff;
+  --neon-2: #5df2ff;
+  --neon-3: #ff4fd8;
+  --accent: linear-gradient(120deg, #5df2ff 0%, #b46bff 50%, #ff4fd8 100%);
+  --glow: 0 0 40px rgba(180, 107, 255, 0.35);
+  --radius: 14px;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: "Space Grotesk", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--sans);
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(180, 107, 255, 0.18), transparent 60%),
+    radial-gradient(900px 500px at 10% 20%, rgba(93, 242, 255, 0.12), transparent 60%),
+    radial-gradient(900px 700px at 50% 100%, rgba(255, 79, 216, 0.10), transparent 60%),
+    var(--bg-0);
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* Background canvas */
+#neural-bg {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* Film grain */
+.noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Nav */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 40px;
+  backdrop-filter: blur(12px);
+  background: linear-gradient(180deg, rgba(7, 0, 15, 0.75), rgba(7, 0, 15, 0.25));
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+.brand-mark {
+  color: var(--neon-2);
+  font-size: 22px;
+  text-shadow: 0 0 12px var(--neon-2);
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.nav-links a:hover { color: var(--fg); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn-primary {
+  background: var(--accent);
+  color: #0a0014;
+  box-shadow: 0 10px 40px rgba(180, 107, 255, 0.4);
+}
+.btn-primary:hover { box-shadow: 0 14px 48px rgba(180, 107, 255, 0.6); }
+.btn-outline {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--card-border);
+  color: var(--fg);
+}
+.btn-outline:hover { background: rgba(180, 107, 255, 0.08); border-color: var(--neon-1); }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--fg);
+  padding: 8px 14px;
+}
+.btn-ghost:hover { background: rgba(180, 107, 255, 0.1); }
+
+/* Layout */
+main {
+  position: relative;
+  z-index: 2;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* Hero */
+.hero {
+  padding: 80px 0 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 28px;
+}
+
+.ca-bar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px 10px 14px;
+  border-radius: 999px;
+  background: rgba(11, 0, 25, 0.7);
+  border: 1px solid var(--card-border);
+  font-family: var(--mono);
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 0 1px rgba(180, 107, 255, 0.08), var(--glow);
+}
+.ca-label {
+  color: #0a0014;
+  background: var(--accent);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  font-size: 11px;
+}
+.ca-value {
+  color: var(--fg);
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-copy {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ca-copy:hover { color: var(--fg); border-color: var(--neon-1); background: rgba(180, 107, 255, 0.1); }
+.ca-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neon-2);
+  box-shadow: 0 0 12px var(--neon-2);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.title {
+  font-size: clamp(44px, 7vw, 92px);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+  margin: 0;
+  font-weight: 700;
+}
+.title .muted { color: var(--muted); font-weight: 400; font-size: 0.85em; }
+.grad {
+  background: var(--accent);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.glitch {
+  position: relative;
+  display: inline-block;
+  color: var(--fg);
+  text-shadow: 0 0 24px rgba(180, 107, 255, 0.4);
+}
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%;
+  opacity: 0.8;
+  mix-blend-mode: screen;
+}
+.glitch::before { color: var(--neon-2); transform: translate(2px, 0); animation: glitch-a 3.5s infinite linear alternate; }
+.glitch::after  { color: var(--neon-3); transform: translate(-2px, 0); animation: glitch-b 4s infinite linear alternate; }
+@keyframes glitch-a {
+  0%, 80%, 100% { transform: translate(2px, 0); }
+  82% { transform: translate(4px, -1px); }
+  85% { transform: translate(-2px, 1px); }
+  88% { transform: translate(3px, 0); }
+}
+@keyframes glitch-b {
+  0%, 80%, 100% { transform: translate(-2px, 0); }
+  82% { transform: translate(-4px, 1px); }
+  85% { transform: translate(2px, -1px); }
+  88% { transform: translate(-3px, 0); }
+}
+
+.tagline {
+  max-width: 680px;
+  font-size: 19px;
+  color: var(--muted);
+  margin: 0;
+}
+.tagline strong { color: var(--fg); font-weight: 600; }
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.code-card {
+  width: 100%;
+  max-width: 760px;
+  background: linear-gradient(180deg, rgba(22, 8, 46, 0.85), rgba(11, 0, 25, 0.85));
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 22px 24px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(180, 107, 255, 0.06);
+  overflow-x: auto;
+}
+.code-card pre { margin: 0; }
+.code-card code {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: #dfd5ff;
+  line-height: 1.6;
+  white-space: pre;
+}
+.c-kw  { color: #ff8fe3; }
+.c-str { color: #a8ffda; }
+.c-com { color: #6b6590; font-style: italic; }
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.badge {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(180, 107, 255, 0.08);
+  border: 1px solid var(--card-border);
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+
+/* Sections */
+.section {
+  padding: 90px 0;
+  border-top: 1px solid var(--line);
+}
+.section-head {
+  max-width: 780px;
+  margin-bottom: 48px;
+}
+.kicker {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--neon-2);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.section h2 {
+  font-size: clamp(32px, 4.5vw, 54px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 14px;
+}
+.section .sub {
+  color: var(--muted);
+  font-size: 17px;
+  max-width: 680px;
+}
+
+/* Cards grid */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  backdrop-filter: blur(10px);
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover {
+  transform: translateY(-3px);
+  border-color: var(--neon-1);
+  box-shadow: 0 20px 60px rgba(180, 107, 255, 0.15);
+}
+.card-ico {
+  font-size: 24px;
+  color: var(--neon-2);
+  text-shadow: 0 0 16px var(--neon-2);
+  margin-bottom: 10px;
+}
+.card h3 { margin: 0 0 8px; font-size: 19px; }
+.card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.card code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: #dfd5ff;
+  background: rgba(180, 107, 255, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* Research grid */
+.research-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+}
+.research {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 26px 28px;
+  backdrop-filter: blur(10px);
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+.research::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 0%, rgba(93, 242, 255, 0.05) 50%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.research:hover { border-color: var(--neon-2); }
+.research:hover::before { opacity: 1; }
+.r-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--neon-2);
+  padding: 4px 10px;
+  border: 1px solid rgba(93, 242, 255, 0.25);
+  border-radius: 999px;
+  margin-bottom: 14px;
+}
+.research h4 { margin: 0 0 10px; font-size: 20px; }
+.research p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+.callout {
+  margin-top: 40px;
+  padding: 32px 36px;
+  border-radius: var(--radius);
+  background: linear-gradient(120deg, rgba(93, 242, 255, 0.08), rgba(180, 107, 255, 0.08), rgba(255, 79, 216, 0.08));
+  border: 1px solid var(--card-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.callout h3 { margin: 4px 0 6px; font-size: 24px; }
+.callout p { margin: 0; color: var(--muted); max-width: 620px; }
+.callout code { font-family: var(--mono); font-size: 13px; background: rgba(180, 107, 255, 0.14); padding: 1px 6px; border-radius: 4px; }
+
+/* Stats + feature list */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 40px;
+}
+.stat {
+  text-align: center;
+  padding: 28px 16px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(10px);
+}
+.stat .n {
+  font-family: var(--mono);
+  font-size: 44px;
+  font-weight: 700;
+  background: var(--accent);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  line-height: 1;
+}
+.stat .l {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 8px;
+  font-family: var(--mono);
+  letter-spacing: 0.05em;
+}
+
+.feature-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 32px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.feature-list > div {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  line-height: 1.5;
+}
+.feature-list strong { color: var(--fg); font-weight: 600; }
+.feature-list code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: rgba(180, 107, 255, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--neon-2);
+  box-shadow: 0 0 10px var(--neon-2);
+  margin-top: 8px;
+  flex-shrink: 0;
+}
+
+/* CTA card */
+.section-cta { padding-bottom: 120px; }
+.cta-card {
+  padding: 60px 48px;
+  border-radius: 22px;
+  background:
+    radial-gradient(600px 300px at 80% 20%, rgba(180, 107, 255, 0.18), transparent 60%),
+    radial-gradient(600px 300px at 20% 80%, rgba(93, 242, 255, 0.15), transparent 60%),
+    linear-gradient(180deg, rgba(22, 8, 46, 0.9), rgba(11, 0, 25, 0.9));
+  border: 1px solid var(--card-border);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(180, 107, 255, 0.08);
+}
+.cta-card h2 { font-size: clamp(32px, 4.5vw, 56px); margin: 0 0 16px; }
+.cta-card p { color: var(--muted); max-width: 720px; font-size: 17px; margin: 0 0 24px; }
+.tiny { color: var(--dim); font-size: 13px; margin-top: 18px; font-family: var(--mono); }
+
+/* Footer */
+.foot {
+  position: relative;
+  z-index: 2;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 40px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.foot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.foot-row strong { color: var(--fg); font-weight: 600; }
+.foot-links { display: flex; gap: 20px; }
+.foot-links a:hover { color: var(--fg); }
+.disclaimer {
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 900px;
+}
+
+/* Responsive */
+@media (max-width: 880px) {
+  .nav { padding: 14px 20px; }
+  .nav-links { gap: 14px; font-size: 13px; }
+  .nav-links a:not(.btn) { display: none; }
+  main { padding: 0 20px; }
+  .hero { padding: 50px 0 40px; }
+  .section { padding: 60px 0; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .research-grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .feature-list { grid-template-columns: 1fr; }
+  .cta-card { padding: 36px 24px; }
+  .callout { padding: 24px; }
+  .ca-value { max-width: 50vw; }
+  .foot { padding: 30px 20px; }
+}
+
+</style>
+</head>
+<body>
+  <canvas id="neural-bg" aria-hidden="true"></canvas>
+  <div class="noise" aria-hidden="true"></div>
+
+  <header class="nav">
+    <a class="brand" href="#top">
+      <span class="brand-mark">◎</span>
+      <span class="brand-name">brainctl</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#what">What</a>
+      <a href="#science">Science</a>
+      <a href="#features">Features</a>
+      <a href="#opensource">Open Source</a>
+      <a class="btn btn-ghost" href="https://github.com/TSchonleber/brainctl" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <!-- HERO -->
+    <section class="hero">
+      <div class="ca-bar" id="ca-bar">
+        <span class="ca-label">CA</span>
+        <span class="ca-value" id="ca-value">TBA — launching on Pump.fun</span>
+        <button class="ca-copy" id="ca-copy" aria-label="Copy contract address">COPY</button>
+        <span class="ca-pulse" aria-hidden="true"></span>
+      </div>
+
+      <h1 class="title">
+        <span class="glitch" data-text="memory">memory</span>
+        <span class="muted">for</span>
+        <span class="grad">autonomous agents</span>
+      </h1>
+
+      <p class="tagline">
+        Your AI agent forgets everything between sessions.
+        <strong>brainctl</strong> fixes that — one SQLite file, no servers, no API keys.
+        Open source. Now with a token.
+      </p>
+
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/TSchonleber/brainctl" target="_blank" rel="noopener">★ Star on GitHub</a>
+        <a class="btn btn-outline" href="#what">How it works</a>
+        <a class="btn btn-outline" href="#science">The science</a>
+      </div>
+
+      <div class="code-card">
+<pre><code><span class="c-kw">from</span> agentmemory <span class="c-kw">import</span> Brain
+
+brain = Brain(agent_id=<span class="c-str">"my-agent"</span>)
+
+<span class="c-com"># Start of session — full context in one call</span>
+ctx = brain.orient(project=<span class="c-str">"api-v2"</span>)
+
+brain.remember(<span class="c-str">"API rate-limits at 100 req/15s"</span>, category=<span class="c-str">"integration"</span>)
+brain.decide(<span class="c-str">"Use Retry-After for backoff"</span>, <span class="c-str">"Server controls timing"</span>)
+brain.entity(<span class="c-str">"RateLimitAPI"</span>, <span class="c-str">"service"</span>, observations=[<span class="c-str">"100 req/15s"</span>])
+
+<span class="c-com"># End of session — preserve state for the next agent</span>
+brain.wrap_up(<span class="c-str">"Auth module complete"</span>, project=<span class="c-str">"api-v2"</span>)</code></pre>
+      </div>
+
+      <div class="badges">
+        <span class="badge">pip install brainctl</span>
+        <span class="badge">194 MCP tools</span>
+        <span class="badge">SQLite + FTS5 + sqlite-vec</span>
+        <span class="badge">MIT Licensed</span>
+      </div>
+    </section>
+
+    <!-- WHAT -->
+    <section id="what" class="section">
+      <div class="section-head">
+        <div class="kicker">// overview</div>
+        <h2>A memory layer that actually <span class="grad">remembers</span>.</h2>
+      </div>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-ico">◉</div>
+          <h3>One file. Zero infra.</h3>
+          <p>Everything lives in <code>brain.db</code>. WAL mode, foreign keys on, portable across machines. No Docker, no servers, no vendor lock-in.</p>
+        </div>
+        <div class="card">
+          <div class="card-ico">◈</div>
+          <h3>Hybrid recall</h3>
+          <p>FTS5 full-text search stacks on top of <code>sqlite-vec</code> embeddings via Ollama <code>nomic-embed-text</code>. Find memories by word or by meaning.</p>
+        </div>
+        <div class="card">
+          <div class="card-ico">◆</div>
+          <h3>Knowledge graph</h3>
+          <p>Entities, observations, typed relations. Your agent builds a living model of people, services, projects, and decisions — not just a chat log.</p>
+        </div>
+        <div class="card">
+          <div class="card-ico">▲</div>
+          <h3>Affect & belief tracking</h3>
+          <p>Bayesian α/β on recall confidence. Affect log for emotional salience. Beliefs collapse when contradicted — the brain updates itself.</p>
+        </div>
+        <div class="card">
+          <div class="card-ico">✦</div>
+          <h3>Any agent, any framework</h3>
+          <p>Drop-in Python API, CLI, and a 194-tool MCP server for Claude Desktop, VS Code, and Cursor. Works with anything that speaks stdio.</p>
+        </div>
+        <div class="card">
+          <div class="card-ico">⟁</div>
+          <h3>AGM conflict resolution</h3>
+          <p>Based on AGM belief revision. Contradictions aren't discarded — they're reconciled with provenance, priors, and proactive interference gates.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCIENCE -->
+    <section id="science" class="section">
+      <div class="section-head">
+        <div class="kicker">// research</div>
+        <h2>Built on <span class="grad">real cognitive science</span>.</h2>
+        <p class="sub">brainctl isn't a vector DB with a logo. It's a working implementation of decades of memory research from neuroscience, cognitive psychology, and belief revision theory.</p>
+      </div>
+
+      <div class="research-grid">
+        <article class="research">
+          <div class="r-tag">neuroscience</div>
+          <h4>Hippocampal consolidation</h4>
+          <p>Quiet-hours cron jobs replay episodic traces into semantic memory — modeled on the sharp-wave ripple consolidation loop observed in mammalian sleep. Fast episodic writes, slow semantic integration.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">cognitive psych</div>
+          <h4>Spaced repetition & forgetting</h4>
+          <p>Memories decay on an Ebbinghaus curve, reinforced on recall. Bayesian α/β posteriors track reliability. Stale, low-confidence memories age out gracefully instead of polluting context.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">information theory</div>
+          <h4>W(m) worthiness gate</h4>
+          <p>Every write runs through a surprise-scoring gate with semantic deduplication. High-information events survive; redundant restatements get merged. Context window stays sharp.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">belief revision</div>
+          <h4>AGM-style contradictions</h4>
+          <p>When new facts conflict with old ones, brainctl runs an Alchourrón–Gärdenfors–Makinson style revision: rank by recency, evidence, provenance. The losing belief collapses with an audit trail.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">attention</div>
+          <h4>Salience routing</h4>
+          <p>A global-workspace-inspired attention budget decides which memories reach working context. Emotional salience, recency, and task relevance compete — only winners surface.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">metacognition</div>
+          <h4>PII recency gate</h4>
+          <p>Proactive Interference Index blocks supersedes that would erase too-recent context. Prevents catastrophic forgetting and the "goldfish agent" failure mode.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">continual learning</div>
+          <h4>EWC importance weights</h4>
+          <p>Elastic Weight Consolidation-style importance scoring protects load-bearing memories from being overwritten during consolidation. Inspired by Kirkpatrick et al., 2017.</p>
+        </article>
+
+        <article class="research">
+          <div class="r-tag">theory of mind</div>
+          <h4>Multi-agent beliefs</h4>
+          <p>Each agent maintains its own belief state — and models the beliefs of the agents it's handing off to. Handoff packets carry not just facts, but epistemic state.</p>
+        </article>
+      </div>
+
+      <div class="callout">
+        <div>
+          <div class="kicker">// open lab</div>
+          <h3>40+ research notes in the repo.</h3>
+          <p>Every mechanism has a paper trail in <code>research/</code>. Spaced repetition, emergence detection, creative synthesis, outcome calibration, proactive interference — all open, all citeable, all implemented.</p>
+        </div>
+        <a class="btn btn-outline" href="https://github.com/TSchonleber/brainctl/tree/main/research" target="_blank" rel="noopener">Browse research/ ↗</a>
+      </div>
+    </section>
+
+    <!-- FEATURES / STATS -->
+    <section id="features" class="section">
+      <div class="section-head">
+        <div class="kicker">// under the hood</div>
+        <h2>Production-grade, not a toy.</h2>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="n">194</div><div class="l">MCP tools</div></div>
+        <div class="stat"><div class="n">30+</div><div class="l">schema migrations</div></div>
+        <div class="stat"><div class="n">10</div><div class="l">core tables</div></div>
+        <div class="stat"><div class="n">1</div><div class="l">file, zero servers</div></div>
+      </div>
+
+      <div class="feature-list">
+        <div><span class="dot"></span><strong>FTS5 indexes</strong> on memories, events, and entities — stemming, phrase search, ranked results out of the box.</div>
+        <div><span class="dot"></span><strong>Vector search</strong> via <code>sqlite-vec</code> + Ollama <code>nomic-embed-text</code>. Semantic recall with no API spend.</div>
+        <div><span class="dot"></span><strong>Temporal threading</strong> — causal chains, epoch tracking, and file-anchored memories for code-aware agents.</div>
+        <div><span class="dot"></span><strong>RBAC + audit log</strong> on memories. Quarantine table for untrusted input. PII audit trail.</div>
+        <div><span class="dot"></span><strong>Dream cycles</strong> — hypothesis generation during quiet hours surfaces emergent patterns across episodic memory.</div>
+        <div><span class="dot"></span><strong>Handoff packets</strong> let one agent pick up exactly where another left off. Zero context loss across sessions.</div>
+      </div>
+    </section>
+
+    <!-- OPEN SOURCE -->
+    <section id="opensource" class="section section-cta">
+      <div class="cta-card">
+        <div class="kicker">// MIT licensed. Contributions wanted.</div>
+        <h2>Fork it. Ship it. <span class="grad">Remember it.</span></h2>
+        <p>brainctl is open source and will stay open source. The token exists so the people building the future of agent memory can eat while they build. Every PR, issue, and research note makes the brain smarter.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/TSchonleber/brainctl" target="_blank" rel="noopener">★ Star on GitHub</a>
+          <a class="btn btn-outline" href="https://github.com/TSchonleber/brainctl/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+          <a class="btn btn-outline" href="https://github.com/TSchonleber/brainctl/issues" target="_blank" rel="noopener">Open an issue</a>
+        </div>
+        <div class="tiny">
+          Good first issues: new research implementations, additional MCP tools, docs, bench harnesses, integrations with popular agent frameworks.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="foot-row">
+      <div>
+        <span class="brand-mark">◎</span>
+        <strong>brainctl</strong> — the open memory layer for AI agents.
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/TSchonleber/brainctl" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://pypi.org/project/brainctl/" target="_blank" rel="noopener">PyPI</a>
+        <a href="https://github.com/TSchonleber/brainctl/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>
+      </div>
+    </div>
+    <div class="disclaimer">
+      Token is a community coin. Not financial advice. Nothing on this page is an offer to sell securities.
+      brainctl the software is free, open source, and will remain so under the MIT license regardless of any token.
+    </div>
+  </footer>
+
+  <script>
+// ============================================================
+// brainctl — landing page
+// Neural-network background + CA copy button
+// ============================================================
+
+// ---------- CA copy button ----------
+(() => {
+  const btn = document.getElementById("ca-copy");
+  const val = document.getElementById("ca-value");
+  if (!btn || !val) return;
+
+  btn.addEventListener("click", async () => {
+    const text = val.textContent.trim();
+    if (!text || text.startsWith("TBA")) {
+      btn.textContent = "SOON";
+      setTimeout(() => (btn.textContent = "COPY"), 1400);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = "COPIED";
+      setTimeout(() => (btn.textContent = "COPY"), 1400);
+    } catch {
+      btn.textContent = "FAIL";
+      setTimeout(() => (btn.textContent = "COPY"), 1400);
+    }
+  });
+})();
+
+// ---------- Neural-network canvas ----------
+(() => {
+  const canvas = document.getElementById("neural-bg");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+
+  const prefersReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  let width = 0;
+  let height = 0;
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let nodes = [];
+  let mouse = { x: -9999, y: -9999, active: false };
+
+  const CONFIG = {
+    density: 0.00009,       // nodes per px²
+    maxLinkDist: 150,
+    nodeSpeed: 0.18,
+    mouseRadius: 180,
+    lineColor: [180, 107, 255],
+    nodeColor: [93, 242, 255],
+    accentColor: [255, 79, 216],
+  };
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = width + "px";
+    canvas.style.height = height + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    seed();
+  }
+
+  function seed() {
+    const count = Math.min(120, Math.max(35, Math.floor(width * height * CONFIG.density)));
+    nodes = new Array(count).fill(0).map(() => ({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: (Math.random() - 0.5) * CONFIG.nodeSpeed,
+      vy: (Math.random() - 0.5) * CONFIG.nodeSpeed,
+      r: Math.random() * 1.6 + 0.6,
+      pulse: Math.random() * Math.PI * 2,
+    }));
+  }
+
+  function step() {
+    ctx.clearRect(0, 0, width, height);
+
+    // Update nodes
+    for (const n of nodes) {
+      n.x += n.vx;
+      n.y += n.vy;
+      n.pulse += 0.02;
+      if (n.x < 0 || n.x > width) n.vx *= -1;
+      if (n.y < 0 || n.y > height) n.vy *= -1;
+
+      // Mouse repulsion
+      if (mouse.active) {
+        const dx = n.x - mouse.x;
+        const dy = n.y - mouse.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < CONFIG.mouseRadius * CONFIG.mouseRadius && d2 > 1) {
+          const d = Math.sqrt(d2);
+          const force = (1 - d / CONFIG.mouseRadius) * 0.9;
+          n.x += (dx / d) * force;
+          n.y += (dy / d) * force;
+        }
+      }
+    }
+
+    // Draw links
+    const maxD = CONFIG.maxLinkDist;
+    const maxD2 = maxD * maxD;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < maxD2) {
+          const alpha = (1 - d2 / maxD2) * 0.45;
+          ctx.strokeStyle = `rgba(${CONFIG.lineColor[0]}, ${CONFIG.lineColor[1]}, ${CONFIG.lineColor[2]}, ${alpha})`;
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    for (const n of nodes) {
+      const glow = (Math.sin(n.pulse) + 1) * 0.5;
+      const radius = n.r + glow * 0.8;
+
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, radius * 3, 0, Math.PI * 2);
+      const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, radius * 3);
+      grad.addColorStop(0, `rgba(${CONFIG.nodeColor[0]}, ${CONFIG.nodeColor[1]}, ${CONFIG.nodeColor[2]}, ${0.35 + glow * 0.3})`);
+      grad.addColorStop(1, "rgba(93, 242, 255, 0)");
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${CONFIG.nodeColor[0]}, ${CONFIG.nodeColor[1]}, ${CONFIG.nodeColor[2]}, ${0.85})`;
+      ctx.fill();
+    }
+
+    if (!prefersReduced) requestAnimationFrame(step);
+  }
+
+  window.addEventListener("resize", resize, { passive: true });
+  window.addEventListener("mousemove", (e) => {
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    mouse.active = true;
+  }, { passive: true });
+  window.addEventListener("mouseleave", () => { mouse.active = false; });
+
+  resize();
+  if (prefersReduced) {
+    // Draw one frame only
+    step = (() => {
+      const once = step;
+      return () => { once(); };
+    })();
+  }
+  requestAnimationFrame(step);
+})();
+
+</script>
+</body>
+</html>
