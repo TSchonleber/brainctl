@@ -8,23 +8,17 @@ from pathlib import Path
 from typing import Any
 from mcp.types import Tool
 
+from agentmemory.lib.mcp_helpers import now_iso, open_db, rows_to_list
+
 DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
 
 
 def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return open_db(str(DB_PATH))
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-
-
-def _rows_to_list(rows) -> list[dict]:
-    return [dict(r) for r in rows]
+_now = now_iso
+_rows_to_list = rows_to_list
 
 
 def _age_str(created_at_str: str | None) -> str:

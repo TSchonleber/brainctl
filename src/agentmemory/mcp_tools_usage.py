@@ -9,17 +9,18 @@ from typing import Any
 
 from mcp.types import Tool
 
+from agentmemory.lib.mcp_helpers import open_db
+
 DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
 
 
 def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return open_db(str(DB_PATH))
 
 
+# NOTE: local _now_ts uses naive strftime format (no 'Z' suffix); differs
+# from agentmemory.lib.mcp_helpers.now_iso. Kept local for schema-stable
+# timestamps in usage tracking rows.
 def _now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
