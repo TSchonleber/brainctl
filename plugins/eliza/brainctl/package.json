@@ -1,0 +1,57 @@
+{
+  "name": "@brainctl/eliza-plugin",
+  "version": "0.1.0",
+  "description": "brainctl memory provider for Eliza — SQLite-backed persistent memory with FTS5, vector recall, knowledge graph, affect tracking, and session handoffs. Bridges to the brainctl MCP server.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "eliza",
+    "elizaos",
+    "agent",
+    "memory",
+    "brainctl",
+    "mcp",
+    "sqlite",
+    "rag",
+    "knowledge-graph"
+  ],
+  "author": "brainctl contributors",
+  "license": "MIT",
+  "peerDependencies": {
+    "@elizaos/core": ">=0.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TSchonleber/brainctl",
+    "directory": "plugins/eliza/brainctl"
+  },
+  "homepage": "https://github.com/TSchonleber/brainctl/tree/main/plugins/eliza/brainctl",
+  "bugs": {
+    "url": "https://github.com/TSchonleber/brainctl/issues"
+  }
+}
