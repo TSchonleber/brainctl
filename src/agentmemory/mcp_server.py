@@ -1496,6 +1496,73 @@ def tool_handoff_expire(agent_id: str, handoff_id: int, **kw) -> dict:
     return {"ok": True, "handoff_id": handoff_id, "status": "expired"}
 
 
+# ---------------------------------------------------------------------------
+# Session lifecycle: agent_orient / agent_wrap_up
+# ---------------------------------------------------------------------------
+#
+# These tools expose brainctl's flagship `Brain.orient()` / `Brain.wrap_up()`
+# session-continuity primitives as first-class MCP tools. They delegate to
+# the Brain class so the semantics stay single-source-of-truth — any changes
+# to the Python API automatically flow through to MCP clients.
+#
+# Before these tools existed, MCP clients (including the Eliza plugin) had
+# to compose session bookends manually from handoff_latest + event_search +
+# memory_search primitives. With these tools, a single call gets the full
+# session-start snapshot or persists a handoff packet.
+
+def tool_agent_orient(agent_id: str, project: str = None, query: str = None, **kw) -> dict:
+    """Single-call session start. Returns pending handoff, recent events,
+    active triggers, top-of-mind memories, and stats — everything an agent
+    needs to pick up where it left off.
+
+    Delegates to `Brain.orient()` so behavior stays identical to the Python
+    API and the drop-in pattern documented in the brainctl README.
+    """
+    try:
+        # Local import to keep Brain out of module import cycle during tests.
+        from agentmemory.brain import Brain  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "error": f"brain import failed: {exc}"}
+
+    try:
+        brain = Brain(agent_id=agent_id or "default")
+        snapshot = brain.orient(project=project, query=query)
+        return {"ok": True, **snapshot}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def tool_agent_wrap_up(agent_id: str, summary: str, goal: str = None,
+                       open_loops: str = None, next_step: str = None,
+                       project: str = None, **kw) -> dict:
+    """Single-call session end. Logs a session_end event and creates a
+    pending handoff packet in one shot.
+
+    Delegates to `Brain.wrap_up()` so behavior stays identical to the
+    Python API. Returns the created event_id and handoff_id.
+    """
+    if not summary or not str(summary).strip():
+        return {"ok": False, "error": "summary is required"}
+
+    try:
+        from agentmemory.brain import Brain  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "error": f"brain import failed: {exc}"}
+
+    try:
+        brain = Brain(agent_id=agent_id or "default")
+        result = brain.wrap_up(
+            summary=summary,
+            goal=goal,
+            open_loops=open_loops,
+            next_step=next_step,
+            project=project,
+        )
+        return {"ok": True, **result}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False,
                 profile: str = None) -> dict:
     """Cross-table search: memories + events + entities. Intent-aware routing."""
@@ -2227,6 +2294,73 @@ TOOLS = [
         },
     ),
     Tool(
+        name="agent_orient",
+        description=(
+            "Single-call session start. Returns the full orient snapshot: pending "
+            "handoff from the last session, recent events, active triggers, top "
+            "memories, and stats. Use at the beginning of every session so the "
+            "agent can resume exactly where the previous run left off. This is "
+            "the flagship drop-in pattern: `ctx = orient() -> do work -> wrap_up()`."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identifier whose session to orient.",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Optional project scope — narrows handoff/events/memories.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional recall query — surfaces memories relevant to this string.",
+                },
+            },
+            "required": ["agent_id"],
+        },
+    ),
+    Tool(
+        name="agent_wrap_up",
+        description=(
+            "Single-call session end. Logs a session_end event AND creates a "
+            "pending handoff packet in one shot. Call at the end of every session "
+            "so the next run's agent_orient returns real context. Counterpart to "
+            "agent_orient."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identifier whose session to end.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "What was accomplished in this session.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "Ongoing goal (defaults to summary).",
+                },
+                "open_loops": {
+                    "type": "string",
+                    "description": "Unfinished work (defaults to 'none noted').",
+                },
+                "next_step": {
+                    "type": "string",
+                    "description": "What should happen next (defaults to 'continue from summary').",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Optional project scope for the handoff packet.",
+                },
+            },
+            "required": ["agent_id", "summary"],
+        },
+    ),
+    Tool(
         name="search",
         description="Cross-table search across memories, events, and entities simultaneously. Best for broad queries. Set vector=true to run vector similarity across vec_memories and vec_entities using the same embedding model, then merge and re-rank by cosine score — entities and memories compete on the same similarity scale.",
         inputSchema={
@@ -2526,6 +2660,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "handoff_consume": tool_handoff_consume,
         "handoff_pin": tool_handoff_pin,
         "handoff_expire": tool_handoff_expire,
+        "agent_orient": tool_agent_orient,
+        "agent_wrap_up": tool_agent_wrap_up,
         "search": tool_search,
         "stats": tool_stats,
         "resolve_conflict": tool_resolve_conflict,
