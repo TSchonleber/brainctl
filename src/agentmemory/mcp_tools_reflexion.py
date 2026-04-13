@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from mcp.types import Tool
 
+from agentmemory.lib.mcp_helpers import now_iso, open_db, rows_to_list
+
 DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
 
 # ---------------------------------------------------------------------------
@@ -16,15 +18,10 @@ DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db"
 # ---------------------------------------------------------------------------
 
 def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return open_db(str(DB_PATH))
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+_now = now_iso
 
 
 def _ensure_agent(conn, agent_id: str) -> None:
@@ -52,8 +49,7 @@ def _log_access(conn, agent_id, action, target_table=None, target_id=None, query
         pass  # access_log may not exist, or agent FK not satisfied
 
 
-def _rows_to_list(rows) -> list:
-    return [dict(r) for r in rows]
+_rows_to_list = rows_to_list
 
 
 # ---------------------------------------------------------------------------

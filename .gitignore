@@ -18,3 +18,4 @@ backups/
 /tmp/
 *.swp
 config/distill-cron.sh
+.claude/

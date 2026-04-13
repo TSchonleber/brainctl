@@ -35,9 +35,10 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from agentmemory import _gates
 from agentmemory.affect import classify_affect
@@ -165,6 +166,19 @@ class Brain:
         self.db_path = Path(db_path)
         self.agent_id = agent_id
 
+        # Connection lifecycle (Phase 1.1 refactor):
+        # One long-lived sqlite3 connection per Brain instance, lazily created on
+        # first use and reused across all public method calls. Opened with
+        # ``check_same_thread=False`` so it can be shared across threads, guarded
+        # by a single ``threading.RLock`` that every public method acquires.
+        # Choice rationale: the workload is mostly read-heavy with light writes
+        # and the SQLite C library serializes access per-connection anyway — a
+        # single lock + single connection is simpler than per-thread connections
+        # and avoids per-call PRAGMA + agent-upsert overhead (~15-18 SQL stmts).
+        self._conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.RLock()
+        self._closed = False
+
         if not self.db_path.exists():
             self._init_db()
 
@@ -212,7 +226,53 @@ class Brain:
         self.db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         _log.info("brain.db created at %s", self.db_path)
 
+    def _open_shared_conn(self) -> sqlite3.Connection:
+        """Open a new shared connection and run one-time setup (PRAGMAs + agent upsert)."""
+        conn = sqlite3.connect(
+            str(self.db_path), timeout=10, check_same_thread=False
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO agents (
+                    id, display_name, agent_type, status, created_at, updated_at
+                ) VALUES (?, ?, 'api', 'active', ?, ?)
+                """,
+                (self.agent_id, self.agent_id, _now_ts(), _now_ts()),
+            )
+            conn.commit()
+        except Exception as exc:
+            _log.warning("agent auto-register failed: %s", exc)
+        return conn
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return the shared per-instance connection, opening lazily on first use.
+
+        Safe to call from multiple threads — caller is expected to hold ``self._lock``
+        for the duration of any query sequence that must be consistent. Simple
+        one-shot ``execute()`` calls are already serialized at the sqlite3 C layer.
+
+        If ``close()`` was previously called, this transparently reopens a fresh
+        connection so long-lived callers don't break.
+        """
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._open_shared_conn()
+                self._closed = False
+            return self._conn
+
     def _db(self) -> sqlite3.Connection:
+        """Return a connection for legacy / external callers.
+
+        Historically this opened and returned a fresh short-lived connection that
+        the caller was expected to ``close()``. Preserved for backward compat with
+        external code (CLI integrations, tests) that still manages its own
+        connection lifetime. **Brain's own public methods use ``_get_conn()``**
+        and must not route through here.
+        """
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
@@ -230,6 +290,83 @@ class Brain:
         except Exception as exc:
             _log.warning("agent auto-register failed: %s", exc)
         return conn
+
+    def _run(self, fn):
+        """Execute ``fn(conn)`` against the shared connection under the lock.
+
+        Wraps the common pattern:
+            with self._lock:
+                conn = self._get_conn()
+                try:
+                    return fn(conn)
+                except sqlite3.OperationalError as exc:
+                    if 'no such table' in str(exc):
+                        # db file was tampered with behind our back — lazy reinit once
+                        self._reset_conn()
+                        self._init_db()
+                        conn = self._get_conn()
+                        return fn(conn)
+                    raise
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                return fn(conn)
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    # Stale shared connection — drop it and try once more.
+                    # If the db file was deleted entirely, recreate schema.
+                    self._reset_conn()
+                    if not self.db_path.exists():
+                        self._init_db()
+                    conn = self._get_conn()
+                    return fn(conn)
+                raise
+
+    def _reset_conn(self) -> None:
+        """Close and clear the shared connection (without marking as user-closed)."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle: close + context manager
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the shared connection. Idempotent — safe to call multiple times.
+
+        After ``close()``, subsequent public method calls will lazily reopen a
+        fresh connection, so long-lived callers can safely ignore lifecycle.
+        """
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception as exc:
+                    _log.debug("Brain.close: connection close raised %s", exc)
+                self._conn = None
+            self._closed = True
+
+    def __enter__(self) -> "Brain":
+        # Eagerly open so the context manager shape is obvious.
+        self._get_conn()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # Best-effort cleanup if user forgets to close.
+        try:
+            if getattr(self, "_conn", None) is not None:
+                self._conn.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Core: remember, search, forget
@@ -257,6 +394,12 @@ class Brain:
         Passed to :func:`agentmemory._gates.evaluate_write` so the W(m)
         gate can query ``vec_memories``. When sqlite-vec isn't available
         the gate automatically falls back to word-overlap surprise.
+
+        This opens its own short-lived connection (separate from the
+        shared RLock-guarded instance connection) because sqlite-vec's
+        extension loading is per-connection and the shared connection
+        was opened without ``enable_load_extension``. WAL mode handles
+        the concurrent access.
         """
         if not _VEC_AVAILABLE or _vec is None:
             return None
@@ -269,7 +412,6 @@ class Brain:
         try:
             conn = sqlite3.connect(str(self.db_path), timeout=10)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode = WAL")
             conn.enable_load_extension(True)
             conn.load_extension(dylib)
             conn.enable_load_extension(False)
@@ -316,49 +458,53 @@ class Brain:
         Raises:
             GateRejected: When ``strict=True`` and the write was rejected.
         """
-        db = self._db()
-
-        if not bypass_gate:
-            decision = _gates.evaluate_write(
-                db,
-                agent_id=self.agent_id,
-                content=content,
-                category=category,
-                scope="global",
-                confidence=confidence,
-                source=source,
-                force=False,
-                supersedes_id=supersedes_id,
-                embed_fn=self._embed_for_gate,
-                get_vec_db_fn=self._get_vec_db,
-            )
-            if not decision.accepted:
-                self._log_gate_rejection(db, content, category, decision)
-                db.close()
-                _log.warning(
-                    "Brain.remember rejected by W(m) gate: %s", decision.reason
-                )
-                if strict:
-                    raise GateRejected(decision)
-                return None
-
         tags_json = (
             json.dumps(tags.split(",")) if isinstance(tags, str)
             else (json.dumps(tags) if tags else None)
         )
         now = _now_ts()
-        cur = db.execute(
-            "INSERT INTO memories (agent_id, category, content, confidence, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            (self.agent_id, category, content, confidence, tags_json, now, now)
-        )
-        db.commit()
-        mid = cur.lastrowid
-        if _VEC_AVAILABLE:
-            try:
-                _vec.index_memory(db, mid, content)
-            except Exception as exc:
-                _log.warning("vec.index_memory failed for memory %s: %s", mid, exc)
-        db.close()
+        with self._lock:
+            db = self._get_conn()
+
+            if not bypass_gate:
+                decision = _gates.evaluate_write(
+                    db,
+                    agent_id=self.agent_id,
+                    content=content,
+                    category=category,
+                    scope="global",
+                    confidence=confidence,
+                    source=source,
+                    force=False,
+                    supersedes_id=supersedes_id,
+                    embed_fn=self._embed_for_gate,
+                    get_vec_db_fn=self._get_vec_db,
+                )
+                if not decision.accepted:
+                    self._log_gate_rejection(db, content, category, decision)
+                    _log.warning(
+                        "Brain.remember rejected by W(m) gate: %s", decision.reason
+                    )
+                    if strict:
+                        raise GateRejected(decision)
+                    return None
+
+            cur = db.execute(
+                "INSERT INTO memories (agent_id, category, content, confidence, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (self.agent_id, category, content, confidence, tags_json, now, now)
+            )
+            db.commit()
+            mid = cur.lastrowid
+            if _VEC_AVAILABLE:
+                try:
+                    # vec.index_memory opens its own connection to the same DB;
+                    # WAL mode handles concurrent write access cleanly, and it
+                    # does not contend with our RLock because it's a separate
+                    # sqlite3 connection object. Leave untouched — the async
+                    # embedding rework is tracked separately as Phase 1.2.
+                    _vec.index_memory(db, mid, content)
+                except Exception as exc:
+                    _log.warning("vec.index_memory failed for memory %s: %s", mid, exc)
         return mid
 
     def _log_gate_rejection(self, db: sqlite3.Connection, content: str, category: str, decision) -> None:
@@ -398,42 +544,39 @@ class Brain:
         """
         if not query or not query.strip():
             return []
-        db = self._db()
-        try:
-            fts_q = _safe_fts(query)
-            if fts_q:
-                rows = db.execute(
-                    "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
-                    "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
-                    "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
-                    "ORDER BY fts.rank LIMIT ?",
-                    (fts_q, limit)
-                ).fetchall()
-                results = [dict(r) for r in rows]
-                db.close()
-                return results
-        except sqlite3.OperationalError as exc:
-            _log.warning(
-                "FTS5 search failed at brain.py:search(), falling back to LIKE: %s",
-                exc,
-            )
-        # Fallback: LIKE search
-        rows = db.execute(
-            "SELECT id, content, category, confidence, created_at FROM memories "
-            "WHERE content LIKE ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
-            (f"%{query}%", limit)
-        ).fetchall()
-        results = [dict(r) for r in rows]
-        db.close()
-        return results
+        with self._lock:
+            db = self._get_conn()
+            try:
+                fts_q = _safe_fts(query)
+                if fts_q:
+                    rows = db.execute(
+                        "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
+                        "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
+                        "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+                        "ORDER BY fts.rank LIMIT ?",
+                        (fts_q, limit)
+                    ).fetchall()
+                    return [dict(r) for r in rows]
+            except sqlite3.OperationalError as exc:
+                _log.warning(
+                    "FTS5 search failed at brain.py:search(), falling back to LIKE: %s",
+                    exc,
+                )
+            # Fallback: LIKE search
+            rows = db.execute(
+                "SELECT id, content, category, confidence, created_at FROM memories "
+                "WHERE content LIKE ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
+                (f"%{query}%", limit)
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def forget(self, memory_id: int) -> None:
         """Soft-delete a memory."""
-        db = self._db()
         now = _now_ts()
-        db.execute("UPDATE memories SET retired_at = ?, updated_at = ? WHERE id = ?", (now, now, memory_id))
-        db.commit()
-        db.close()
+        with self._lock:
+            db = self._get_conn()
+            db.execute("UPDATE memories SET retired_at = ?, updated_at = ? WHERE id = ?", (now, now, memory_id))
+            db.commit()
 
     # ------------------------------------------------------------------
     # Events, entities, decisions
@@ -441,66 +584,61 @@ class Brain:
 
     def log(self, summary: str, event_type: str = "observation", project: Optional[str] = None, importance: float = 0.5) -> int:
         """Log an event. Returns event ID."""
-        db = self._db()
         now = _now_ts()
-        cur = db.execute(
-            "INSERT INTO events (agent_id, event_type, summary, project, importance, created_at) VALUES (?,?,?,?,?,?)",
-            (self.agent_id, event_type, summary, project, importance, now)
-        )
-        db.commit()
-        eid = cur.lastrowid
-        db.close()
-        return eid
+        with self._lock:
+            db = self._get_conn()
+            cur = db.execute(
+                "INSERT INTO events (agent_id, event_type, summary, project, importance, created_at) VALUES (?,?,?,?,?,?)",
+                (self.agent_id, event_type, summary, project, importance, now)
+            )
+            db.commit()
+            return cur.lastrowid
 
     def entity(self, name: str, entity_type: str, properties: Optional[Dict[str, Any]] = None, observations: Optional[List[str]] = None) -> int:
         """Create or get an entity. Returns entity ID."""
-        db = self._db()
-        existing = db.execute(
-            "SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (name,)
-        ).fetchone()
-        if existing:
-            db.close()
-            return existing["id"]
+        with self._lock:
+            db = self._get_conn()
+            existing = db.execute(
+                "SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (name,)
+            ).fetchone()
+            if existing:
+                return existing["id"]
 
-        props = json.dumps(properties) if properties else "{}"
-        obs = json.dumps(observations) if observations else "[]"
-        now = _now_ts()
-        cur = db.execute(
-            "INSERT INTO entities (name, entity_type, properties, observations, agent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            (name, entity_type, props, obs, self.agent_id, now, now)
-        )
-        db.commit()
-        eid = cur.lastrowid
-        db.close()
-        return eid
+            props = json.dumps(properties) if properties else "{}"
+            obs = json.dumps(observations) if observations else "[]"
+            now = _now_ts()
+            cur = db.execute(
+                "INSERT INTO entities (name, entity_type, properties, observations, agent_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (name, entity_type, props, obs, self.agent_id, now, now)
+            )
+            db.commit()
+            return cur.lastrowid
 
     def relate(self, from_entity: str, relation: str, to_entity: str) -> None:
         """Create a relation between two entities by name."""
-        db = self._db()
-        from_row = db.execute("SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (from_entity,)).fetchone()
-        to_row = db.execute("SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (to_entity,)).fetchone()
-        if not from_row or not to_row:
-            db.close()
-            raise ValueError(f"Entity not found: {from_entity if not from_row else to_entity}")
-        db.execute(
-            "INSERT OR IGNORE INTO knowledge_edges (source_table, source_id, target_table, target_id, relation_type, agent_id, created_at) "
-            "VALUES ('entities', ?, 'entities', ?, ?, ?, ?)",
-            (from_row["id"], to_row["id"], relation, self.agent_id, _now_ts())
-        )
-        db.commit()
-        db.close()
+        with self._lock:
+            db = self._get_conn()
+            from_row = db.execute("SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (from_entity,)).fetchone()
+            to_row = db.execute("SELECT id FROM entities WHERE name = ? AND retired_at IS NULL", (to_entity,)).fetchone()
+            if not from_row or not to_row:
+                raise ValueError(f"Entity not found: {from_entity if not from_row else to_entity}")
+            db.execute(
+                "INSERT OR IGNORE INTO knowledge_edges (source_table, source_id, target_table, target_id, relation_type, agent_id, created_at) "
+                "VALUES ('entities', ?, 'entities', ?, ?, ?, ?)",
+                (from_row["id"], to_row["id"], relation, self.agent_id, _now_ts())
+            )
+            db.commit()
 
     def decide(self, title: str, rationale: str, project: Optional[str] = None) -> int:
         """Record a decision."""
-        db = self._db()
-        cur = db.execute(
-            "INSERT INTO decisions (agent_id, title, rationale, project, created_at) VALUES (?,?,?,?,?)",
-            (self.agent_id, title, rationale, project, _now_ts())
-        )
-        db.commit()
-        did = cur.lastrowid
-        db.close()
-        return did
+        with self._lock:
+            db = self._get_conn()
+            cur = db.execute(
+                "INSERT INTO decisions (agent_id, title, rationale, project, created_at) VALUES (?,?,?,?,?)",
+                (self.agent_id, title, rationale, project, _now_ts())
+            )
+            db.commit()
+            return cur.lastrowid
 
     # ------------------------------------------------------------------
     # Session continuity: handoff / resume
@@ -516,43 +654,41 @@ class Brain:
                           ("open_loops", open_loops), ("next_step", next_step)]:
             if not val or not val.strip():
                 raise ValueError(f"{name} must be a non-empty string")
-        db = self._db()
         now = _now_ts()
-        cur = db.execute(
-            "INSERT INTO handoff_packets (agent_id, goal, current_state, open_loops, next_step, "
-            "project, title, status, scope, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'global', ?, ?)",
-            (self.agent_id, goal, current_state, open_loops, next_step,
-             project, title, now, now)
-        )
-        db.commit()
-        hid = cur.lastrowid
-        db.close()
-        return hid
+        with self._lock:
+            db = self._get_conn()
+            cur = db.execute(
+                "INSERT INTO handoff_packets (agent_id, goal, current_state, open_loops, next_step, "
+                "project, title, status, scope, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'global', ?, ?)",
+                (self.agent_id, goal, current_state, open_loops, next_step,
+                 project, title, now, now)
+            )
+            db.commit()
+            return cur.lastrowid
 
     def resume(self, project: Optional[str] = None) -> Dict[str, Any]:
         """Fetch and auto-consume the latest pending handoff. Returns {} if none."""
-        db = self._db()
-        q = ("SELECT * FROM handoff_packets WHERE agent_id = ? AND status = 'pending'")
-        params: list = [self.agent_id]
-        if project:
-            q += " AND project = ?"
-            params.append(project)
-        q += " ORDER BY created_at DESC LIMIT 1"
-        row = db.execute(q, params).fetchone()
-        if not row:
-            db.close()
-            return {}
-        packet = dict(row)
-        now = _now_ts()
-        db.execute(
-            "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, packet["id"])
-        )
-        db.commit()
-        db.close()
-        packet["status"] = "consumed"
-        return packet
+        with self._lock:
+            db = self._get_conn()
+            q = ("SELECT * FROM handoff_packets WHERE agent_id = ? AND status = 'pending'")
+            params: list = [self.agent_id]
+            if project:
+                q += " AND project = ?"
+                params.append(project)
+            q += " ORDER BY created_at DESC LIMIT 1"
+            row = db.execute(q, params).fetchone()
+            if not row:
+                return {}
+            packet = dict(row)
+            now = _now_ts()
+            db.execute(
+                "UPDATE handoff_packets SET status = 'consumed', consumed_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, packet["id"])
+            )
+            db.commit()
+            packet["status"] = "consumed"
+            return packet
 
     # ------------------------------------------------------------------
     # Drop-in session bookends: orient / wrap_up
@@ -566,98 +702,97 @@ class Brain:
 
         Returns dict with keys: handoff, recent_events, triggers, memories, stats.
         """
-        db = self._db()
         now = _now_ts()
         result: Dict[str, Any] = {"agent_id": self.agent_id}
+        with self._lock:
+            db = self._get_conn()
 
-        # 1. Check for pending handoff (don't consume yet — agent decides)
-        try:
-            hq = "SELECT id, goal, current_state, open_loops, next_step, project, title, created_at FROM handoff_packets WHERE agent_id = ? AND status = 'pending'"
-            hp: list = [self.agent_id]
-            if project:
-                hq += " AND project = ?"
-                hp.append(project)
-            hq += " ORDER BY created_at DESC LIMIT 1"
-            hrow = db.execute(hq, hp).fetchone()
-            result["handoff"] = dict(hrow) if hrow else None
-        except sqlite3.OperationalError as exc:
-            _log.warning("orient(): handoff lookup failed: %s", exc)
-            result["handoff"] = None
-
-        # 2. Recent events (last 10)
-        try:
-            eq = "SELECT id, event_type, summary, project, created_at FROM events WHERE agent_id = ?"
-            ep: list = [self.agent_id]
-            if project:
-                eq += " AND project = ?"
-                ep.append(project)
-            eq += " ORDER BY created_at DESC LIMIT 10"
-            result["recent_events"] = [dict(r) for r in db.execute(eq, ep).fetchall()]
-        except sqlite3.OperationalError as exc:
-            _log.warning("orient(): recent events lookup failed: %s", exc)
-            result["recent_events"] = []
-
-        # 3. Active triggers
-        try:
-            # Expire overdue
-            db.execute(
-                "UPDATE memory_triggers SET status = 'expired' "
-                "WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < ?",
-                (now,)
-            )
-            db.commit()
-            trows = db.execute(
-                "SELECT id, trigger_condition, trigger_keywords, action, priority "
-                "FROM memory_triggers WHERE status = 'active' AND agent_id = ? "
-                "ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
-                "WHEN 'medium' THEN 2 ELSE 3 END",
-                (self.agent_id,)
-            ).fetchall()
-            result["triggers"] = [dict(r) for r in trows]
-        except sqlite3.OperationalError as exc:
-            _log.warning("orient(): trigger lookup failed: %s", exc)
-            result["triggers"] = []
-
-        # 4. Search for relevant memories (if query or project given)
-        search_q = query or project
-        if search_q:
+            # 1. Check for pending handoff (don't consume yet — agent decides)
             try:
-                fts_q = _safe_fts(search_q)
-                if fts_q:
-                    mrows = db.execute(
-                        "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
-                        "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
-                        "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
-                        "ORDER BY fts.rank LIMIT 10",
-                        (fts_q,)
-                    ).fetchall()
-                    result["memories"] = [dict(r) for r in mrows]
-                else:
-                    result["memories"] = []
+                hq = "SELECT id, goal, current_state, open_loops, next_step, project, title, created_at FROM handoff_packets WHERE agent_id = ? AND status = 'pending'"
+                hp: list = [self.agent_id]
+                if project:
+                    hq += " AND project = ?"
+                    hp.append(project)
+                hq += " ORDER BY created_at DESC LIMIT 1"
+                hrow = db.execute(hq, hp).fetchone()
+                result["handoff"] = dict(hrow) if hrow else None
             except sqlite3.OperationalError as exc:
-                _log.warning(
-                    "orient(): FTS5 search failed, returning empty: %s", exc
+                _log.warning("orient(): handoff lookup failed: %s", exc)
+                result["handoff"] = None
+
+            # 2. Recent events (last 10)
+            try:
+                eq = "SELECT id, event_type, summary, project, created_at FROM events WHERE agent_id = ?"
+                ep: list = [self.agent_id]
+                if project:
+                    eq += " AND project = ?"
+                    ep.append(project)
+                eq += " ORDER BY created_at DESC LIMIT 10"
+                result["recent_events"] = [dict(r) for r in db.execute(eq, ep).fetchall()]
+            except sqlite3.OperationalError as exc:
+                _log.warning("orient(): recent events lookup failed: %s", exc)
+                result["recent_events"] = []
+
+            # 3. Active triggers
+            try:
+                # Expire overdue
+                db.execute(
+                    "UPDATE memory_triggers SET status = 'expired' "
+                    "WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < ?",
+                    (now,)
                 )
+                db.commit()
+                trows = db.execute(
+                    "SELECT id, trigger_condition, trigger_keywords, action, priority "
+                    "FROM memory_triggers WHERE status = 'active' AND agent_id = ? "
+                    "ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+                    "WHEN 'medium' THEN 2 ELSE 3 END",
+                    (self.agent_id,)
+                ).fetchall()
+                result["triggers"] = [dict(r) for r in trows]
+            except sqlite3.OperationalError as exc:
+                _log.warning("orient(): trigger lookup failed: %s", exc)
+                result["triggers"] = []
+
+            # 4. Search for relevant memories (if query or project given)
+            search_q = query or project
+            if search_q:
+                try:
+                    fts_q = _safe_fts(search_q)
+                    if fts_q:
+                        mrows = db.execute(
+                            "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
+                            "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
+                            "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+                            "ORDER BY fts.rank LIMIT 10",
+                            (fts_q,)
+                        ).fetchall()
+                        result["memories"] = [dict(r) for r in mrows]
+                    else:
+                        result["memories"] = []
+                except sqlite3.OperationalError as exc:
+                    _log.warning(
+                        "orient(): FTS5 search failed, returning empty: %s", exc
+                    )
+                    result["memories"] = []
+            else:
                 result["memories"] = []
-        else:
-            result["memories"] = []
 
-        # 5. Quick stats
-        try:
-            result["stats"] = {
-                "active_memories": db.execute(
-                    "SELECT count(*) FROM memories WHERE retired_at IS NULL"
-                ).fetchone()[0],
-                "total_events": db.execute("SELECT count(*) FROM events").fetchone()[0],
-                "total_entities": db.execute("SELECT count(*) FROM entities").fetchone()[0],
-            }
-        except Exception:
-            result["stats"] = {}
+            # 5. Quick stats
+            try:
+                result["stats"] = {
+                    "active_memories": db.execute(
+                        "SELECT count(*) FROM memories WHERE retired_at IS NULL"
+                    ).fetchone()[0],
+                    "total_events": db.execute("SELECT count(*) FROM events").fetchone()[0],
+                    "total_entities": db.execute("SELECT count(*) FROM entities").fetchone()[0],
+                }
+            except Exception:
+                result["stats"] = {}
 
-        db.close()
-
-        # Log session start
-        self.log("Session started", event_type="session_start", project=project)
+            # Log session start — reentrant under our RLock, uses same shared conn.
+            self.log("Session started", event_type="session_start", project=project)
 
         return result
 
@@ -707,59 +842,57 @@ class Brain:
         """
         if priority not in _PRIORITY_ORDER:
             raise ValueError(f"priority must be one of {list(_PRIORITY_ORDER)}")
-        db = self._db()
-        cur = db.execute(
-            "INSERT INTO memory_triggers (agent_id, trigger_condition, trigger_keywords, "
-            "action, priority, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (self.agent_id, condition, keywords, action, priority, expires, _now_ts())
-        )
-        db.commit()
-        tid = cur.lastrowid
-        db.close()
-        return tid
+        with self._lock:
+            db = self._get_conn()
+            cur = db.execute(
+                "INSERT INTO memory_triggers (agent_id, trigger_condition, trigger_keywords, "
+                "action, priority, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (self.agent_id, condition, keywords, action, priority, expires, _now_ts())
+            )
+            db.commit()
+            return cur.lastrowid
 
     def check_triggers(self, query: str) -> List[Dict[str, Any]]:
         """Check if any active triggers match a query string.
 
         Returns list of matched triggers sorted by priority (critical first).
         """
-        db = self._db()
         now = _now_ts()
-        # Expire overdue triggers
-        try:
-            db.execute(
-                "UPDATE memory_triggers SET status = 'expired' "
-                "WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < ?",
-                (now,)
-            )
-            db.commit()
-        except sqlite3.OperationalError as exc:
-            _log.warning(
-                "check_triggers(): expiring overdue triggers failed: %s", exc
-            )
-            db.close()
-            return []
-        rows = db.execute(
-            "SELECT * FROM memory_triggers WHERE status = 'active' AND agent_id = ?",
-            (self.agent_id,)
-        ).fetchall()
-        query_lower = query.lower()
-        matches = []
-        for row in rows:
-            kws = [k.strip().lower() for k in (row["trigger_keywords"] or "").split(",") if k.strip()]
-            # Word-boundary match — prevents false positives like "deploy"
-            # matching "redeploy" or "re" matching "research".
-            matched = [
-                k for k in kws
-                if re.search(rf'\b{re.escape(k)}\b', query_lower)
-            ]
-            if matched:
-                m = dict(row)
-                m["matched_keywords"] = matched
-                matches.append(m)
-        matches.sort(key=lambda m: _PRIORITY_ORDER.get(m.get("priority", "medium"), 2))
-        db.close()
-        return matches
+        with self._lock:
+            db = self._get_conn()
+            # Expire overdue triggers
+            try:
+                db.execute(
+                    "UPDATE memory_triggers SET status = 'expired' "
+                    "WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < ?",
+                    (now,)
+                )
+                db.commit()
+            except sqlite3.OperationalError as exc:
+                _log.warning(
+                    "check_triggers(): expiring overdue triggers failed: %s", exc
+                )
+                return []
+            rows = db.execute(
+                "SELECT * FROM memory_triggers WHERE status = 'active' AND agent_id = ?",
+                (self.agent_id,)
+            ).fetchall()
+            query_lower = query.lower()
+            matches = []
+            for row in rows:
+                kws = [k.strip().lower() for k in (row["trigger_keywords"] or "").split(",") if k.strip()]
+                # Word-boundary match — prevents false positives like "deploy"
+                # matching "redeploy" or "re" matching "research".
+                matched = [
+                    k for k in kws
+                    if re.search(rf'\b{re.escape(k)}\b', query_lower)
+                ]
+                if matched:
+                    m = dict(row)
+                    m["matched_keywords"] = matched
+                    matches.append(m)
+            matches.sort(key=lambda m: _PRIORITY_ORDER.get(m.get("priority", "medium"), 2))
+            return matches
 
     # ------------------------------------------------------------------
     # Diagnostics
@@ -771,52 +904,51 @@ class Brain:
         Returns a dict with ok, healthy, issues list, and stats.
         """
         issues: List[str] = []
-        db = self._db()
-
-        # Check core tables
-        required = ["memories", "events", "entities", "decisions", "agents",
-                     "handoff_packets", "memory_triggers", "affect_log", "knowledge_edges"]
-        existing_tables = {r[0] for r in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()}
-        for tbl in required:
-            if tbl not in existing_tables:
-                issues.append(f"Missing table: {tbl}")
-
-        # FTS5
-        fts_ok = "memories_fts" in existing_tables
-        if not fts_ok:
-            issues.append("Missing FTS5 table: memories_fts (search will use LIKE fallback)")
-
-        # Integrity check
-        try:
-            integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
-            if integrity != "ok":
-                issues.append(f"Integrity check failed: {integrity}")
-        except Exception as e:
-            issues.append(f"Integrity check error: {e}")
-
-        # Counts
         active_memories = 0
-        try:
-            active_memories = db.execute(
-                "SELECT count(*) FROM memories WHERE retired_at IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            pass
+        fts_ok = False
+        with self._lock:
+            db = self._get_conn()
 
-        # Orphan memories (agent_id not in agents table)
-        orphans = 0
-        try:
-            orphans = db.execute(
-                "SELECT count(*) FROM memories WHERE agent_id NOT IN (SELECT id FROM agents)"
-            ).fetchone()[0]
-            if orphans > 0:
-                issues.append(f"{orphans} orphaned memories (agent_id not in agents table)")
-        except Exception:
-            pass
+            # Check core tables
+            required = ["memories", "events", "entities", "decisions", "agents",
+                         "handoff_packets", "memory_triggers", "affect_log", "knowledge_edges"]
+            existing_tables = {r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            for tbl in required:
+                if tbl not in existing_tables:
+                    issues.append(f"Missing table: {tbl}")
 
-        db.close()
+            # FTS5
+            fts_ok = "memories_fts" in existing_tables
+            if not fts_ok:
+                issues.append("Missing FTS5 table: memories_fts (search will use LIKE fallback)")
+
+            # Integrity check
+            try:
+                integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    issues.append(f"Integrity check failed: {integrity}")
+            except Exception as e:
+                issues.append(f"Integrity check error: {e}")
+
+            # Counts
+            try:
+                active_memories = db.execute(
+                    "SELECT count(*) FROM memories WHERE retired_at IS NULL"
+                ).fetchone()[0]
+            except Exception:
+                pass
+
+            # Orphan memories (agent_id not in agents table)
+            try:
+                orphans = db.execute(
+                    "SELECT count(*) FROM memories WHERE agent_id NOT IN (SELECT id FROM agents)"
+                ).fetchone()[0]
+                if orphans > 0:
+                    issues.append(f"{orphans} orphaned memories (agent_id not in agents table)")
+            except Exception:
+                pass
 
         # DB file size
         db_size_mb = round(self.db_path.stat().st_size / (1024 * 1024), 2) if self.db_path.exists() else 0.0
@@ -835,20 +967,20 @@ class Brain:
 
     def stats(self) -> Dict[str, int]:
         """Get database statistics."""
-        db = self._db()
         stats: Dict[str, int] = {}
-        for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges", "affect_log"]:
+        with self._lock:
+            db = self._get_conn()
+            for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges", "affect_log"]:
+                try:
+                    stats[tbl] = db.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
+                except Exception:
+                    stats[tbl] = 0
             try:
-                stats[tbl] = db.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
+                stats["active_memories"] = db.execute(
+                    "SELECT count(*) FROM memories WHERE retired_at IS NULL"
+                ).fetchone()[0]
             except Exception:
-                stats[tbl] = 0
-        try:
-            stats["active_memories"] = db.execute(
-                "SELECT count(*) FROM memories WHERE retired_at IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            stats["active_memories"] = 0
-        db.close()
+                stats["active_memories"] = 0
         return stats
 
     # ------------------------------------------------------------------
@@ -873,13 +1005,11 @@ class Brain:
         Use `think()` to find what your memory associates with that topic.
         """
         from agentmemory.dream import think_from_query
-        db = self._db()
-        try:
+        with self._lock:
+            db = self._get_conn()
             return think_from_query(
                 db, query, seed_limit=seed_limit, hops=hops, decay=decay, top_k=top_k
             )
-        finally:
-            db.close()
 
     def vsearch(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Vector similarity search. Returns [] if sqlite-vec is unavailable.
@@ -888,14 +1018,13 @@ class Brain:
         """
         if not _VEC_AVAILABLE or _vec is None:
             return []
-        db = self._db()
-        try:
-            results = _vec.vec_search(db, query, k=limit)
-        except Exception as exc:
-            _log.debug("vsearch failed: %s", exc)
-            results = []
-        db.close()
-        return results
+        with self._lock:
+            db = self._get_conn()
+            try:
+                return _vec.vec_search(db, query, k=limit)
+            except Exception as exc:
+                _log.debug("vsearch failed: %s", exc)
+                return []
 
     # ------------------------------------------------------------------
     # Consolidation (simplified single-pass)
@@ -907,38 +1036,37 @@ class Brain:
         Promotes episodic memories with replay_priority >= min_priority, ripple_tags >= 3,
         and confidence >= 0.7 to semantic memory_type. Resets replay_priority after processing.
         """
-        db = self._db()
-        try:
-            rows = db.execute(
-                "SELECT id, memory_type, ripple_tags, confidence FROM memories "
-                "WHERE retired_at IS NULL AND replay_priority >= ? "
-                "ORDER BY replay_priority DESC LIMIT ?",
-                (min_priority, limit)
-            ).fetchall()
-        except sqlite3.OperationalError:
-            db.close()
-            return {"ok": False, "error": "replay_priority column not available (run brainctl migrate)"}
+        with self._lock:
+            db = self._get_conn()
+            try:
+                rows = db.execute(
+                    "SELECT id, memory_type, ripple_tags, confidence FROM memories "
+                    "WHERE retired_at IS NULL AND replay_priority >= ? "
+                    "ORDER BY replay_priority DESC LIMIT ?",
+                    (min_priority, limit)
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"ok": False, "error": "replay_priority column not available (run brainctl migrate)"}
 
-        processed = 0
-        promoted = 0
-        now = _now_ts()
-        for row in rows:
-            processed += 1
-            if (row["memory_type"] == "episodic"
-                    and (row["ripple_tags"] or 0) >= 3
-                    and (row["confidence"] or 0) >= 0.7):
+            processed = 0
+            promoted = 0
+            now = _now_ts()
+            for row in rows:
+                processed += 1
+                if (row["memory_type"] == "episodic"
+                        and (row["ripple_tags"] or 0) >= 3
+                        and (row["confidence"] or 0) >= 0.7):
+                    db.execute(
+                        "UPDATE memories SET memory_type = 'semantic', updated_at = ? WHERE id = ?",
+                        (now, row["id"])
+                    )
+                    promoted += 1
                 db.execute(
-                    "UPDATE memories SET memory_type = 'semantic', updated_at = ? WHERE id = ?",
-                    (now, row["id"])
+                    "UPDATE memories SET replay_priority = 0.0 WHERE id = ?",
+                    (row["id"],)
                 )
-                promoted += 1
-            db.execute(
-                "UPDATE memories SET replay_priority = 0.0 WHERE id = ?",
-                (row["id"],)
-            )
-        db.commit()
-        db.close()
-        return {"ok": True, "processed": processed, "promoted": promoted}
+            db.commit()
+            return {"ok": True, "processed": processed, "promoted": promoted}
 
     # ------------------------------------------------------------------
     # Tier stats (D-MEM write-tier distribution)
@@ -946,20 +1074,19 @@ class Brain:
 
     def tier_stats(self) -> Dict[str, Any]:
         """Show write-tier distribution (full/construct) for this agent."""
-        db = self._db()
-        try:
-            rows = db.execute(
-                "SELECT write_tier, count(*) as cnt FROM memories "
-                "WHERE retired_at IS NULL AND agent_id = ? GROUP BY write_tier",
-                (self.agent_id,)
-            ).fetchall()
-        except sqlite3.OperationalError:
-            db.close()
-            return {"ok": False, "error": "write_tier column not available (run brainctl migrate)"}
-        total = sum(r["cnt"] for r in rows)
-        tiers = {r["write_tier"]: r["cnt"] for r in rows}
-        db.close()
-        return {"ok": True, "total": total, "tiers": tiers}
+        with self._lock:
+            db = self._get_conn()
+            try:
+                rows = db.execute(
+                    "SELECT write_tier, count(*) as cnt FROM memories "
+                    "WHERE retired_at IS NULL AND agent_id = ? GROUP BY write_tier",
+                    (self.agent_id,)
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"ok": False, "error": "write_tier column not available (run brainctl migrate)"}
+            total = sum(r["cnt"] for r in rows)
+            tiers = {r["write_tier"]: r["cnt"] for r in rows}
+            return {"ok": True, "total": total, "tiers": tiers}
 
     # ------------------------------------------------------------------
     # Affect
@@ -973,28 +1100,77 @@ class Brain:
         """Classify affect from text and store in affect_log table. Returns the affect result with stored ID."""
         result = classify_affect(text)
         now = _now_ts()
-        db = self._db()
-        cur = db.execute(
-            "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
-            "cluster, functional_state, safety_flag, trigger, source, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                self.agent_id,
-                result.get("valence", 0.0),
-                result.get("arousal", 0.0),
-                result.get("dominance", 0.0),
-                result.get("affect_label"),
-                result.get("cluster"),
-                result.get("functional_state"),
-                result.get("safety_flag"),
-                text,
-                source,
-                now,
-            ),
-        )
-        db.commit()
-        result["id"] = cur.lastrowid
-        result["source"] = source
-        result["created_at"] = now
-        db.close()
+        with self._lock:
+            db = self._get_conn()
+            cur = db.execute(
+                "INSERT INTO affect_log (agent_id, valence, arousal, dominance, affect_label, "
+                "cluster, functional_state, safety_flag, trigger, source, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.agent_id,
+                    result.get("valence", 0.0),
+                    result.get("arousal", 0.0),
+                    result.get("dominance", 0.0),
+                    result.get("affect_label"),
+                    result.get("cluster"),
+                    result.get("functional_state"),
+                    result.get("safety_flag"),
+                    text,
+                    source,
+                    now,
+                ),
+            )
+            db.commit()
+            result["id"] = cur.lastrowid
+            result["source"] = source
+            result["created_at"] = now
         return result
+
+
+# ----------------------------------------------------------------------
+# Module-level Brain factory with per-(db_path, agent_id) cache.
+# ----------------------------------------------------------------------
+#
+# Recommended entry point for multi-threaded callers. Returns the same
+# Brain instance for the same (absolute-path, agent_id) pair so callers
+# share a single connection instead of racing to open their own. The
+# cache is guarded by a module-level lock. Thread-safety of the returned
+# Brain itself is handled by its internal RLock.
+
+_BRAIN_CACHE: Dict[Tuple[str, str], "Brain"] = {}
+_BRAIN_CACHE_LOCK = threading.Lock()
+
+
+def get_brain(db_path: Optional[str] = None, agent_id: str = "default") -> "Brain":
+    """Return a cached Brain for the given (db_path, agent_id).
+
+    Repeat calls with the same arguments return the **same** instance, so
+    multi-threaded callers share a single connection. Path normalization
+    uses the resolved absolute path, so relative / symlinked / tilde-
+    expanded variants all hit the same cache slot.
+
+    This is the recommended entry point when multiple threads or multiple
+    callers in the same process need memory access. Prefer this over
+    constructing ``Brain(...)`` directly.
+    """
+    if db_path is None:
+        db_path = str(get_db_path())
+    abs_path = str(Path(db_path).expanduser().resolve())
+    key = (abs_path, agent_id)
+    with _BRAIN_CACHE_LOCK:
+        brain = _BRAIN_CACHE.get(key)
+        if brain is None or brain._closed:
+            brain = Brain(db_path=abs_path, agent_id=agent_id)
+            _BRAIN_CACHE[key] = brain
+        return brain
+
+
+def _clear_brain_cache() -> None:
+    """Test hook: drop all cached Brain instances (closing each)."""
+    with _BRAIN_CACHE_LOCK:
+        for b in list(_BRAIN_CACHE.values()):
+            try:
+                b.close()
+            except Exception:
+                pass
+        _BRAIN_CACHE.clear()

@@ -19,17 +19,18 @@ from pathlib import Path
 
 from mcp.types import Tool
 
+from agentmemory.lib.mcp_helpers import open_db
+
 DB_PATH = Path(os.environ.get("BRAIN_DB", str(Path.home() / "agentmemory" / "db" / "brain.db")))
 
+# NOTE: local _now uses naive strftime format (no 'Z' suffix), which differs
+# from agentmemory.lib.mcp_helpers.now_iso. Kept local to preserve timestamp
+# shape used in the quarantine tables.
 _now = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+    return open_db(str(DB_PATH))
 
 
 def _ensure_quarantine_table(conn: sqlite3.Connection) -> None:

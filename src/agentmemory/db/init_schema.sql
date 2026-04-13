@@ -20,8 +20,10 @@ CREATE TABLE agents (
     status TEXT NOT NULL DEFAULT 'active',    -- active, paused, retired
     last_seen_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-, attention_class TEXT NOT NULL DEFAULT 'ic', attention_budget_tier INTEGER NOT NULL DEFAULT 1);
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    attention_class TEXT NOT NULL DEFAULT 'ic',
+    attention_budget_tier INTEGER NOT NULL DEFAULT 1
+);
 
 CREATE TABLE memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,8 +41,45 @@ CREATE TABLE memories (
     last_recalled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    retired_at TEXT                                    -- soft delete
-, epoch_id INTEGER REFERENCES epochs(id), temporal_class TEXT NOT NULL DEFAULT 'medium', validation_agent_id TEXT REFERENCES agents(id), validated_at TEXT, trust_score REAL DEFAULT 1.0, derived_from_ids TEXT, retracted_at TEXT, retraction_reason TEXT, version INTEGER NOT NULL DEFAULT 1, memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic')), protected INTEGER NOT NULL DEFAULT 0, salience_score REAL NOT NULL DEFAULT 0.0, gw_broadcast INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL DEFAULT 'public', read_acl TEXT, ewc_importance REAL NOT NULL DEFAULT 0.0, alpha REAL DEFAULT 1.0, beta  REAL DEFAULT 1.0, confidence_alpha REAL GENERATED ALWAYS AS (alpha) VIRTUAL, confidence_beta  REAL GENERATED ALWAYS AS (beta)  VIRTUAL, confidence_phase REAL NOT NULL DEFAULT 0.0, hilbert_projection BLOB DEFAULT NULL, coherence_syndrome TEXT DEFAULT NULL, decoherence_rate REAL DEFAULT NULL, gated_from_memory_id INTEGER REFERENCES memories(id), file_path TEXT, file_line INTEGER, write_tier TEXT NOT NULL DEFAULT 'full' CHECK(write_tier IN ('skip', 'construct', 'full')), indexed INTEGER NOT NULL DEFAULT 1, promoted_at TEXT DEFAULT NULL);
+    retired_at TEXT,                                   -- soft delete
+    epoch_id INTEGER REFERENCES epochs(id),
+    temporal_class TEXT NOT NULL DEFAULT 'medium',
+    validation_agent_id TEXT REFERENCES agents(id),
+    validated_at TEXT,
+    trust_score REAL DEFAULT 1.0,
+    derived_from_ids TEXT,
+    retracted_at TEXT,
+    retraction_reason TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic')),
+    protected INTEGER NOT NULL DEFAULT 0,
+    salience_score REAL NOT NULL DEFAULT 0.0,
+    gw_broadcast INTEGER NOT NULL DEFAULT 0,
+    visibility TEXT NOT NULL DEFAULT 'public',
+    read_acl TEXT,
+    ewc_importance REAL NOT NULL DEFAULT 0.0,
+    alpha REAL DEFAULT 1.0,
+    beta  REAL DEFAULT 1.0,
+    confidence_alpha REAL GENERATED ALWAYS AS (alpha) VIRTUAL,
+    confidence_beta  REAL GENERATED ALWAYS AS (beta)  VIRTUAL,
+    confidence_phase REAL NOT NULL DEFAULT 0.0,
+    hilbert_projection BLOB DEFAULT NULL,
+    coherence_syndrome TEXT DEFAULT NULL,
+    decoherence_rate REAL DEFAULT NULL,
+    gated_from_memory_id INTEGER REFERENCES memories(id),
+    file_path TEXT,
+    file_line INTEGER,
+    write_tier TEXT NOT NULL DEFAULT 'full' CHECK(write_tier IN ('skip', 'construct', 'full')),
+    indexed INTEGER NOT NULL DEFAULT 1,
+    promoted_at TEXT DEFAULT NULL,
+    replay_priority REAL NOT NULL DEFAULT 0.0,
+    ripple_tags INTEGER NOT NULL DEFAULT 0,
+    labile_until TEXT DEFAULT NULL,
+    labile_agent_id TEXT DEFAULT NULL,
+    retrieval_prediction_error REAL DEFAULT NULL,
+    temporal_level TEXT NOT NULL DEFAULT 'moment'
+        CHECK(temporal_level IN ('moment','session','day','week','month','quarter'))
+);
 
 CREATE INDEX idx_memories_agent ON memories(agent_id);
 
@@ -97,8 +136,11 @@ CREATE TABLE events (
     project TEXT,                                  -- project context
     refs TEXT,                                     -- JSON array of related entity refs
     importance REAL NOT NULL DEFAULT 0.5,          -- 0.0-1.0 for prioritizing retrieval
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-, epoch_id INTEGER REFERENCES epochs(id), caused_by_event_id INTEGER REFERENCES events(id), causal_chain_root INTEGER REFERENCES events(id));
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    epoch_id INTEGER REFERENCES epochs(id),
+    caused_by_event_id INTEGER REFERENCES events(id),
+    causal_chain_root INTEGER REFERENCES events(id)
+);
 
 CREATE INDEX idx_events_agent ON events(agent_id);
 
@@ -306,10 +348,15 @@ CREATE TABLE access_log (
     target_id INTEGER,
     query TEXT,                                      -- search query if action=search
     result_count INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-, tokens_consumed INTEGER, task_outcome TEXT
-    CHECK (task_outcome IN ('success', 'blocked', 'escalated', 'cancelled')), pre_task_uncertainty REAL, retrieval_contributed INTEGER DEFAULT NULL
-    CHECK (retrieval_contributed IN (0, 1, NULL)), task_id TEXT);
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    tokens_consumed INTEGER,
+    task_outcome TEXT
+        CHECK (task_outcome IN ('success', 'blocked', 'escalated', 'cancelled')),
+    pre_task_uncertainty REAL,
+    retrieval_contributed INTEGER DEFAULT NULL
+        CHECK (retrieval_contributed IN (0, 1, NULL)),
+    task_id TEXT
+);
 
 CREATE INDEX idx_access_agent ON access_log(agent_id);
 
@@ -362,7 +409,10 @@ CREATE TABLE knowledge_edges (
     relation_type TEXT NOT NULL,
     weight REAL NOT NULL DEFAULT 1.0,
     agent_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), last_reinforced_at TEXT, co_activation_count INTEGER DEFAULT 0, weight_updated_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_reinforced_at TEXT,
+    co_activation_count INTEGER DEFAULT 0,
+    weight_updated_at TEXT,
     CHECK (weight >= 0.0 AND weight <= 1.0)
 );
 
@@ -377,58 +427,6 @@ ON knowledge_edges (target_table, target_id);
 
 CREATE INDEX idx_knowledge_edges_relation_type
 ON knowledge_edges (relation_type);
-
-CREATE TABLE cognitive_experiments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,                       -- short slug, e.g. "hybrid-bm25-vector-rrf"
-    hypothesis TEXT NOT NULL,                        -- what we believe will happen
-    implementation_change TEXT,                      -- what was actually changed (SQL, code, config)
-    status TEXT NOT NULL DEFAULT 'proposed'          -- proposed | active | completed | abandoned
-        CHECK (status IN ('proposed', 'active', 'completed', 'abandoned')),
-    led_by_agent TEXT REFERENCES agents(id),         -- primary experimenter
-    started_at TEXT,
-    completed_at TEXT,
-    -- Metrics (stored as JSON to allow flexible before/after comparison)
-    baseline_metrics TEXT,                           -- JSON: {"retrieval_p@5": 0.62, "avg_latency_ms": 45}
-    outcome_metrics TEXT,                            -- JSON: same keys after experiment
-    outcome TEXT,                                    -- 'success' | 'partial' | 'failure' | 'inconclusive'
-    outcome_summary TEXT,                            -- human-readable result
-    lesson TEXT,                                     -- durable takeaway stored back to memory system
-    -- Meta
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_experiments_status ON cognitive_experiments(status);
-
-CREATE INDEX idx_experiments_agent ON cognitive_experiments(led_by_agent);
-
-CREATE INDEX idx_experiments_outcome ON cognitive_experiments(outcome);
-
-CREATE TABLE self_assessments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    assessed_by TEXT REFERENCES agents(id),
-    assessment_period_start TEXT NOT NULL,
-    assessment_period_end TEXT NOT NULL,
-    -- Core quality dimensions (0.0–1.0)
-    retrieval_relevance REAL,    -- Are retrieved memories relevant to queries?
-    forgetting_quality REAL,     -- Are we forgetting the right things?
-    retention_quality REAL,      -- Are we keeping the right things?
-    context_speed REAL,          -- How fast is context injection? (normalized)
-    routing_accuracy REAL,       -- Are memory categories/scopes accurate?
-    coherence_score REAL,        -- Are memories internally consistent (no contradictions)?
-    -- Failure analysis
-    failure_categories TEXT,     -- JSON: {"wrong_category": 3, "retrieval_miss": 7, "stale_data": 2}
-    top_failure_type TEXT,       -- Most common failure category this period
-    improvement_priority TEXT,   -- What to fix first
-    -- Notes
-    notes TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_assessments_agent ON self_assessments(assessed_by);
-
-CREATE INDEX idx_assessments_time ON self_assessments(assessment_period_end DESC);
 
 CREATE TABLE memory_trust_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -621,8 +619,10 @@ CREATE TABLE reflexion_lessons (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     archived_at TEXT,
     retired_at TEXT,
-    retirement_reason TEXT
-, propagated_to TEXT NOT NULL DEFAULT '[]', propagation_source_lesson_id INTEGER REFERENCES reflexion_lessons(id));
+    retirement_reason TEXT,
+    propagated_to TEXT NOT NULL DEFAULT '[]',
+    propagation_source_lesson_id INTEGER REFERENCES reflexion_lessons(id)
+);
 
 CREATE INDEX idx_rlessons_agent
     ON reflexion_lessons(source_agent_id);
@@ -680,7 +680,8 @@ CREATE TABLE agent_expertise (
             strength       REAL NOT NULL DEFAULT 0.0,
             evidence_count INTEGER NOT NULL DEFAULT 0,
             last_active    TEXT,
-            updated_at     TEXT NOT NULL DEFAULT (datetime('now')), brier_score REAL DEFAULT NULL,
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            brier_score    REAL DEFAULT NULL,
             PRIMARY KEY (agent_id, domain)
         );
 
@@ -840,7 +841,11 @@ CREATE TABLE agent_beliefs (
     invalidated_at      TEXT,               -- NULL = still believed / active
     invalidation_reason TEXT,
     created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
-    updated_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')), is_superposed INTEGER DEFAULT 0, belief_density_matrix BLOB DEFAULT NULL, coherence_score REAL DEFAULT 0.0, entanglement_source_ids TEXT DEFAULT NULL,
+    updated_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    is_superposed       INTEGER DEFAULT 0,
+    belief_density_matrix BLOB DEFAULT NULL,
+    coherence_score     REAL DEFAULT 0.0,
+    entanglement_source_ids TEXT DEFAULT NULL,
     UNIQUE(agent_id, topic)
 );
 
@@ -1266,20 +1271,6 @@ END;
 
 CREATE INDEX idx_memories_visibility ON memories(visibility);
 
-CREATE TABLE health_snapshots (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            checked_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
-            agent_id      TEXT,
-            coverage      REAL,
-            recall_rate   REAL,
-            trust_avg     REAL,
-            embed_cov     REAL,
-            distill_ratio REAL,
-            temporal_ok   INTEGER,
-            overall       TEXT,
-            alerts_json   TEXT
-        );
-
 CREATE INDEX idx_memories_ewc_importance ON memories(ewc_importance DESC) WHERE retired_at IS NULL;
 
 CREATE TABLE world_model (
@@ -1311,8 +1302,15 @@ CREATE TABLE agent_uncertainty_log (
     resolved_at     TIMESTAMP,                               -- when the gap was filled
     resolved_by     INTEGER REFERENCES memories(id),         -- memory that resolved the gap
     propagated      BOOLEAN DEFAULT FALSE,                   -- whether gap was propagated to other agents
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-, domain         TEXT, query          TEXT, result_count   INTEGER, avg_confidence REAL, retrieved_at   DATETIME DEFAULT (datetime('now')), temporal_class TEXT     DEFAULT 'ephemeral', ttl_days       INTEGER  DEFAULT 30);
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    domain          TEXT,
+    query           TEXT,
+    result_count    INTEGER,
+    avg_confidence  REAL,
+    retrieved_at    DATETIME DEFAULT (datetime('now')),
+    temporal_class  TEXT     DEFAULT 'ephemeral',
+    ttl_days        INTEGER  DEFAULT 30
+);
 
 CREATE INDEX idx_unc_agent     ON agent_uncertainty_log(agent_id);
 
@@ -1382,62 +1380,7 @@ CREATE TRIGGER entities_fts_delete AFTER DELETE ON entities BEGIN
     VALUES('delete', old.id, old.name, old.entity_type, old.properties, old.observations);
 END;
 
-CREATE TABLE recovery_candidates (
-                  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-                  source_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                  recoverable_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                  syndrome TEXT NOT NULL,
-                  recovery_probability REAL NOT NULL,
-                  expected_fidelity REAL DEFAULT 0.0,
-                  last_recovery_attempt_at TEXT DEFAULT NULL,
-                  recovery_succeeded INTEGER DEFAULT NULL,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-                );
-
-CREATE TABLE agent_entanglement (
-                  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-                  agent_id_a TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-                  agent_id_b TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-                  entanglement_entropy REAL NOT NULL,
-                  reduced_entropy_a REAL DEFAULT 0.0,
-                  reduced_entropy_b REAL DEFAULT 0.0,
-                  shared_memory_count INTEGER DEFAULT 0,
-                  avg_shared_confidence REAL DEFAULT 0.0,
-                  bell_inequality_chsh REAL DEFAULT NULL,
-                  measured_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  CONSTRAINT agent_pair_order CHECK (agent_id_a < agent_id_b)
-                );
-
-CREATE TABLE agent_ghz_groups (
-                  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-                  agent_ids TEXT NOT NULL,
-                  entangling_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                  group_size INTEGER NOT NULL,
-                  ghz_violation_metric REAL DEFAULT NULL,
-                  collective_coherence REAL DEFAULT 0.0,
-                  measured_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-                );
-
 CREATE INDEX idx_memories_confidence_phase ON memories(agent_id, confidence_phase) WHERE confidence_phase != 0.0;
-
-CREATE INDEX idx_recovery_candidates_source ON recovery_candidates(source_memory_id);
-
-CREATE INDEX idx_recovery_candidates_recoverable ON recovery_candidates(recoverable_memory_id);
-
-CREATE INDEX idx_recovery_candidates_probability ON recovery_candidates(recovery_probability DESC);
-
-CREATE UNIQUE INDEX idx_agent_entanglement_pair ON agent_entanglement(agent_id_a, agent_id_b);
-
-CREATE INDEX idx_agent_entanglement_entropy ON agent_entanglement(entanglement_entropy DESC);
-
-CREATE INDEX idx_agent_ghz_groups_memory ON agent_ghz_groups(entangling_memory_id);
-
-CREATE INDEX idx_agent_ghz_groups_size ON agent_ghz_groups(group_size);
 
 CREATE INDEX idx_memories_decoherence_rate ON memories(decoherence_rate DESC) WHERE decoherence_rate IS NOT NULL;
 
@@ -1454,11 +1397,6 @@ CREATE VIEW superposed_beliefs AS
                    ab.coherence_score, ab.entanglement_source_ids,
                    ab.created_at, ab.updated_at
             FROM agent_beliefs ab WHERE ab.is_superposed = 1;
-
-CREATE VIEW entangled_agent_pairs AS
-            SELECT ae.agent_id_a, ae.agent_id_b, ae.entanglement_entropy,
-                   ae.bell_inequality_chsh, ae.shared_memory_count, ae.measured_at
-            FROM agent_entanglement ae ORDER BY ae.entanglement_entropy DESC;
 
 CREATE VIEW decoherent_memories AS
             SELECT id, content, confidence, coherence_syndrome, decoherence_rate,
@@ -1591,12 +1529,7 @@ CREATE TABLE IF NOT EXISTS agent_budget (
 -- labile_until: ISO datetime when reconsolidation window closes (NULL = stable)
 -- labile_agent_id: agent that opened the lability window (agent-scoped)
 -- retrieval_prediction_error: cosine distance at lability-opening retrieval
-ALTER TABLE memories ADD COLUMN replay_priority REAL NOT NULL DEFAULT 0.0;
-ALTER TABLE memories ADD COLUMN ripple_tags INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE memories ADD COLUMN labile_until TEXT DEFAULT NULL;
-ALTER TABLE memories ADD COLUMN labile_agent_id TEXT DEFAULT NULL;
-ALTER TABLE memories ADD COLUMN retrieval_prediction_error REAL DEFAULT NULL;
-
+-- (Columns are defined in the base CREATE TABLE memories above.)
 CREATE INDEX IF NOT EXISTS idx_memories_replay ON memories(replay_priority DESC) WHERE retired_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_memories_labile ON memories(labile_until) WHERE labile_until IS NOT NULL;
 
@@ -1658,10 +1591,8 @@ CREATE INDEX IF NOT EXISTS idx_memory_stats_agent ON memory_stats(agent_id, cate
 
 -- -------------------------------------------------------------------------
 -- Temporal abstraction hierarchy (issue #20)
+-- (temporal_level column is defined in the base CREATE TABLE memories above.)
 -- -------------------------------------------------------------------------
-ALTER TABLE memories ADD COLUMN temporal_level TEXT NOT NULL DEFAULT 'moment'
-    CHECK(temporal_level IN ('moment','session','day','week','month','quarter'));
-
 CREATE INDEX IF NOT EXISTS idx_memories_temporal_level ON memories(temporal_level, agent_id);
 
 -- -------------------------------------------------------------------------

@@ -13343,6 +13343,18 @@ def build_parser():
     p_migrate.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing")
     p_migrate.add_argument("--path", help="Path to brain.db (default: from env/config)")
 
+    # --- archive-dead-tables (Phase 2a safety net) ---
+    p_archive = sub.add_parser(
+        "archive-dead-tables",
+        help="Dump soon-to-be-dropped dead tables to JSON before running migration 032",
+    )
+    p_archive.add_argument("--output", default=None,
+                           help="Output JSON path (default: ./brainctl-archive-<timestamp>.json)")
+    p_archive.add_argument("--path", default=None,
+                           help="Path to brain.db (default: from env/config)")
+    p_archive.add_argument("--force", action="store_true",
+                           help="Exit 0 even if dead tables had rows")
+
     # --- merge ---
     p_merge = sub.add_parser("merge", help="Merge two brain.db files — combine offline work or sync from backup")
     p_merge.add_argument("source", help="Path to source brain.db (merged INTO target)")
@@ -13486,6 +13498,69 @@ def cmd_migrate(args):
     dry_run = getattr(args, 'dry_run', False)
     result = migrate_run(db, dry_run=dry_run)
     json_out(result)
+
+
+# ---------------------------------------------------------------------------
+# Archive dead tables — Phase 2a safety net before DROP TABLE migration
+# ---------------------------------------------------------------------------
+
+# Tables slated for drop in migration 032_drop_dead_tables.sql.
+# Keep in sync with that migration. Verified zero Python references.
+DEAD_TABLES = (
+    "cognitive_experiments",
+    "self_assessments",
+    "health_snapshots",
+    "recovery_candidates",
+    "agent_entanglement",
+    "agent_ghz_groups",
+)
+
+
+def cmd_archive_dead_tables(args):
+    """Dump rows from soon-to-be-dropped tables to a JSON file as a safety net."""
+    import json as _json
+    from datetime import datetime
+
+    db_path = str(getattr(args, "path", None) or DB_PATH)
+    output = getattr(args, "output", None)
+    if not output:
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        output = f"./brainctl-archive-{ts}.json"
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    archive: dict = {}
+    total_rows = 0
+    for tname in DEAD_TABLES:
+        try:
+            rows = conn.execute(f"SELECT * FROM {tname}").fetchall()
+        except sqlite3.OperationalError:
+            archive[tname] = []
+            continue
+        archive[tname] = [dict(r) for r in rows]
+        total_rows += len(rows)
+    conn.close()
+
+    out_path = Path(output)
+    out_path.write_text(_json.dumps(archive, indent=2, default=str))
+
+    if total_rows == 0:
+        json_out({
+            "status": "clean",
+            "message": "0 rows in all tables",
+            "archive_path": str(out_path),
+            "tables": list(DEAD_TABLES),
+        })
+        return
+
+    json_out({
+        "status": "has_data",
+        "message": f"{total_rows} rows saved, review before dropping",
+        "archive_path": str(out_path),
+        "row_counts": {t: len(archive[t]) for t in DEAD_TABLES},
+    })
+    if not getattr(args, "force", False):
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -14074,6 +14149,9 @@ def main():
         fn = cmd_config
     elif args.command == "migrate":
         cmd_migrate(args)
+        return
+    elif args.command == "archive-dead-tables":
+        cmd_archive_dead_tables(args)
         return
     elif args.command == "merge":
         cmd_merge(args)
