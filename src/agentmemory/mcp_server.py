@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentmemory.lib.mcp_helpers import now_iso, safe_fts
 from agentmemory.paths import get_db_path
 logger = logging.getLogger(__name__)
 from mcp.server import Server
@@ -198,12 +199,8 @@ VALID_ENTITY_TYPES = [
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-
-
-def _now_ts() -> str:
-    return _utc_now_iso()
+_utc_now_iso = now_iso
+_now_ts = now_iso
 
 
 def get_db() -> sqlite3.Connection:
@@ -359,10 +356,7 @@ def _require_owned_handoff(db, agent_id: str, handoff_id: int):
     ).fetchone()
 
 
-def _safe_fts(query: str) -> str:
-    """Sanitize query for FTS5."""
-    safe = re.sub(r'[^\w\s]', ' ', query).strip()
-    return " OR ".join(safe.split()) if safe else ""
+_safe_fts = safe_fts
 
 
 # ---------------------------------------------------------------------------
