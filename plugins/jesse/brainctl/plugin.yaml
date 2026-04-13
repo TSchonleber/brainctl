@@ -1,0 +1,11 @@
+name: brainctl
+version: 0.1.0
+description: "brainctl persistent memory for Jesse strategies — journals every position, pair, and session handoff into a SQLite brain that survives restarts, forks, backtests, and hyperopt runs."
+pip_dependencies:
+  - "brainctl>=1.2.0"
+requires_env: []
+hooks:
+  - before
+  - on_open_position
+  - on_close_position
+  - terminate
