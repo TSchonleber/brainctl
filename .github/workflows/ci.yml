@@ -50,8 +50,23 @@ jobs:
   # in CI. Baseline lives at tests/bench/baselines/latency.json; p95 on the
   # nine hot-path operations must land at or under the committed values.
   # --------------------------------------------------------------------------
+  # Tier 2.5: raw-op latency regression gate.
+  #
+  # Advisory (continue-on-error). The committed latency.json is calibrated
+  # on macOS (darwin / M-class); ubuntu-latest GitHub runners measure
+  # 1.5-2x higher on the same sub-100ms ops due to different sqlite build,
+  # page-cache behaviour, and shared-tenant CPU noise. The 50% regression
+  # threshold is right for within-machine drift but wrong for
+  # cross-platform comparison — see tests/test_latency_regression.py for
+  # the full calibration story.
+  #
+  # For real latency gating, run this on a self-hosted Linux runner with
+  # a Linux-measured baseline. Until then, the job still runs so the
+  # numbers are visible in CI (useful signal), but failures don't block
+  # merge.
   latency-gate:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -62,7 +77,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[all]'
           pip install pytest
-      - name: Latency regression gate
+      - name: Latency regression gate (advisory — cross-platform baseline)
         env:
           BRAINCTL_RUN_BENCH: "1"
         run: pytest tests/test_latency_regression.py -v
