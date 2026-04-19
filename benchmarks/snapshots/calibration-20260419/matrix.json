@@ -1,0 +1,151 @@
+[
+  {
+    "bench": "longmemeval",
+    "bench_id": "longmemeval-289",
+    "cell_description": "topheavy=on, intent=on \u2014 shipped I2/I3/I4 default",
+    "cell_id": "FULL",
+    "elapsed_s": 911.42,
+    "envs": {},
+    "extra_args": [],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.8685,
+      "hit_at_10": 0.9896,
+      "hit_at_5": 0.9792,
+      "mrr": 0.9147,
+      "n_questions": 289,
+      "ndcg_at_5": 0.8815,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.9158
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/full-longmemeval.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/full-longmemeval.traces.jsonl"
+  },
+  {
+    "bench": "locomo",
+    "bench_id": "locomo-hybrid-cmd",
+    "cell_description": "topheavy=on, intent=on \u2014 shipped I2/I3/I4 default",
+    "cell_id": "FULL",
+    "elapsed_s": 458.28,
+    "envs": {},
+    "extra_args": [
+      "--backend",
+      "cmd"
+    ],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.2785,
+      "hit_at_10": 0.6352,
+      "hit_at_5": 0.5439,
+      "mrr": 0.394,
+      "n_questions": 1982,
+      "ndcg_at_5": 0.391,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.4952
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/full-locomo.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/full-locomo.traces.jsonl"
+  },
+  {
+    "bench": "longmemeval",
+    "bench_id": "longmemeval-289",
+    "cell_description": "topheavy=on, intent=off \u2014 keeps fetch-narrow, disables factual-fallback / intent routing",
+    "cell_id": "NO_INTENT",
+    "elapsed_s": 936.37,
+    "envs": {
+      "BRAINCTL_DISABLE_INTENT_ROUTER": "1"
+    },
+    "extra_args": [],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.8685,
+      "hit_at_10": 0.9862,
+      "hit_at_5": 0.9792,
+      "mrr": 0.9142,
+      "n_questions": 289,
+      "ndcg_at_5": 0.8815,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.9158
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/no_intent-longmemeval.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/no_intent-longmemeval.traces.jsonl"
+  },
+  {
+    "bench": "locomo",
+    "bench_id": "locomo-hybrid-cmd",
+    "cell_description": "topheavy=on, intent=off \u2014 keeps fetch-narrow, disables factual-fallback / intent routing",
+    "cell_id": "NO_INTENT",
+    "elapsed_s": 242.83,
+    "envs": {
+      "BRAINCTL_DISABLE_INTENT_ROUTER": "1"
+    },
+    "extra_args": [
+      "--backend",
+      "cmd"
+    ],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.2785,
+      "hit_at_10": 0.6352,
+      "hit_at_5": 0.5439,
+      "mrr": 0.394,
+      "n_questions": 1982,
+      "ndcg_at_5": 0.391,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.4952
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/no_intent-locomo.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/no_intent-locomo.traces.jsonl"
+  },
+  {
+    "bench": "longmemeval",
+    "bench_id": "longmemeval-289",
+    "cell_description": "topheavy=off \u2014 all top-heavy features bypassed (pre-I2 behavior, Ollama-up)",
+    "cell_id": "ROLLBACK",
+    "elapsed_s": 922.01,
+    "envs": {
+      "BRAINCTL_TOPHEAVY_ROLLBACK": "1"
+    },
+    "extra_args": [],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.2457,
+      "hit_at_10": 0.346,
+      "hit_at_5": 0.2491,
+      "mrr": 0.2913,
+      "n_questions": 289,
+      "ndcg_at_5": 0.2335,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.2313
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/rollback-longmemeval.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/rollback-longmemeval.traces.jsonl"
+  },
+  {
+    "bench": "locomo",
+    "bench_id": "locomo-hybrid-cmd",
+    "cell_description": "topheavy=off \u2014 all top-heavy features bypassed (pre-I2 behavior, Ollama-up)",
+    "cell_id": "ROLLBACK",
+    "elapsed_s": 311.63,
+    "envs": {
+      "BRAINCTL_TOPHEAVY_ROLLBACK": "1"
+    },
+    "extra_args": [
+      "--backend",
+      "cmd"
+    ],
+    "flags": {},
+    "metrics": {
+      "hit_at_1": 0.2725,
+      "hit_at_10": 0.665,
+      "hit_at_5": 0.552,
+      "mrr": 0.3964,
+      "n_questions": 1982,
+      "ndcg_at_5": 0.3924,
+      "p95_latency_ms": 0.0,
+      "recall_at_5": 0.5041
+    },
+    "stdout_path": "benchmarks/snapshots/calibration-20260419/rollback-locomo.json",
+    "traces_path": "benchmarks/snapshots/calibration-20260419/rollback-locomo.traces.jsonl"
+  }
+]

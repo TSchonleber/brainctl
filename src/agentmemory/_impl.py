@@ -6179,8 +6179,20 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # Intent-aware table routing: when --tables not specified, classify query intent
     # and route to the most relevant tables for that intent type.
     _intent_result = None
+    # BRAINCTL_DISABLE_INTENT_ROUTER — ablation-only bypass.
+    # When set to a truthy value, the intent classifier is skipped entirely:
+    # no intent label is surfaced to the rerank / fetch-narrow / factual-
+    # fallback paths, and the table set defaults to the historical
+    # "memories,events,context,entities,decisions" mix. Introduced purely
+    # for the I5 calibration matrix so we can measure the standalone
+    # contribution of the intent router. No behavior change when unset.
+    _intent_router_disabled = _env_flag_true(
+        os.environ.get("BRAINCTL_DISABLE_INTENT_ROUTER")
+    )
     if args.tables:
         tables = args.tables.split(",")
+    elif _intent_router_disabled:
+        tables = ["memories", "events", "context", "entities", "decisions"]
     elif _INTENT_AVAILABLE:
         try:
             _intent_result = _classify_intent(query)

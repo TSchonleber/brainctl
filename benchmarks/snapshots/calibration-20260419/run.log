@@ -1,0 +1,20 @@
+
+=== Cell FULL / bench longmemeval-289 ===
+[FULL/longmemeval] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench longmemeval --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/full-longmemeval.traces.jsonl
+
+=== Cell FULL / bench locomo-hybrid-cmd ===
+[FULL/locomo] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench locomo --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/full-locomo.traces.jsonl --backend cmd
+
+=== Cell NO_INTENT / bench longmemeval-289 ===
+[NO_INTENT/longmemeval] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench longmemeval --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/no_intent-longmemeval.traces.jsonl
+
+=== Cell NO_INTENT / bench locomo-hybrid-cmd ===
+[NO_INTENT/locomo] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench locomo --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/no_intent-locomo.traces.jsonl --backend cmd
+
+=== Cell ROLLBACK / bench longmemeval-289 ===
+[ROLLBACK/longmemeval] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench longmemeval --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/rollback-longmemeval.traces.jsonl
+
+=== Cell ROLLBACK / bench locomo-hybrid-cmd ===
+[ROLLBACK/locomo] /opt/homebrew/opt/python@3.14/bin/python3.14 -m tests.bench.run --bench locomo --traces /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/rollback-locomo.traces.jsonl --backend cmd
+
+wrote /Users/r4vager/agentmemory/.claude/worktrees/agent-ab21fcb1/benchmarks/snapshots/calibration-20260419/matrix.json
