@@ -111,6 +111,13 @@ jobs:
   retrieval-gate:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # pull-requests: write is needed by the trailing "Post bench summary
+    # as PR comment" step (actions/github-script). Without it the step
+    # 403s on issues.createComment and fails the job even when the bench
+    # itself passed.
+    permissions:
+      contents: read
+      pull-requests: write
     # Path filter: only pay the minutes-long LongMemEval tax when we're
     # touching retrieval. The planning doc calls these the "top-heavy
     # retrieval" hot paths — keep in sync with the plan.
