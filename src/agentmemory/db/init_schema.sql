@@ -1700,3 +1700,21 @@ END;
 -- FTS5 row at the retire transition; the guarded _update_insert then does
 -- NOT re-insert. Net: retired memories vanish from FTS5 immediately, no
 -- separate purge trigger needed (and no double-delete risk).
+
+-- Migration 051: code_ingest_cache — SHA256 cache for `brainctl ingest code`
+-- (brainctl[code] optional extra, 2.4.4+). Included here so fresh installs
+-- match upgrade-path schemas (caught by tests/test_schema_parity.py).
+CREATE TABLE IF NOT EXISTS code_ingest_cache (
+    file_path         TEXT NOT NULL,
+    scope             TEXT NOT NULL DEFAULT 'global',
+    content_sha       TEXT NOT NULL,
+    language          TEXT NOT NULL,
+    entity_count      INTEGER NOT NULL DEFAULT 0,
+    edge_count        INTEGER NOT NULL DEFAULT 0,
+    last_ingested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (file_path, scope)
+);
+CREATE INDEX IF NOT EXISTS idx_code_ingest_cache_scope
+    ON code_ingest_cache(scope);
+CREATE INDEX IF NOT EXISTS idx_code_ingest_cache_language
+    ON code_ingest_cache(language);
