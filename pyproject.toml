@@ -95,6 +95,14 @@ competitor-bench = [
     "zep-cloud==3.20.0",
     "cognee==1.0.0",
 ]
+# Core benchmark harness deps — `python -m tests.bench.run --check-strict`
+# reads per-bench tolerance YAMLs via PyYAML. The gate module falls back
+# to hardcoded defaults when PyYAML is absent, so this is only strictly
+# required when someone edits the budgets/*.yaml files and expects the
+# runtime to pick up their overrides. CI installs it for --check-strict.
+bench = [
+    "PyYAML>=6.0",
+]
 all = [
     "mcp>=1.27.0",
     "sqlite-vec>=0.1.0",
@@ -106,6 +114,7 @@ all = [
     "tree-sitter-python>=0.23",
     "tree-sitter-typescript>=0.23",
     "tree-sitter-go>=0.23",
+    "PyYAML>=6.0",
 ]
 
 [project.scripts]

@@ -312,6 +312,13 @@ def run(
     agg["include_judge_only"] = include_judge_only
     agg["retrieval_friendly_types"] = list(RETRIEVAL_FRIENDLY_TYPES)
     agg["judge_only_types"] = list(JUDGE_ONLY_TYPES)
+    # Flat per-query latency list in ms for the strict gate. Each
+    # LongMemEval entry is one question, so t_query_s * 1000 per entry IS
+    # the per-query wall-clock (measured around score_question in run_entry).
+    agg["per_query_ms"] = [
+        round((r.get("t_query_s") or 0.0) * 1000.0, 3)
+        for r in per_entry
+    ]
 
     # Strip the QuestionResult object refs from the row dump before
     # serialising to a baseline JSON.

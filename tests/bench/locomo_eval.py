@@ -221,13 +221,20 @@ def run_conversation(
         else:
             search_fn = brain_search_fn(brain)
 
+        # Time each question individually so the strict gate can compute an
+        # end-to-end per-query p95. The sum is still reported as t_query_s
+        # for back-compat, and the per-query samples are surfaced on the
+        # convo dict so aggregate_per_convo can stitch them together.
         t0 = time.perf_counter()
         rows = []
+        per_query_ms: List[float] = []
         for idx, q in enumerate(questions):
+            tq0 = time.perf_counter()
             qr = score_question(
                 q, search_fn, k_max=max(ks), ks=ks,
                 capture_trace=capture_trace,
             )
+            per_query_ms.append((time.perf_counter() - tq0) * 1000.0)
             if capture_trace:
                 qr.qid = f"{sample_id}:q{idx}"
             rows.append(qr)
@@ -241,6 +248,7 @@ def run_conversation(
     out["n_questions"] = len(rows)
     out["t_ingest_s"] = round(t_ingest, 2)
     out["t_query_s"] = round(t_query, 2)
+    out["per_query_ms"] = [round(ms, 3) for ms in per_query_ms]
     if errs:
         out["search_errors"] = dict(errs)
     if capture_trace:
@@ -378,10 +386,18 @@ def run(
     agg["elapsed_s"] = round(elapsed, 2)
     agg["backend"] = backend
     agg["ks"] = list(ks)
-    # Drop QuestionResult refs + verbose per-category cells from per_convo.
+    # Flatten per-query timings across every convo so the strict gate can
+    # compute a corpus-wide end-to-end p95. Keep on the top-level agg so
+    # run.py can pass the list into tests.bench.gate.evaluate(...).
+    agg["per_query_ms"] = [
+        ms for c in per_convo for ms in (c.get("per_query_ms") or [])
+    ]
+    # Slim per_convo: drop QuestionResult refs, by_category cells, and the
+    # verbose per_query_ms list (already surfaced at top-level agg above)
+    # so baseline JSONs stay small.
     agg["per_convo"] = [
         {k: v for k, v in c.items()
-         if k not in ("by_category", "_question_results")}
+         if k not in ("by_category", "_question_results", "per_query_ms")}
         for c in per_convo
     ]
     return agg

@@ -1,0 +1,42 @@
+# LoCoMo strict-gate budget.
+#
+# Applied by `tests/bench/run.py --bench locomo --check-strict`.
+#
+# Tolerances are absolute deltas on [0, 1] metrics. Plan envelope for
+# LoCoMo hybrid: +1.0pp Hit@1, +0.5pp MRR, Hit@10 delta >= -0.2pp,
+# p95 <= +15%.
+#
+# The task brief says "per mode" on LoCoMo — the LoCoMo dataset loader
+# in this repo surfaces the retrieval axis as `category` (single-hop /
+# temporal / multi-hop / open-domain / adversarial). We slice on
+# `category` since that is what the benchmark emits; the strict gate
+# reports `slice_key="category"` to stay unambiguous.
+
+overall:
+  tolerances:
+    hit_at_1:    0.002
+    hit_at_5:    0.002
+    hit_at_10:   0.002
+    mrr:         0.002
+    ndcg_at_5:   0.002
+    recall_at_5: 0.002
+
+slices:
+  tolerances:
+    hit_at_1:    0.010
+    mrr:         0.010
+    ndcg_at_5:   0.010
+  # LoCoMo slice counts in the committed baseline:
+  #   multi-hop      92   (gated)
+  #   single-hop    282   (gated)
+  #   temporal      321   (gated)
+  #   adversarial   446   (gated)
+  #   open-domain   841   (gated)
+  # All above 30, but we keep the min_count gate for symmetry with
+  # LongMemEval and future bucket splits.
+  min_count: 30
+
+latency:
+  p95_multiplier: 1.15
+  baseline_p95_ms: null
+  min_baseline_ms: 50.0
