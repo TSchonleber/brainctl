@@ -1,0 +1,4 @@
+hw.ncpu: 14
+hw.memsize: 38654705664
+hw.model: Mac16,6
+machdep.cpu.brand_string: Apple M4 Max

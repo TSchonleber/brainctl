@@ -87,6 +87,11 @@ class QuestionResult:
     recall: Dict[int, float] = field(default_factory=dict)
     mrr: float = 0.0
     ndcg: Dict[int, float] = field(default_factory=dict)
+    # Trace-only fields (populated when score_question is called with
+    # capture_trace=True). Not used by the metric aggregator.
+    ranked_scores: List[float] = field(default_factory=list)
+    timings_ms: Dict[str, float] = field(default_factory=dict)
+    qid: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -156,10 +161,35 @@ def score_question(
     *,
     k_max: int = 20,
     ks: Sequence[int] = DEFAULT_KS,
+    capture_trace: bool = False,
 ) -> QuestionResult:
-    """Run one question through ``search_fn`` and compute Hit/Recall/MRR/nDCG."""
+    """Run one question through ``search_fn`` and compute Hit/Recall/MRR/nDCG.
+
+    When ``capture_trace=True``, additionally populate ``ranked_scores``
+    and ``timings_ms`` on the result so the caller can emit per-query
+    traces. Metric computation is unchanged.
+    """
+    t_query_start = time.perf_counter()
     raw_results = search_fn(q.question, k_max) if q.question else []
-    ranked = [k for k in (key_for_result(r) for r in raw_results) if k]
+    t_query_ms = (time.perf_counter() - t_query_start) * 1000.0
+
+    # Keep raw results aligned with keys so ranked_scores[i] <-> ranked[i].
+    ranked_pairs: List[Tuple[str, float]] = []
+    for r in raw_results:
+        k = key_for_result(r)
+        if not k:
+            continue
+        score = 0.0
+        for field_name in ("final_score", "score", "rrf_score", "rank_score"):
+            v = r.get(field_name) if isinstance(r, dict) else None
+            if v is not None:
+                try:
+                    score = float(v)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        ranked_pairs.append((k, score))
+    ranked = [k for k, _ in ranked_pairs]
 
     # Build a binary relevance map for ndcg_at_k (1 = gold, 0 = other).
     relevance: Dict[str, int] = {g: 1 for g in q.gold_keys}
@@ -178,6 +208,9 @@ def score_question(
         qr.recall[K] = (len(inter) / len(gold_set)) if gold_set else 0.0
         qr.ndcg[K] = round(ndcg_at_k(ranked, relevance, K), 6) if relevance else 0.0
     qr.mrr = _mrr_pure(ranked, relevance)
+    if capture_trace:
+        qr.ranked_scores = [s for _, s in ranked_pairs]
+        qr.timings_ms = {"query_ms": round(t_query_ms, 3)}
     return qr
 
 

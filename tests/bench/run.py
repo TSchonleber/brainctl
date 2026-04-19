@@ -97,6 +97,7 @@ def _run_locomo(args: argparse.Namespace) -> int:
     result = run_locomo(
         backend=args.backend or "brain",
         convo_idx=args.convo,
+        traces_path=Path(args.traces) if args.traces else None,
     )
     baseline_name = args.baseline_name or "locomo"
     baseline_path = _shared_baseline_path(baseline_name)
@@ -137,6 +138,7 @@ def _run_longmemeval(args: argparse.Namespace) -> int:
         backend=args.backend or "brain",
         limit=args.limit,
         include_judge_only=args.include_judge_only,
+        traces_path=Path(args.traces) if args.traces else None,
     )
     baseline_name = args.baseline_name or "longmemeval"
     baseline_path = _shared_baseline_path(baseline_name)
@@ -243,6 +245,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="(longmemeval) score only the first N entries")
     p.add_argument("--include-judge-only", action="store_true",
                    help="(longmemeval) include the LLM-judge-only axes in headline")
+    p.add_argument("--traces", default=None,
+                   help="(locomo/longmemeval) write per-query JSONL trace "
+                        "records to PATH (qid, query, retrieved_ids, scores, "
+                        "gold_ids, hit@k, mrr, category, timings_ms). "
+                        "No effect on search-quality bench.")
 
     return p
 

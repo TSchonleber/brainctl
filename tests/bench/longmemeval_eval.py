@@ -126,6 +126,7 @@ def run_entry(
     *,
     backend: str = "brain",
     ks: Sequence[int] = BASELINE_KS,
+    capture_trace: bool = False,
 ) -> Dict[str, Any]:
     """Score one LongMemEval entry. Returns single-question metric row."""
     if backend != "brain":
@@ -152,8 +153,18 @@ def run_entry(
 
         search_fn = brain_search_fn(brain)
         t0 = time.perf_counter()
-        row = score_question(question, search_fn, k_max=max(ks), ks=ks)
+        row = score_question(
+            question, search_fn, k_max=max(ks), ks=ks,
+            capture_trace=capture_trace,
+        )
         t_query = time.perf_counter() - t0
+
+    # Annotate qid / ingest timing for trace export.
+    qid = str(entry.get("question_id") or "")
+    row.qid = qid
+    if capture_trace:
+        row.timings_ms.setdefault("ingest_ms", round(t_ingest * 1000.0, 3))
+        row.timings_ms.setdefault("total_ms", round((t_ingest + t_query) * 1000.0, 3))
 
     return {
         "question_id": entry.get("question_id"),
@@ -228,6 +239,7 @@ def run(
     ks: Sequence[int] = BASELINE_KS,
     allow_download: Optional[bool] = None,
     stratify: bool = True,
+    traces_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Full LongMemEval (_s split) eval. Returns the aggregated summary.
 
@@ -258,10 +270,38 @@ def run(
 
     t0 = time.perf_counter()
     per_entry: List[Dict[str, Any]] = []
-    for e in entries:
-        row = run_entry(e, backend=backend, ks=ks)
-        if row:
-            per_entry.append(row)
+    capture = traces_path is not None
+    trace_fh = None
+    if capture:
+        traces_path = Path(traces_path)
+        traces_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_fh = traces_path.open("w")
+    try:
+        import json as _json  # local alias to avoid top-level churn
+        for e in entries:
+            row = run_entry(e, backend=backend, ks=ks, capture_trace=capture)
+            if row:
+                per_entry.append(row)
+                if capture and trace_fh is not None:
+                    qr = row.get("_question_result")
+                    trace_record = {
+                        "qid": qr.qid,
+                        "query": qr.question,
+                        "retrieved_ids": qr.ranked_keys,
+                        "scores": qr.ranked_scores,
+                        "gold_ids": qr.gold,
+                        "hit_at_k": {str(K): qr.hit[K] for K in ks},
+                        "recall_at_k": {str(K): qr.recall[K] for K in ks},
+                        "ndcg_at_k": {str(K): qr.ndcg[K] for K in ks},
+                        "mrr_contribution": qr.mrr,
+                        "category": qr.category,
+                        "timings_ms": qr.timings_ms,
+                    }
+                    trace_fh.write(_json.dumps(trace_record) + "\n")
+                    trace_fh.flush()
+    finally:
+        if trace_fh is not None:
+            trace_fh.close()
     elapsed = time.perf_counter() - t0
 
     agg = _aggregate_rows(per_entry, ks=ks)

@@ -1,0 +1,73 @@
+{
+  "bench": "search-quality",
+  "by_category": {
+    "ambiguous": {
+      "count": 1,
+      "mrr": 0.0,
+      "ndcg_at_5": 0.0,
+      "p_at_1": 0.0,
+      "p_at_5": 0.0,
+      "recall_at_5": 0.0
+    },
+    "decision": {
+      "count": 3,
+      "mrr": 0.3333,
+      "ndcg_at_5": 0.3186,
+      "p_at_1": 0.3333,
+      "p_at_5": 0.1333,
+      "recall_at_5": 0.3333
+    },
+    "entity": {
+      "count": 7,
+      "mrr": 0.7143,
+      "ndcg_at_5": 0.6099,
+      "p_at_1": 0.7143,
+      "p_at_5": 0.2,
+      "recall_at_5": 0.4524
+    },
+    "negative": {
+      "count": 1,
+      "mrr": 0.0,
+      "ndcg_at_5": 1.0,
+      "p_at_1": 0.0,
+      "p_at_5": 0.0,
+      "recall_at_5": 1.0
+    },
+    "procedural": {
+      "count": 4,
+      "mrr": 0.875,
+      "ndcg_at_5": 0.6333,
+      "p_at_1": 0.75,
+      "p_at_5": 0.25,
+      "recall_at_5": 0.75
+    },
+    "temporal": {
+      "count": 2,
+      "mrr": 1.0,
+      "ndcg_at_5": 0.8936,
+      "p_at_1": 1.0,
+      "p_at_5": 0.3,
+      "recall_at_5": 0.75
+    },
+    "troubleshooting": {
+      "count": 2,
+      "mrr": 0.5,
+      "ndcg_at_5": 0.3066,
+      "p_at_1": 0.5,
+      "p_at_5": 0.1,
+      "recall_at_5": 0.25
+    }
+  },
+  "k": 10,
+  "overall": {
+    "mrr": 0.625,
+    "n_queries": 20,
+    "ndcg_at_10": 0.5579,
+    "ndcg_at_5": 0.5579,
+    "p_at_1": 0.6,
+    "p_at_5": 0.18,
+    "recall_at_10": 0.5083,
+    "recall_at_5": 0.5083
+  },
+  "pipeline": "cmd"
+}

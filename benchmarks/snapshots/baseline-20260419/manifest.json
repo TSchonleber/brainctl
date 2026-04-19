@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-04-19T13:24:32Z",
+  "git_commit": "2fb2a1c75a8dd9405d1caccd014370637ab27bd7",
+  "hardware": "Apple M4 Max / 14 CPUs / 36 GB / macOS 26.4 Build 25E246",
+  "ollama_reachable_at_run": false,
+  "seed": 42,
+  "sha256": {
+    "README.md": "b1da9b39bbe47b59da6c2680e01100788b55a383d19a5974b678917632bb5351",
+    "latency.json": "08ade0ab435e94d8cbcc6c6b7b859e35217bea42f9731464fedbf17bdc518bdb",
+    "locomo-hybrid.json": "b7fd520ecd7c952eea2c15a5fe5910e5aee027d2468998ac58695545da7a8e45",
+    "locomo-hybrid.traces.jsonl": "d5f08d2a8abcf0409b31bf881684a240d1eeb2f8a1adcec1797fcf2e1e19a085",
+    "locomo-turn.json": "c51c495048395fad5fe8587f4407e5be41025921333c68a032103d0d7e1eb9d4",
+    "locomo-turn.traces.jsonl": "19150c134dd422ae243d7a3add25ff119c289b17a9478204f71eb63492c110f5",
+    "longmemeval-289.json": "1a788699d5f6a15f3191780c27feeae4aa68458a3c4a5fc3ed7a32a46a74171f",
+    "longmemeval-289.traces.jsonl": "c66ffc8d7d4089827961ece723110c6304108ab1991771d98b1d5d95c55c9b4d",
+    "longmemeval.json": "40528bad1d93ae9eff96cae15f8d73c6c9ba558204312b545d0f105790fe5ff6",
+    "longmemeval.traces.jsonl": "5611e19ddf096fad3870ee571961ed2de69914bf025e3d275c99625ed9728606",
+    "ollama-probe.txt": "f712ba5e980e8a87d0e4c0829690501addd2bf7f2e45d8da9860f4c4c3946354",
+    "search-quality.json": "13f83958674d0ea131b2769c6e4e192d649d2623db46f5973c0af56c903f5dda",
+    "sysctl-hw.txt": "57902056a9388ee16e13500e51ca876241c1219aa7d11399add3f7835acfa464",
+    "versions.txt": "8bb3b4291adecb09d1d1bdc6ecf20821cd78d34782501bba7d204504345c3be5"
+  }
+}

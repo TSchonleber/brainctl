@@ -189,6 +189,7 @@ def run_conversation(
     *,
     backend: str = "brain",
     ks: Sequence[int] = BASELINE_KS,
+    capture_trace: bool = False,
 ) -> Dict[str, Any]:
     """Spin up a fresh tmp brain.db, ingest one convo, score its QA set."""
     sample_id = convo.get("sample_id", "?")
@@ -221,7 +222,15 @@ def run_conversation(
             search_fn = brain_search_fn(brain)
 
         t0 = time.perf_counter()
-        rows = [score_question(q, search_fn, k_max=max(ks), ks=ks) for q in questions]
+        rows = []
+        for idx, q in enumerate(questions):
+            qr = score_question(
+                q, search_fn, k_max=max(ks), ks=ks,
+                capture_trace=capture_trace,
+            )
+            if capture_trace:
+                qr.qid = f"{sample_id}:q{idx}"
+            rows.append(qr)
         t_query = time.perf_counter() - t0
         errs = getattr(search_fn, "errors", {})
 
@@ -234,6 +243,8 @@ def run_conversation(
     out["t_query_s"] = round(t_query, 2)
     if errs:
         out["search_errors"] = dict(errs)
+    if capture_trace:
+        out["_question_results"] = rows
     return out
 
 
@@ -311,6 +322,7 @@ def run(
     convo_idx: Optional[int] = None,
     ks: Sequence[int] = BASELINE_KS,
     allow_download: Optional[bool] = None,
+    traces_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Full LOCOMO eval. Returns the aggregated summary.
 
@@ -332,16 +344,44 @@ def run(
     else:
         convos = data
 
+    capture = traces_path is not None
     t0 = time.perf_counter()
-    per_convo = [run_conversation(c, backend=backend, ks=ks) for c in convos]
+    per_convo = [
+        run_conversation(c, backend=backend, ks=ks, capture_trace=capture)
+        for c in convos
+    ]
     elapsed = time.perf_counter() - t0
+
+    if capture:
+        import json as _json
+        tp = Path(traces_path)
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        with tp.open("w") as fh:
+            for c in per_convo:
+                for qr in c.get("_question_results", []):
+                    rec = {
+                        "qid": qr.qid,
+                        "query": qr.question,
+                        "retrieved_ids": qr.ranked_keys,
+                        "scores": qr.ranked_scores,
+                        "gold_ids": qr.gold,
+                        "hit_at_k": {str(K): qr.hit[K] for K in ks},
+                        "recall_at_k": {str(K): qr.recall[K] for K in ks},
+                        "ndcg_at_k": {str(K): qr.ndcg[K] for K in ks},
+                        "mrr_contribution": qr.mrr,
+                        "category": qr.category,
+                        "timings_ms": qr.timings_ms,
+                    }
+                    fh.write(_json.dumps(rec) + "\n")
 
     agg = aggregate_per_convo(per_convo, ks=ks)
     agg["elapsed_s"] = round(elapsed, 2)
     agg["backend"] = backend
     agg["ks"] = list(ks)
+    # Drop QuestionResult refs + verbose per-category cells from per_convo.
     agg["per_convo"] = [
-        {k: v for k, v in c.items() if k != "by_category"}
+        {k: v for k, v in c.items()
+         if k not in ("by_category", "_question_results")}
         for c in per_convo
     ]
     return agg
