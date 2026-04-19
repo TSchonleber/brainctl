@@ -39,7 +39,23 @@ def test_public_methods_reuse_single_connection(db_file, monkeypatch):
     calls: List[str] = []
 
     def counting_connect(*args, **kwargs):
-        calls.append("connect")
+        # Record the originating source file so we can distinguish the
+        # Brain-class shared-conn path (brain.py) from the short-lived
+        # vec-loaded helper conns opened by _impl.py / _vec.py. The core
+        # invariant is that brain.py opens the shared conn at most once
+        # per Brain lifecycle; vec helpers are allowed to cycle theirs.
+        import traceback as _tb
+        stack = _tb.extract_stack()
+        # Skip the monkeypatched frame (-1) and this frame (-2); the
+        # interesting caller is at -3 / whichever frame is the first
+        # outside this test module's monkeypatch wrapper.
+        origin = "unknown"
+        for frame in reversed(stack[:-1]):
+            fname = frame.filename.split("/")[-1]
+            if fname not in {"test_connection_lifecycle.py"}:
+                origin = fname
+                break
+        calls.append(origin)
         return real_connect(*args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", counting_connect)
@@ -52,18 +68,18 @@ def test_public_methods_reuse_single_connection(db_file, monkeypatch):
     brain.stats()
     brain.doctor()
 
-    # Some ops (vec.index_memory) open their own short-lived connections
-    # when sqlite-vec is actually loaded. We only care about Brain's own
-    # connection path — filter by stack frame origin is noisy, so instead
-    # we assert <= 1 connect happened from Brain's own code path. The
-    # simplest check: after the first brain.remember, self._conn is set.
+    # Core invariant: Brain's OWN shared-connection path (brain.py) must
+    # open the shared sqlite3 connection at most once across a Brain's
+    # lifecycle. Helpers like sqlite-vec indexers (_vec.py) and the
+    # unified search pipeline (_impl.py, since the 2026-04-19 Brain.search
+    # -> cmd_search unification in 8912455) are allowed to open their
+    # own short-lived vec-loaded connections because the main shared
+    # conn intentionally does NOT load the sqlite-vec extension.
     assert brain._conn is not None
-    # Brain.remember with vec may trigger one extra connect inside
-    # _vec.index_memory when the dylib is present — but in test env it
-    # usually isn't. Allow up to 1 legitimate extra.
-    assert len(calls) <= 1, (
-        f"Expected at most 1 fresh sqlite3.connect for shared conn path, "
-        f"got {len(calls)}: {calls}"
+    brain_py_opens = [c for c in calls if c == "brain.py"]
+    assert len(brain_py_opens) <= 1, (
+        f"Expected at most 1 brain.py-originated sqlite3.connect for the "
+        f"shared conn path, got {len(brain_py_opens)}. All connects: {calls}"
     )
     brain.close()
 
