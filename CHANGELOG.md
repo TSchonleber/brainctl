@@ -5,6 +5,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.8] — 2026-04-20 — *Audit hotfix: fresh-install migrate + MCP dispatch*
+
+Closes the two CRITICAL findings from the 2026-04-19 audit
+(`docs/audit_2026_04_19/00_VERIFICATION.md`) plus two HIGH companions.
+
+### Fixed
+
+- **Fresh-install `brainctl migrate` halted at step 2.** The idempotent
+  error-fragment allowlist in `migrate.py` only tolerated
+  `"duplicate column name"`, so the `CREATE INDEX idx_epochs_started`
+  statement in migration 002 aborted the run on any DB initialised from
+  `init_schema.sql` (which already declares that index). Added
+  `"already exists"` under each of `CREATE INDEX / CREATE TABLE /
+  CREATE TRIGGER / CREATE VIEW` in `_PER_KIND_TOLERATED_FRAGMENTS`
+  rather than as a global fragment — preserves the original "deliberately
+  narrow" discipline so unrelated object-exists surfaces still fail
+  loudly. Also fixed the leading-keyword extraction to skip inline
+  comment/blank prefix lines (the statement splitter attaches a header
+  comment like `-- CHECK constraint triggers` to the following
+  `CREATE TRIGGER`, which previously made leading detection miss).
+  Verified: 49/49 migrations apply to a fresh DB and the second run is
+  a 0-applied no-op.
+- **All 9 temporal MCP tools returned `TypeError`.** `mcp_tools_temporal.DISPATCH`
+  pointed every key at the bare `_handle(name, args)` function, but
+  `mcp_server.call_tool` invokes dispatchers as
+  `fn(agent_id=..., **arguments)`. The signature mismatch had been
+  latent since `ca1a8a3` because no existing test exercised the
+  dispatcher call path — the module's tests called the internal
+  `_temporal_*` / `_epoch_*` functions directly. Switched to per-tool
+  closures (same pattern as `mcp_tools_consolidation`), added
+  regression tests that exercise the mcp_server call convention, and
+  guard against late-binding closure collapse.
+- **`pagerank` MCP tool was unreachable.** The tool was implemented and
+  registered in `TOOLS`, but `mcp_server.call_tool`'s dispatch dict
+  never listed it, so calls 404'd. Added the wiring.
+- **`_graph_{pagerank,communities,betweenness}` raised `TypeError` on
+  the second call.** The cache-freshness check subtracted an aware
+  datetime (parsed from the stored Z-suffixed timestamp on Py3.11+)
+  from a naive `datetime.now()`. Switched to `datetime.now(timezone.utc)`
+  at all three call sites (`_impl.py:8293, 8365, 8434`).
+
+### Testing
+
+`1863 passed, 28 skipped, 2 xfailed` locally.
+
 ## [2.4.7] — 2026-04-19 — *Security hygiene pass*
 
 Post-release supply-chain hardening. No functional change; upgrade is

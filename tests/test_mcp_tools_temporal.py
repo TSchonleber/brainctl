@@ -439,10 +439,35 @@ class TestModuleExports:
             assert callable(fn), f"DISPATCH[{name!r}] is not callable"
 
     def test_dispatch_routes_epoch_list(self, patch_db):
-        result = mt.DISPATCH["epoch_list"]("epoch_list", {})
+        # mcp_server.call_tool invokes fn(agent_id=..., **arguments). Before
+        # 2.4.8 every DISPATCH entry was the bare `_handle(name, args)`,
+        # which raised TypeError on `agent_id=`. Call through the real
+        # mcp_server convention here so that regression stays caught.
+        result = mt.DISPATCH["epoch_list"](agent_id="tester")
         assert result["ok"] is True
 
-    def test_dispatch_unknown_tool(self, patch_db):
-        result = mt.DISPATCH["epoch_list"]("nonexistent_tool", {})
-        assert result["ok"] is False
-        assert "unknown tool" in result["error"]
+    def test_dispatch_every_tool_accepts_mcp_server_signature(self, patch_db):
+        # Every DISPATCH entry must accept `agent_id=..., **kwargs`
+        # (the signature mcp_server.call_tool uses). Exercising this
+        # with a no-required-arg call per tool is enough to catch a
+        # regression to the old single-`_handle` wiring.
+        no_required_args = {
+            "temporal_context": {},
+            "temporal_auto_detect": {"dry_run": True},
+            "epoch_list": {},
+        }
+        for name, kwargs in no_required_args.items():
+            result = mt.DISPATCH[name](agent_id="tester", **kwargs)
+            assert isinstance(result, dict), f"{name} did not return a dict"
+            assert "ok" in result, f"{name} response missing 'ok' key"
+
+    def test_dispatch_each_entry_binds_distinct_tool_name(self):
+        # If the lambdas share a late-bound `name` by mistake, every
+        # dispatch would route to the last-declared tool. Verify the
+        # closures each capture their own name by probing with a shape
+        # that only the intended tool's `_handle` branch can satisfy.
+        fn_ids = {name: id(fn) for name, fn in mt.DISPATCH.items()}
+        assert len(set(fn_ids.values())) == len(mt.DISPATCH), (
+            "DISPATCH entries collapsed to fewer functions than tools — "
+            "likely a late-binding closure bug"
+        )

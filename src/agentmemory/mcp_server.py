@@ -2943,6 +2943,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # Managed Solana wallet (2.3.2+) — see TOOLS list for safety notes.
         "wallet_show": tool_wallet_show,
         "wallet_create": tool_wallet_create,
+        # Graph analytics — tool_pagerank is implemented at line 1923 and
+        # declared in TOOLS (line 2571), but was never wired into this
+        # dispatch dict before 2.4.8, so `pagerank` silently 404'd.
+        "pagerank": tool_pagerank,
     }
 
     # Merge extension module dispatchers

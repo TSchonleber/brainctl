@@ -91,9 +91,19 @@ _IDEMPOTENT_ERROR_FRAGMENTS = (
 #     crashing the whole migration breaks the user's upgrade for a
 #     legacy column rename they may not even use.
 #   * CREATE TRIGGER, same logic.
+#   * "already exists" on each of the four CREATE kinds is the fresh-install
+#     idempotency case: init_schema.sql is a snapshot that already declares
+#     many objects which migrations also declare. Before 2.4.8, migration
+#     002's `CREATE INDEX idx_epochs_started` aborted the whole run on every
+#     fresh install. Fixed per-kind (not as a global fragment) so we still
+#     crash loudly on e.g. an unrelated "view main.foo already exists" in
+#     a non-CREATE statement path or a genuinely duplicated idempotent
+#     rebuild that would mask data loss.
 _PER_KIND_TOLERATED_FRAGMENTS = {
-    "CREATE INDEX": ("no such column",),
-    "CREATE TRIGGER": ("no such column",),
+    "CREATE INDEX":   ("no such column", "already exists"),
+    "CREATE TABLE":   ("already exists",),
+    "CREATE TRIGGER": ("no such column", "already exists"),
+    "CREATE VIEW":    ("already exists",),
 }
 
 
@@ -297,8 +307,18 @@ def _apply_sql(conn: sqlite3.Connection, sql: str, file_label: str) -> tuple[int
             # keyword matches a known-safe pattern AND the error text is on
             # that pattern's tolerated list. The leading-token detection
             # collapses whitespace so multi-line CREATE statements still
-            # match.
-            leading = " ".join(stmt.strip().split()[:2]).upper()
+            # match. Comment/blank prefix lines are skipped — the splitter
+            # attaches inline header comments to the following statement
+            # (e.g. `-- CHECK constraint triggers\nCREATE TRIGGER ...`),
+            # so naively taking the first two tokens yields `-- CHECK`
+            # instead of `CREATE TRIGGER`.
+            leading = ""
+            for ln in stmt.splitlines():
+                stripped = ln.strip()
+                if not stripped or stripped.startswith("--"):
+                    continue
+                leading = " ".join(stripped.split()[:2]).upper()
+                break
             kind_tolerated = _PER_KIND_TOLERATED_FRAGMENTS.get(leading, ())
             if any(frag in msg for frag in kind_tolerated):
                 skipped.append(

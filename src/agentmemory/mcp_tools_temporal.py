@@ -1314,4 +1314,13 @@ TOOLS: list[Tool] = [
     ),
 ]
 
-DISPATCH: dict = {tool.name: _handle for tool in TOOLS}
+# One lambda per tool so the dispatcher in mcp_server.call_tool — which
+# invokes dispatch[name](agent_id=..., **arguments) — hits a signature
+# compatible with _handle(name, args: dict). Before 2.4.8 every entry
+# pointed at the bare _handle, which raised TypeError on `agent_id=`
+# for every temporal tool call. Regression test lives in
+# tests/test_mcp_tools_temporal_dispatch.py.
+DISPATCH: dict = {
+    tool.name: (lambda _n=tool.name: (lambda agent_id=None, **kw: _handle(_n, kw)))()
+    for tool in TOOLS
+}

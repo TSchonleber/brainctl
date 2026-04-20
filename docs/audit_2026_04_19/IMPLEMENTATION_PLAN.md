@@ -1,0 +1,1 @@
+/Users/r4vager/Documents/Agent Memory/_shared-brain/plans/plan-20260420-042301-brainctl-2-4-7-audit-fixes-52ac03/PLAN.md

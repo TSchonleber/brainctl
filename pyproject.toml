@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainctl"
-version = "2.4.7"
+version = "2.4.8"
 description = "Context engineering for AI agents — persistent memory, knowledge graph, affect tracking, and MCP server. Single SQLite file, zero LLM cost."
 readme = "README.md"
 license = {text = "MIT"}

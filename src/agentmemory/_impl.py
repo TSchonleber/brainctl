@@ -8290,7 +8290,11 @@ def _graph_pagerank(db, damping=0.85, max_iter=50, tol=1e-6, force=False):
             "SELECT value, updated_at FROM agent_state WHERE agent_id='graph-weaver' AND key='graph_pagerank'"
         ).fetchone()
         if row:
-            age_hours = (datetime.now() - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
+            # updated_at is produced by _now_ts() → Z-suffixed ISO string
+            # which fromisoformat() parses to an AWARE datetime on Py3.11+.
+            # datetime.now() is naive → subtraction raises TypeError on the
+            # second call. Always compare aware/aware in UTC.
+            age_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
             if age_hours < 24:
                 raw = _json.loads(row["value"])
                 return {(parts[0], int(parts[1])): v
@@ -8362,7 +8366,8 @@ def _graph_communities(db, seed=42, max_iter=30, force=False):
             "SELECT value, updated_at FROM agent_state WHERE agent_id='graph-weaver' AND key='graph_communities'"
         ).fetchone()
         if row:
-            age_hours = (datetime.now() - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
+            # See _graph_pagerank above for the aware/naive rationale.
+            age_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
             if age_hours < 24:
                 raw = _json.loads(row["value"])
                 return {(parts[0], int(parts[1])): v
@@ -8431,7 +8436,8 @@ def _graph_betweenness(db, normalized=True, force=False):
             "SELECT value, updated_at FROM agent_state WHERE agent_id='graph-weaver' AND key='graph_betweenness'"
         ).fetchone()
         if row:
-            age_hours = (datetime.now() - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
+            # See _graph_pagerank above for the aware/naive rationale.
+            age_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(row["updated_at"])).total_seconds() / 3600
             if age_hours < 48:
                 raw = _json.loads(row["value"])
                 return {(parts[0], int(parts[1])): v
