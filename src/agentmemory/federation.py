@@ -27,6 +27,20 @@ def _sanitize_fts_query(query: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _escape_like(term: str) -> str:
+    """Escape SQLite LIKE wildcard metacharacters.
+
+    LIKE treats ``%`` and ``_`` as metacharacters, and any literal ``\\``
+    has to be escaped before them. Before 2.4.9 the federated LIKE
+    fallbacks fed user input straight into the pattern, so a query like
+    ``api_key`` matched ``apikey`` / ``api-key`` / anything with the
+    same prefix as the bare `_` matched any single char. Audit I16.
+
+    Paired with ``ESCAPE '\\'`` on the LIKE clause.
+    """
+    return (term or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _open_ro(path: str) -> sqlite3.Connection | None:
     """Open a SQLite DB read-only. Returns None on error."""
     try:
@@ -183,19 +197,20 @@ def federated_memory_search(
                 except sqlite3.OperationalError as exc:
                     logger.warning("federation: FTS error in %s: %s", path, exc)
             elif _has_table(conn, "memories"):
-                # Fallback: LIKE search
-                pattern = f"%{query}%"
+                # Fallback: LIKE search (see _escape_like docstring for the
+                # wildcard-escaping rationale)
+                pattern = f"%{_escape_like(query)}%"
                 if category:
                     rows = conn.execute(
                         "SELECT id, content, category, confidence, created_at, agent_id "
-                        "FROM memories WHERE content LIKE ? AND category = ? "
+                        "FROM memories WHERE content LIKE ? ESCAPE '\\' AND category = ? "
                         "AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
                         (pattern, category, limit),
                     ).fetchall()
                 else:
                     rows = conn.execute(
                         "SELECT id, content, category, confidence, created_at, agent_id "
-                        "FROM memories WHERE content LIKE ? "
+                        "FROM memories WHERE content LIKE ? ESCAPE '\\' "
                         "AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
                         (pattern, limit),
                     ).fetchall()
@@ -244,18 +259,18 @@ def federated_entity_search(
         try:
             if not _has_table(conn, "entities"):
                 continue
-            pattern = f"%{name}%"
+            pattern = f"%{_escape_like(name)}%"
             if entity_type:
                 rows = conn.execute(
                     "SELECT id, name, entity_type, observations, created_at, agent_id "
-                    "FROM entities WHERE name LIKE ? AND entity_type = ? "
+                    "FROM entities WHERE name LIKE ? ESCAPE '\\' AND entity_type = ? "
                     "AND retired_at IS NULL ORDER BY created_at DESC",
                     (pattern, entity_type),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT id, name, entity_type, observations, created_at, agent_id "
-                    "FROM entities WHERE name LIKE ? "
+                    "FROM entities WHERE name LIKE ? ESCAPE '\\' "
                     "AND retired_at IS NULL ORDER BY created_at DESC",
                     (pattern,),
                 ).fetchall()
@@ -332,7 +347,7 @@ def federated_search(
                             q_args,
                         ).fetchall()
                     else:
-                        pattern = f"%{query}%"
+                        pattern = f"%{_escape_like(query)}%"
                         q_args = [pattern]
                         agent_clause = " AND agent_id = ?" if agent_id else ""
                         if agent_id:
@@ -340,7 +355,7 @@ def federated_search(
                         q_args.append(limit)
                         rows = conn.execute(
                             f"SELECT id, content, category, confidence, created_at, agent_id "
-                            f"FROM memories WHERE content LIKE ?{agent_clause} "
+                            f"FROM memories WHERE content LIKE ? ESCAPE '\\'{agent_clause} "
                             f"AND retired_at IS NULL ORDER BY created_at DESC LIMIT ?",
                             q_args,
                         ).fetchall()
@@ -370,7 +385,7 @@ def federated_search(
                             q_args,
                         ).fetchall()
                     else:
-                        pattern = f"%{query}%"
+                        pattern = f"%{_escape_like(query)}%"
                         q_args = [pattern]
                         agent_clause = " AND agent_id = ?" if agent_id else ""
                         if agent_id:
@@ -379,7 +394,7 @@ def federated_search(
                         rows = conn.execute(
                             f"SELECT id, summary, event_type, project, importance, "
                             f"created_at, agent_id FROM events "
-                            f"WHERE summary LIKE ?{agent_clause} "
+                            f"WHERE summary LIKE ? ESCAPE '\\'{agent_clause} "
                             f"ORDER BY created_at DESC LIMIT ?",
                             q_args,
                         ).fetchall()
@@ -391,7 +406,7 @@ def federated_search(
             # --- entities ---
             if "entities" in tables and _has_table(conn, "entities"):
                 try:
-                    pattern = f"%{query}%"
+                    pattern = f"%{_escape_like(query)}%"
                     q_args = [pattern, pattern]
                     agent_clause = " AND agent_id = ?" if agent_id else ""
                     if agent_id:
@@ -400,7 +415,7 @@ def federated_search(
                     rows = conn.execute(
                         f"SELECT id, name, entity_type, observations, created_at, agent_id "
                         f"FROM entities "
-                        f"WHERE (name LIKE ? OR observations LIKE ?){agent_clause} "
+                        f"WHERE (name LIKE ? ESCAPE '\\' OR observations LIKE ? ESCAPE '\\'){agent_clause} "
                         f"AND retired_at IS NULL "
                         f"ORDER BY created_at DESC LIMIT ?",
                         q_args,

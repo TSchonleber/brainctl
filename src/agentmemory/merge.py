@@ -577,6 +577,17 @@ def merge(
         raise FileNotFoundError(f"Source DB not found: {source_path}")
     if not Path(target_path).exists():
         raise FileNotFoundError(f"Target DB not found: {target_path}")
+    # Guard self-merge explicitly. Before 2.4.9 the ATTACH DATABASE call
+    # would succeed, then BEGIN IMMEDIATE on the target would fail with
+    # "database is locked" (same file is already being written from the
+    # main connection). That error message is unhelpful for the user's
+    # real problem — they pointed source and target at the same file.
+    # Audit I17.
+    if Path(source_path).resolve() == Path(target_path).resolve():
+        raise ValueError(
+            f"Cannot merge a database with itself: source and target "
+            f"resolve to the same path ({Path(source_path).resolve()})."
+        )
 
     tables_to_merge = tables if tables is not None else list(_DEFAULT_TABLES)
 

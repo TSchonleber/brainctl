@@ -454,11 +454,14 @@ def handle_reflexion_retire(arguments: dict) -> dict:
 
 def handle_outcome_annotate(arguments: dict) -> dict:
     try:
-        import sys
-        sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-        from outcome_eval import annotate_task_retrieval
+        from agentmemory.lib.outcome_eval import annotate_task_retrieval
     except ImportError:
-        return {"ok": False, "error": "outcome_eval module not available"}
+        try:
+            import sys
+            sys.path.insert(0, str(Path.home() / "bin" / "lib"))
+            from outcome_eval import annotate_task_retrieval
+        except ImportError:
+            return {"ok": False, "error": "outcome_eval module not available"}
 
     task_id = arguments.get("task_id")
     if not task_id:
@@ -477,11 +480,17 @@ def handle_outcome_annotate(arguments: dict) -> dict:
 
 def handle_outcome_report(arguments: dict) -> dict:
     try:
-        import sys
-        sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-        from outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k, run_calibration_pass
+        from agentmemory.lib.outcome_eval import (
+            compute_memory_lift, compute_brier_score,
+            compute_precision_at_k, run_calibration_pass,
+        )
     except ImportError:
-        return {"ok": False, "error": "outcome_eval module not available"}
+        try:
+            import sys
+            sys.path.insert(0, str(Path.home() / "bin" / "lib"))
+            from outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k, run_calibration_pass
+        except ImportError:
+            return {"ok": False, "error": "outcome_eval module not available"}
 
     agent_id = arguments.get("agent_id") or os.environ.get("AGENT_ID", "unknown")
     period_raw = arguments.get("period")

@@ -6815,12 +6815,19 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
                 if len(fts_list) >= 3:
                     try:
                         third_score = float(fts_list[2].get("fts_rank") or 0.0)
+                        # Entry condition means top is ≥ 1.5× the BM25
+                        # strength of third (ranks are negative in SQLite
+                        # FTS5; more negative = stronger). Passing the
+                        # filter IS the relative-strong verdict. Before
+                        # 2.4.9, a second comparison inside the block
+                        # reassigned rel_strong to the OPPOSITE relation
+                        # (`top_score * 0.67 > third_score`) which is
+                        # always False in the space the entry filter just
+                        # carved out — the whole relative-anchor gate was
+                        # dead. See docs/audit_2026_04_19/02_retrieval.md
+                        # F-01.
                         if top_score < -0.2 and third_score > top_score * 0.67:
-                            # top_score more negative than third * 1.5 means
-                            # top is ≥ 1.5× the BM25 strength of third.
-                            # Equivalently: third < top * (2/3) when both
-                            # are negative.
-                            rel_strong = top_score * 0.67 > third_score
+                            rel_strong = True
                     except (TypeError, ValueError):
                         pass
                 _fts_strong_anchor = abs_strong or rel_strong
@@ -6882,7 +6889,12 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         if hybrid:
             merged = _rrf_fuse(fts_list, vec_list)
         else:
+            # Before 2.4.9, when the memories bucket tripped the
+            # `_fts_strong_anchor` gate and flipped `hybrid = False`,
+            # events and context silently fell back to FTS-only without
+            # a debug marker — operators couldn't see the cascade.
             merged = [r | {"rrf_score": 0.0, "source": "keyword"} for r in fts_list]
+            _debug_skips.setdefault("events.vec_skipped", "fts_strong_anchor_cascade_from_memories")
         trimmed = _apply_recency_and_trim(
             merged,
             lambda r: ("project:" + r["project"]) if r.get("project") else "global",
@@ -6900,7 +6912,9 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         if hybrid:
             merged = _rrf_fuse(fts_list, vec_list)
         else:
+            # See the matching note in the events block above.
             merged = [r | {"rrf_score": 0.0, "source": "keyword"} for r in fts_list]
+            _debug_skips.setdefault("context.vec_skipped", "fts_strong_anchor_cascade_from_memories")
         trimmed = _apply_recency_and_trim(
             merged,
             lambda r: ("project:" + r["project"]) if r.get("project") else "global",
@@ -7004,7 +7018,14 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
                 top_items = results.get(tbl_key, [])[:3]
                 if top_items:
                     already = {r["id"] for r in results.get(tbl_key, [])}
-                    extra = _graph_expand(db, top_items, tbl_key.rstrip("s") if tbl_key != "memories" else "memories", already)
+                    # _graph_expand queries knowledge_edges where
+                    # source_table / target_table are the plural canonical
+                    # names ('memories', 'events', 'context'). Before 2.4.9
+                    # this used `tbl_key.rstrip("s")` which yielded "event"
+                    # for "events" (edge rows store "events") — matching
+                    # zero rows and silently disabling graph expansion on
+                    # the events bucket. Pass `tbl_key` directly.
+                    extra = _graph_expand(db, top_items, tbl_key, already)
                     results.get(tbl_key, []).extend(extra)
 
     if db_vec:
@@ -9105,6 +9126,7 @@ def cmd_doctor(args):
             ))
 
     # Verdict
+    healthy = len(issues) == 0
     if not getattr(args, "json", False):
         if issues:
             print(fail(f"\n  {len(issues)} issue(s) found:"))
@@ -9114,9 +9136,15 @@ def cmd_doctor(args):
             print(ok("\n  All checks passed."))
 
     if getattr(args, "json", False):
+        # Before 2.4.9, "ok" was hardcoded True regardless of how many
+        # issues we found — a caller piping `brainctl doctor --json` into
+        # an automation that branched on `.ok` always saw success. Tie
+        # "ok" to the actual verdict and exit non-zero on problems so
+        # shell-level `$?` checks behave the way a "doctor" command is
+        # expected to. "healthy" is kept as an alias for back-compat.
         json_out({
-            "ok": True,
-            "healthy": len(issues) == 0,
+            "ok": healthy,
+            "healthy": healthy,
             "issues": issues,
             "db_path": str(DB_PATH),
             "db_size_mb": db_size,
@@ -9125,6 +9153,10 @@ def cmd_doctor(args):
             "wallet": wallet_status,
             "solana_rpc": rpc_status,
         })
+
+    # Non-zero exit when issues are present regardless of output mode.
+    if not healthy:
+        sys.exit(1)
 
 
 def cmd_profile_list(args):
@@ -13616,7 +13648,10 @@ def cmd_push(args):
     push_id = _uuid_mod.uuid4().hex[:12]
     # More aggressive sanitize for push: strip colons, commas, plus signs that confuse FTS5
     _raw_fts = _sanitize_fts_query(task_desc)
-    fts_query = re.sub(r'[,:+<>]', ' ', _raw_fts).strip()
+    _raw_fts = re.sub(r'[,:+<>]', ' ', _raw_fts).strip()
+    # Apply the same OR-expression expansion cmd_search uses so multi-word
+    # task descriptions aren't interpreted as implicit-AND (audit I14).
+    fts_query = _build_fts_match_expression(_raw_fts)
 
     # ---- score memories via hybrid RRF (same pipeline as cmd_search) ----
     db_vec = _try_get_db_with_vec()
@@ -15414,7 +15449,11 @@ def cmd_whosknows(args):
 
 def _reason_l1_search(db, query: str, limit: int = 10):
     """L1 associative retrieval — hybrid BM25+vec RRF over memories and events."""
-    fts_query = _sanitize_fts_query(query)
+    # Mirror cmd_search: build an OR expression over meaningful tokens so
+    # multi-word natural-language queries don't fall back to FTS5's
+    # implicit-AND (which would demand every token appear in the same row).
+    # Before 2.4.9 this callsite only sanitized — audit I14.
+    fts_query = _build_fts_match_expression(_sanitize_fts_query(query))
     db_vec = _try_get_db_with_vec()
     q_blob = _embed_query_safe(query) if db_vec else None
     hybrid = db_vec is not None and q_blob is not None

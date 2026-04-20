@@ -632,7 +632,19 @@ class Brain:
             search_q = query or project
             if search_q:
                 try:
-                    fts_q = _safe_fts(search_q)
+                    # Use the same canonical expression cmd_search does
+                    # (sanitize → stopword-filter → OR join) so orient
+                    # and search agree on candidate set for the same
+                    # query string. Audit I15 — previously used the
+                    # legacy `_safe_fts()` which kept stopwords and
+                    # joined every token with OR.
+                    from agentmemory._impl import (
+                        _sanitize_fts_query,
+                        _build_fts_match_expression,
+                    )
+                    fts_q = _build_fts_match_expression(
+                        _sanitize_fts_query(search_q)
+                    )
                     if fts_q:
                         mrows = db.execute(
                             "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
@@ -976,7 +988,20 @@ class Brain:
                     result.get("affect_label"),
                     result.get("cluster"),
                     result.get("functional_state"),
-                    result.get("safety_flag"),
+                    # classify_affect returns `safety_flags` (plural list of
+                    # {pattern, severity, description} dicts). Before 2.4.9
+                    # this read `safety_flag` (singular) and silently got
+                    # None every row — affect_log.safety_flag has been NULL
+                    # for every write since the column shipped, and the
+                    # idx_affect_safety sparse index never had anything to
+                    # point at. Serialize the list as JSON so the column
+                    # preserves all pattern matches when any fire; NULL
+                    # when none do, to keep the sparse index honest.
+                    (
+                        json.dumps(result["safety_flags"])
+                        if result.get("safety_flags")
+                        else None
+                    ),
                     text,
                     source,
                     now,

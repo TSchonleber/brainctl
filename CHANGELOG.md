@@ -5,6 +5,85 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.9] — 2026-04-20 — *Audit follow-up: retrieval correctness, scoring parity, MCP hygiene*
+
+Second slice of the 2026-04-19 audit fix wave. Ships the remaining HIGHs
+plus six MEDIUMs covering scoring parity, retrieval-pipeline dead code,
+federation input safety, and MCP-layer hygiene.
+
+### Fixed — scoring parity
+
+- **`_surprise_score_mcp` was a stale duplicate** that missed the 2.2.3
+  neutral-fallback fix; the MCP write path — the dominant one in
+  practice — still returned `(1.0, "fts5_no_matches")` where
+  `_impl._surprise_score` returned `(0.5, "fts5_no_matches_neutral")`.
+  Deleted the copy and imported the canonical scorer. Regression test
+  at `tests/test_mcp_surprise_score_parity.py` locks the parity.
+- **`affect_log.safety_flag` was NULL on every row** because
+  `brain.affect_log` read the wrong key from the classifier
+  (`safety_flag` singular) when `classify_affect` returns
+  `safety_flags` (plural list of pattern dicts). Now serializes the
+  list as JSON when any pattern fires; NULL otherwise — keeps the
+  `idx_affect_safety` sparse index honest.
+
+### Fixed — retrieval correctness
+
+- **The FTS-confidence relative-anchor gate was dead code.** Entry
+  condition already established the relative-strong verdict, but the
+  block immediately reassigned `rel_strong` to the opposite relation.
+  Only absolute-threshold detection was running.
+- **`graph_traversal` intent produced zero-row expansion on `events`**
+  because the caller did `tbl_key.rstrip("s")` before passing to
+  `_graph_expand`, which queries `knowledge_edges` with plural table
+  names. Now passes the canonical name directly.
+- **Events/context silently cascaded into FTS-only** when the memories
+  bucket tripped the `_fts_strong_anchor` gate. Added matching
+  `_debug_skips` entries so operators can see the cascade.
+- **`_reason_l1_search`, `cmd_push`, and `Brain.orient()`** now build
+  the same `_build_fts_match_expression(sanitize(...))` OR expression
+  `cmd_search` uses, instead of bare sanitize. Multi-word queries no
+  longer fall into FTS5 implicit-AND semantics at those callsites.
+
+### Fixed — CLI / diagnostics
+
+- **`brainctl doctor` hardcoded `"ok": True` and exited 0 regardless
+  of health.** JSON output now reflects the actual verdict
+  (`ok == healthy`), and the process exits 1 when any issue is
+  present — shell `$?`-based automation now works correctly.
+- **Plugin env-var mismatch between `BRAINCTL_DB` and `BRAIN_DB`.**
+  `paths.get_db_path()` now honors `BRAINCTL_DB` as the go-forward
+  canonical name (matches the `BRAINCTL_HOME` / `_BLOBS_DIR` /
+  `_BACKUPS_DIR` family) while keeping `BRAIN_DB` working as a
+  deprecated alias. `BRAINCTL_DB` wins when both are set.
+
+### Fixed — federation / merge / MCP shape
+
+- **Federation LIKE fallbacks didn't escape `%` / `_`** in the four
+  LIKE query sites across `federated_memory_search`,
+  `federated_entity_search`, and `federated_search`. Introduced
+  `_escape_like` + `ESCAPE '\\'` on every LIKE clause so `api_key`
+  matches literally, not `apikey` or `api-key`.
+- **Self-merge surfaced as `"database is locked"`.** Added an
+  explicit `source == target` guard (resolved to absolute path) that
+  raises a clear `ValueError` before `ATTACH DATABASE` runs.
+- **MCP error shape normalized** across `mcp_server` and
+  `mcp_tools_knowledge`: every error return now carries
+  `{"ok": False, "error": ...}` instead of a bare `{"error": ...}`.
+  Clients that branch on `ok` no longer need per-tool special-cases.
+
+### Fixed — packaging
+
+- **Three MCP tools depended on `~/bin/lib/` drop-ins**
+  (`belief_revision`, `outcome_eval`, `quantum_retrieval`) — they were
+  unreachable on PyPI installs. Moved all three in-tree under
+  `agentmemory.lib.*`; imports prefer the in-tree copy and fall back
+  to the legacy path for users on the old layout.
+
+### Testing
+
+`1866 passed, 28 skipped, 2 xfailed` locally (3 new tests vs 2.4.8
+for the surprise-score parity regression).
+
 ## [2.4.8] — 2026-04-20 — *Audit hotfix: fresh-install migrate + MCP dispatch*
 
 Closes the two CRITICAL findings from the 2026-04-19 audit

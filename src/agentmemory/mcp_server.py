@@ -27,6 +27,9 @@ from typing import Any
 
 from agentmemory.lib.mcp_helpers import now_iso, safe_fts
 from agentmemory.paths import get_db_path
+# Import the canonical surprise scorer from _impl.py — see bug-fix note
+# below at the former _surprise_score_mcp callsite.
+from agentmemory._impl import _surprise_score
 logger = logging.getLogger(__name__)
 from mcp.server import Server
 
@@ -144,13 +147,20 @@ def _builtin_classify_intent(query):
                                  'Standard search results',
                                  ['memories', 'events', 'context'])
 
-# Quantum amplitude scorer (optional re-ranking)
+# Quantum amplitude scorer (optional re-ranking).
+# Ships in-tree as of 2.4.9 under agentmemory.lib.quantum_retrieval so
+# PyPI installs work without the legacy ~/bin/lib drop. Fall through to
+# the old site-path for users running an old install layout; audit I19.
 try:
-    sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-    from quantum_retrieval import quantum_rerank as _quantum_rerank
+    from agentmemory.lib.quantum_retrieval import quantum_rerank as _quantum_rerank
     _QUANTUM_AVAILABLE = True
 except Exception:
-    _QUANTUM_AVAILABLE = False
+    try:
+        sys.path.insert(0, str(Path.home() / "bin" / "lib"))
+        from quantum_retrieval import quantum_rerank as _quantum_rerank
+        _QUANTUM_AVAILABLE = True
+    except Exception:
+        _QUANTUM_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Constants (same as brainctl)
@@ -384,83 +394,15 @@ def _compute_pii_mcp(db, memory_id: int) -> float:
     return min(1.0, max(0.0, bayesian_strength * recall_weight * temporal_weight))
 
 
-def _surprise_score_mcp(db, content: str, blob=None):
-    """Compute surprise score for a candidate memory (MCP path).
-
-    Returns (surprise: float, method: str) where surprise in [0, 1].
-    1.0 = maximally novel, 0.0 = exact duplicate.
-    """
-    # Method 1: Cosine similarity via embeddings
-    if blob:
-        try:
-            db_vec = _get_vec_db()
-            if db_vec:
-                try:
-                    rows = db_vec.execute(
-                        "SELECT rowid FROM vec_memories WHERE embedding MATCH ? AND k=?",
-                        (blob, 5)
-                    ).fetchall()
-                    if rows:
-                        cand_n = len(blob) // 4
-                        cand_vec = list(struct.unpack(f"{cand_n}f", blob[:cand_n * 4]))
-                        max_sim = 0.0
-                        for row in rows:
-                            e = db_vec.execute(
-                                "SELECT vector FROM embeddings WHERE source_table='memories' AND source_id=?",
-                                (row[0] if isinstance(row, tuple) else row["rowid"],)
-                            ).fetchone()
-                            if e:
-                                v_bytes = bytes(e[0] if isinstance(e, tuple) else e["vector"])
-                                n2 = len(v_bytes) // 4
-                                v2 = list(struct.unpack(f"{n2}f", v_bytes[:n2 * 4]))
-                                dot = sum(a * b for a, b in zip(cand_vec, v2))
-                                import math as _sm
-                                na = _sm.sqrt(sum(x * x for x in cand_vec))
-                                nb = _sm.sqrt(sum(x * x for x in v2))
-                                if na > 0 and nb > 0:
-                                    sim = max(-1.0, min(1.0, dot / (na * nb)))
-                                    max_sim = max(max_sim, sim)
-                        return round(max(0.0, min(1.0, 1.0 - max_sim)), 4), "cosine"
-                    else:
-                        return 1.0, "cosine_no_neighbors"
-                finally:
-                    db_vec.close()
-        except Exception:
-            pass
-
-    # Method 2: FTS5 word overlap
-    try:
-        words = set(content.lower().split())
-        if not words:
-            return 1.0, "empty"
-        query_words = list(words)[:20]
-        fts_query = _safe_fts(" ".join(query_words))
-        if not fts_query:
-            return 1.0, "fts5_no_query"
-        rows = db.execute(
-            "SELECT content FROM memories WHERE retired_at IS NULL AND content LIKE ? LIMIT 5",
-            (f"%{' '.join(query_words[:5])}%",)
-        ).fetchall()
-        if not rows:
-            return 1.0, "fts5_no_matches"
-        max_overlap = 0.0
-        for row in rows:
-            existing_words = set(row["content"].lower().split())
-            if not existing_words:
-                continue
-            intersection = words & existing_words
-            union = words | existing_words
-            overlap = len(intersection) / len(union) if union else 0.0
-            max_overlap = max(max_overlap, overlap)
-        if max_overlap > 0.9:
-            surprise = 0.1 + (1.0 - max_overlap) * 2.0
-        elif max_overlap < 0.1:
-            surprise = 0.9 + (0.1 - max_overlap)
-        else:
-            surprise = 1.0 - max_overlap
-        return round(max(0.0, min(1.0, surprise)), 4), "fts5"
-    except Exception:
-        return 0.7, "fts5_error"
+# _surprise_score_mcp removed in 2.4.9 — it was a stale copy of
+# _impl._surprise_score from the era before the 2.2.3 neutral-fallback
+# fix. The 2026-04-18 audit's H5 finding patched _impl.py but left this
+# MCP-path duplicate returning (1.0, "fts5_no_matches") / (1.0, "cosine_no_neighbors")
+# instead of (0.5, "fts5_no_matches_neutral") / the vec-fallback chain.
+# The MCP path is the dominant write path in practice, so the fix has
+# real effect on W(m) gate calibration. We now import the canonical
+# scorer directly from _impl.py so future scoring changes land everywhere.
+# Regression test lives in tests/test_mcp_surprise_score_parity.py.
 
 
 # Source trust weights for the W(m) gate multiplier (issue #24).
@@ -507,7 +449,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     # _embed_safe already catches network errors and returns None.
     blob = _embed_safe(content)
     try:
-        surprise, surprise_method = _surprise_score_mcp(db, content, blob=blob)
+        surprise, surprise_method = _surprise_score(db, content, blob=blob)
     except Exception:
         surprise, surprise_method = 0.7, "error"
 
@@ -2060,16 +2002,16 @@ def tool_belief_collapse(
             evaluate_coherence, is_superposed, check_and_collapse_on_time,
         )
     except ImportError as e:
-        return {"error": f"collapse_mechanics import failed: {e}"}
+        return {"ok": False, "error": f"collapse_mechanics import failed: {e}"}
 
     if action == "collapse":
         if not belief_id:
-            return {"error": "belief_id required for collapse action"}
+            return {"ok": False, "error": "belief_id required for collapse action"}
         if not trigger_type:
-            return {"error": "trigger_type required for collapse action"}
+            return {"ok": False, "error": "trigger_type required for collapse action"}
         valid_triggers = ("task_checkout", "direct_query", "evidence_threshold", "time_decoherence")
         if trigger_type not in valid_triggers:
-            return {"error": f"Unknown trigger_type: {trigger_type}. Use: {', '.join(valid_triggers)}"}
+            return {"ok": False, "error": f"Unknown trigger_type: {trigger_type}. Use: {', '.join(valid_triggers)}"}
         collapsed = force_collapse(
             db_path=None,
             agent_id=agent_id,
@@ -2088,7 +2030,7 @@ def tool_belief_collapse(
 
     elif action == "check":
         if not belief_id:
-            return {"error": "belief_id required for check action"}
+            return {"ok": False, "error": "belief_id required for check action"}
         coherence = evaluate_coherence(belief_id)
         superposed = is_superposed(belief_id)
         auto_collapsed = None
@@ -2102,7 +2044,7 @@ def tool_belief_collapse(
             "auto_collapsed": auto_collapsed,
         }
 
-    return {"error": f"Unknown action: {action}. Use: collapse, log, stats, check"}
+    return {"ok": False, "error": f"Unknown action: {action}. Use: collapse, log, stats, check"}
 
 
 def tool_access_log_annotate(
@@ -2111,18 +2053,22 @@ def tool_access_log_annotate(
     outcome: str,
 ) -> dict:
     """Annotate access_log rows for a completed task with its outcome."""
-    import sys as _sys
-    from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path.home() / "bin" / "lib"))
+    # Prefer the in-tree copy (2.4.9+); fall back to legacy ~/bin/lib.
     try:
-        from outcome_eval import annotate_task_retrieval
-    except ImportError as e:
-        return {"error": f"outcome_eval import failed: {e}"}
+        from agentmemory.lib.outcome_eval import annotate_task_retrieval
+    except ImportError:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _sys.path.insert(0, str(_Path.home() / "bin" / "lib"))
+        try:
+            from outcome_eval import annotate_task_retrieval
+        except ImportError as e:
+            return {"ok": False, "error": f"outcome_eval import failed: {e}"}
     try:
         n = annotate_task_retrieval(task_id=task_id, agent_id=agent_id, outcome=outcome)
         return {"ok": True, "task_id": task_id, "outcome": outcome, "agent_id": agent_id, "rows_annotated": n}
     except ValueError as e:
-        return {"error": str(e)}
+        return {"ok": False, "error": str(e)}
 
 
 def tool_resolve_conflict(
@@ -2135,17 +2081,25 @@ def tool_resolve_conflict(
     threshold: float = 0.05,
 ) -> dict:
     """AGM credibility-weighted belief conflict resolution."""
-    import sys as _sys
-    from pathlib import Path as _Path
-    _sys.path.insert(0, str(_Path.home() / "bin" / "lib"))
+    # Prefer the in-tree copy (2.4.9+); fall back to legacy ~/bin/lib.
     try:
-        from belief_revision import (
+        from agentmemory.lib.belief_revision import (
             resolve_conflict as _resolve,
             list_conflicts as _list_fn,
             auto_resolve as _auto,
         )
-    except ImportError as e:
-        return {"error": f"belief_revision import failed: {e}"}
+    except ImportError:
+        import sys as _sys
+        from pathlib import Path as _Path
+        _sys.path.insert(0, str(_Path.home() / "bin" / "lib"))
+        try:
+            from belief_revision import (
+                resolve_conflict as _resolve,
+                list_conflicts as _list_fn,
+                auto_resolve as _auto,
+            )
+        except ImportError as e:
+            return {"ok": False, "error": f"belief_revision import failed: {e}"}
 
     db_path = str(DB_PATH)
 
@@ -2169,7 +2123,7 @@ def tool_resolve_conflict(
         }
 
     if conflict_id is None:
-        return {"error": "Provide conflict_id, list_conflicts=true, or auto=true"}
+        return {"ok": False, "error": "Provide conflict_id, list_conflicts=true, or auto=true"}
 
     return _resolve(
         conflict_id=conflict_id,

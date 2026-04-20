@@ -387,7 +387,7 @@ def _report_entity_json(conn: sqlite3.Connection, name: str, limit: int) -> dict
         (f"%{name}%",),
     ).fetchone()
     if not row:
-        return {"error": f"Entity '{name}' not found"}
+        return {"ok": False, "error": f"Entity '{name}' not found"}
 
     ent = dict(row)
     obs: list = []

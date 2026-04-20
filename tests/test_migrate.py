@@ -699,7 +699,13 @@ class TestDoctorMigrationsCheck:
                             lambda *a, **k: sqlite3.connect(fresh_db))
 
         args = argparse.Namespace(json=True)
-        _impl.cmd_doctor(args)
+        # 2.4.9 (audit I9): doctor now sys.exit(1)s on any issues. A
+        # virgin-tracker fixture surfaces one. Handle both paths so the
+        # JSON payload assertion is the real subject of the test.
+        try:
+            _impl.cmd_doctor(args)
+        except SystemExit:
+            pass
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "migrations" in data
@@ -725,7 +731,12 @@ class TestDoctorMigrationsCheck:
                             lambda *a, **k: sqlite3.connect(str(db)))
 
         args = argparse.Namespace(json=True)
-        _impl.cmd_doctor(args)
+        # See note in test_doctor_json_includes_migrations_section —
+        # SystemExit is expected now that doctor reflects health in $?.
+        try:
+            _impl.cmd_doctor(args)
+        except SystemExit:
+            pass
         out = capsys.readouterr().out
         data = json.loads(out)
         # init_schema.sql has the cumulative effects, so virgin tracker +
