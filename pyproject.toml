@@ -94,7 +94,7 @@ competitor-bench = [
     "mem0ai==2.0.0",
     "letta-client==1.10.3",
     "zep-cloud==3.20.0",
-    "cognee==1.0.0",
+    "cognee==1.0.1",
 ]
 # Core benchmark harness deps — `python -m tests.bench.run --check-strict`
 # reads per-bench tolerance YAMLs via PyYAML. The gate module falls back
