@@ -1,25 +1,20 @@
 """HTTP transport tests for brainctl-mcp-http.
 
-Exercises the Starlette app built by :func:`agentmemory.mcp_http.create_app`
-against an in-process ``httpx.AsyncClient`` — no real network binding,
-no real cross-encoder, no real stdio server. We stub the allowlisted
-tool's handler so we can assert dispatch reached the existing MCP app
-without duplicating its surface here.
+Uses Starlette's ``TestClient`` (which wraps ``httpx`` but is
+synchronous and drives the ASGI lifespan itself) so the test matrix
+doesn't depend on ``pytest-asyncio``, ``httpx``, or ``asgi-lifespan``
+being installed beyond the base ``[mcp]`` extra.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
-import pytest_asyncio
-from asgi_lifespan import LifespanManager  # type: ignore[import-not-found]
-from starlette.applications import Starlette
+from starlette.testclient import TestClient
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
@@ -42,20 +37,11 @@ def _make_config(allowed: tuple[str, ...] = ("memory_search",)) -> HTTPConfig:
     )
 
 
-@pytest_asyncio.fixture
-async def http_app() -> AsyncIterator[Starlette]:
-    """Starlette app with the MCP bridge brought up via lifespan."""
+@pytest.fixture
+def client() -> Any:
+    """Starlette TestClient with the HTTP app lifespan managed."""
     app = create_app(_make_config())
-    async with LifespanManager(app):
-        yield app
-
-
-@pytest_asyncio.fixture
-async def client(http_app: Starlette) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app=http_app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
-    ) as c:
+    with TestClient(app) as c:
         yield c
 
 
@@ -102,9 +88,8 @@ def test_config_parses_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_health_ok_without_auth(client: httpx.AsyncClient) -> None:
-    r = await client.get("/health")
+def test_health_ok_without_auth(client: TestClient) -> None:
+    r = client.get("/health")
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
@@ -114,9 +99,8 @@ async def test_health_ok_without_auth(client: httpx.AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_missing_auth_returns_401(client: httpx.AsyncClient) -> None:
-    r = await client.post(
+def test_missing_auth_returns_401(client: TestClient) -> None:
+    r = client.post(
         "/mcp",
         headers={
             "Content-Type": "application/json",
@@ -127,10 +111,9 @@ async def test_missing_auth_returns_401(client: httpx.AsyncClient) -> None:
     assert r.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_wrong_auth_returns_401(client: httpx.AsyncClient) -> None:
+def test_wrong_auth_returns_401(client: TestClient) -> None:
     headers = _auth() | {"Authorization": "Bearer wrong-token"}
-    r = await client.post(
+    r = client.post(
         "/mcp",
         headers=headers,
         content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
@@ -143,17 +126,13 @@ async def test_wrong_auth_returns_401(client: httpx.AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_tools_list_is_filtered_to_allowlist(
-    client: httpx.AsyncClient,
-) -> None:
-    r = await client.post(
+def test_tools_list_is_filtered_to_allowlist(client: TestClient) -> None:
+    r = client.post(
         "/mcp",
         headers=_auth(),
         content=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
     )
     assert r.status_code == 200, r.text
-    # Streamable HTTP with json_response=True returns application/json.
     payload = r.json()
     tools = payload.get("result", {}).get("tools", [])
     names = {t["name"] for t in tools}
@@ -167,17 +146,14 @@ async def test_tools_list_is_filtered_to_allowlist(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_tools_call_non_allowlisted_rejected(
-    client: httpx.AsyncClient,
-) -> None:
+def test_tools_call_non_allowlisted_rejected(client: TestClient) -> None:
     body = {
         "jsonrpc": "2.0",
         "id": 7,
         "method": "tools/call",
         "params": {"name": "stats", "arguments": {}},
     }
-    r = await client.post("/mcp", headers=_auth(), content=json.dumps(body))
+    r = client.post("/mcp", headers=_auth(), content=json.dumps(body))
     assert r.status_code == 200
     payload = r.json()
     assert payload["id"] == 7
@@ -185,15 +161,13 @@ async def test_tools_call_non_allowlisted_rejected(
     assert "stats" in payload["error"]["message"]
 
 
-@pytest.mark.asyncio
-async def test_tools_call_allowlisted_dispatches(
-    client: httpx.AsyncClient,
+def test_tools_call_allowlisted_dispatches(
+    client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With an allowlisted tool, the HTTP bridge forwards to the existing
-    MCP dispatcher. We don't call into real SQLite — we patch the
-    in-mcp_server ``tool_memory_search`` so the request succeeds
-    deterministically."""
+    MCP dispatcher. We patch the in-mcp_server ``tool_memory_search`` so
+    the request succeeds deterministically."""
     import agentmemory.mcp_server as server
 
     fake_result = {
@@ -213,13 +187,11 @@ async def test_tools_call_allowlisted_dispatches(
         "method": "tools/call",
         "params": {"name": "memory_search", "arguments": {"query": "x"}},
     }
-    r = await client.post("/mcp", headers=_auth(), content=json.dumps(body))
+    r = client.post("/mcp", headers=_auth(), content=json.dumps(body))
     assert r.status_code == 200, r.text
     payload = r.json()
     assert payload["id"] == 42
     assert "error" not in payload, payload
-    # The MCP dispatcher wraps tool returns in a CallToolResult with
-    # content entries — the first entry's text is the JSON we returned.
     content = payload["result"]["content"]
     assert content, payload
     assert content[0]["type"] == "text"
@@ -232,20 +204,14 @@ async def test_tools_call_allowlisted_dispatches(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_malformed_json_returns_parse_error(
-    client: httpx.AsyncClient,
-) -> None:
-    r = await client.post("/mcp", headers=_auth(), content=b"{not json")
+def test_malformed_json_returns_parse_error(client: TestClient) -> None:
+    r = client.post("/mcp", headers=_auth(), content=b"{not json")
     assert r.status_code == 200
     payload = r.json()
     assert payload["error"]["code"] == -32700
 
 
-@pytest.mark.asyncio
-async def test_body_over_one_mib_returns_413(
-    client: httpx.AsyncClient,
-) -> None:
+def test_body_over_one_mib_returns_413(client: TestClient) -> None:
     oversize = b"x" * (mcp_http._BODY_CAP_BYTES + 1)
-    r = await client.post("/mcp", headers=_auth(), content=oversize)
+    r = client.post("/mcp", headers=_auth(), content=oversize)
     assert r.status_code == 413
