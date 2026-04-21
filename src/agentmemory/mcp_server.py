@@ -809,6 +809,21 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     if memory_type and memory_type not in ("episodic", "semantic"):
         return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
 
+    # Cross-agent borrow restricts the SQL to `scope='global'` (line ~846).
+    # Combining that with an explicit non-global scope produces an
+    # impossibly-False predicate and silent 0 results. Surface the misuse
+    # loudly instead of pretending we searched. Audit I35.
+    if borrow_from and scope and scope != "global":
+        return {
+            "ok": False,
+            "error": (
+                "borrow_from only searches the other agent's global-scope "
+                "memories. Drop the explicit scope= argument (or pass "
+                "scope='global') if you meant that; otherwise remove "
+                "borrow_from."
+            ),
+        }
+
     # Profile: resolve task-scoped constraints; explicit args win over profile defaults
     _profile_categories = None
     if profile:

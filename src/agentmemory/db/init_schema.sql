@@ -6,6 +6,14 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 
+-- Legacy tracking table. Ten migration files still write to this singular
+-- form (`INSERT INTO schema_version ...`) for historical reasons. The
+-- runner in src/agentmemory/migrate.py uses a separate `schema_versions`
+-- (plural) table created lazily via `_ensure_schema_versions()`, which
+-- is the authoritative "has this migration been applied?" source. The
+-- singular table is preserved so legacy migration statements don't error
+-- on fresh installs; nothing reads it. Audit I27 — kept as-is per the
+-- "migrations are append-only" convention in CLAUDE.md.
 CREATE TABLE schema_version (
     version INTEGER NOT NULL,
     applied_at TEXT NOT NULL DEFAULT (datetime('now')),

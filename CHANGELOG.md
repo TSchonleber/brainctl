@@ -5,6 +5,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.11] — 2026-04-21 — *Audit follow-up: schema symlink + scope guard + docs*
+
+Fourth slice of the 2026-04-19 audit fix wave. Closes the remaining
+quick-wins; the real 2.5.0 work (CE warmup off the latency deque,
+top-heavy rollout MCP tool, competitor bench rerun) is still queued.
+
+### Fixed
+
+- **`db/init_schema.sql` at the repo root is now a symlink** to the
+  packaged canonical at `src/agentmemory/db/init_schema.sql`. Before
+  2.4.11 the root copy drifted 566+ lines behind the packaged schema
+  because release builds regenerated only one. A symlink makes drift
+  structurally impossible while keeping every existing reference path
+  (tests, docs, dev checkout discovery in `cmd_init`) working.
+- **`tool_memory_search` validates `borrow_from` against `scope`.**
+  Cross-agent borrow restricts the SQL to `scope='global'` internally;
+  combining it with an explicit non-global scope produced an
+  impossibly-False predicate and silent 0 results before 2.4.11. Now
+  returns a clear error naming the incompatibility.
+- **`CLAUDE.md` corrected to describe the actual migration layout:**
+  49 numbered migrations + one unnumbered V2-4 quantum-schema file
+  occupying the gap at 050. The quantum file doesn't match the
+  runner's `^\d+_.+\.sql$` pattern and must be applied manually on
+  fresh installs that want the quantum columns (audit I28).
+
+### Changed — hygiene
+
+- Added a comment block above the legacy `schema_version` (singular)
+  table in `init_schema.sql` explaining why it coexists with the
+  runner's `schema_versions` (plural) tracker — 10 migration files
+  write to the singular form and the "append-only" convention means
+  we keep the compatibility rather than rewrite them (audit I27).
+
+### Testing
+
+`1876 passed, 28 skipped, 2 xfailed` locally. Two new regression tests
+at `tests/test_audit_2_4_11_regressions.py` lock the symlink structure
+and the borrow_from scope guard.
+
 ## [2.4.10] — 2026-04-20 — *Audit follow-up: structural cleanup + datetime gate*
 
 Third slice of the 2026-04-19 audit fix wave. Focuses on long-tail

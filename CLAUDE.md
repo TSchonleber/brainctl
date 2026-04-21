@@ -3,10 +3,10 @@
 ## What This Is
 Unified agent memory system. SQLite-backed (brain.db) with FTS5, vector embeddings (sqlite-vec + Ollama nomic-embed-text), knowledge graph, affect tracking, belief collapse mechanics, and AGM conflict resolution.
 
-Published as `brainctl` on PyPI (v2.2.1+, current 2.4.3).
+Published as `brainctl` on PyPI (v2.2.1+, current 2.4.10).
 
 ## Key Paths
-- **DB:** `db/brain.db` (WAL mode, foreign keys ON, 59 user-facing tables, 50 migrations)
+- **DB:** `db/brain.db` (WAL mode, foreign keys ON, 59 user-facing tables, 49 numbered migrations + one unnumbered V2-4 quantum-schema file). The numbered sequence has an intentional gap at 050 — the V2-4 quantum schema (`db/migrations/quantum_schema_migration_sqlite.sql`) occupies that slot without a number because it was applied ad-hoc during the V2-4 rollout and pre-dates the idempotent runner fix in 2.4.8. The runner only picks up files matching `^\d+_.+\.sql$` so the quantum file is a no-op for `brainctl migrate` on fresh installs — apply manually if you need the quantum columns on a new DB. (Audit I28 — 2026-04-19.)
 - **CLI:** `bin/brainctl` — main CLI entry
 - **MCP server:** canonical entry is `agentmemory.mcp_server:run` (201 tools across `mcp_server.py` + 29 `mcp_tools_*.py` modules). Installed as the `brainctl-mcp` console script via pip. The legacy standalone `bin/brainctl-mcp` only registers a subset and is being phased out.
 - **Bench:** `bin/brainctl-bench` — retrieval eval harness (P@k / MRR / nDCG@k regression gate, fixtures under `tests/bench/`)

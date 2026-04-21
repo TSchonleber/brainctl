@@ -9,7 +9,7 @@ Quick start:
     brain.search("preferences")
 """
 
-__version__ = "2.4.10"
+__version__ = "2.4.11"
 
 from agentmemory.brain import Brain
 
