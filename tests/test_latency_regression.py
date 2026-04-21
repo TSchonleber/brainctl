@@ -93,25 +93,56 @@ SUB_MS_BUDGET_MS = 1.0
 # exhibit much tighter variance and ARE gated.
 GATED_SCALES = (100, 1_000)
 
-# Ops excluded from the cross-platform ratio gate. These measure wall-clock
-# of a subprocess (brainctl CLI launched via `python -m`), and per-op cost
-# is dominated by Python interpreter startup + module import + dylib load,
-# all of which differ 50-100% between macOS and ubuntu-latest on GitHub
-# Actions. Observed on CI: cli_search_cold@100 darwin 137ms vs ubuntu 261ms,
-# cli_search_cold@1000 149ms vs 262ms — none of those deltas are real
-# regressions, they're platform-dependent Python cold-start. Library-level
-# ops (brain_search_*, brain_remember_*, vec_*) stay gated because they
-# don't carry subprocess startup in their timing.
+# Ops excluded from the cross-platform ratio gate. Two categories fall in
+# here for structurally different reasons:
 #
-# To catch real CLI regressions, run the bench on a machine whose platform
-# matches the baseline's platform (see `baseline["platform"]`) and use
-# `brainctl perf --full` manually; the CI gate is intentionally narrower.
+#  (a) Subprocess-bound: wall-clock is dominated by Python interpreter
+#      startup + module import + dylib load, all of which differ 50–100%
+#      between macOS and ubuntu-latest on GitHub Actions. Observed:
+#      cli_search_cold@100 darwin 137ms vs ubuntu 261ms — not a
+#      regression, just platform-dependent Python cold-start.
+#
+#  (b) Ollama-dependent: the bench harness runs embeddings when
+#      `_VEC_AVAILABLE` / Ollama is reachable, and floors to a no-op
+#      when it isn't. The two branches are WAY apart (~0.5ms floor vs
+#      ~100ms round-trip), and — critically — "Ollama unreachable"
+#      fails differently by platform: darwin returns ECONNREFUSED on
+#      `localhost:11434` in <1ms, linux CI sitters at a DNS / TCP
+#      handshake timeout for ~100ms. So comparing a darwin baseline's
+#      fast floor against a linux timeout-floor flags "regressions"
+#      that are purely environmental.
+#
+#      The right fix for these is a platform-matched baseline, but
+#      until CI grows a workflow_dispatch that captures one on
+#      ubuntu-latest, the cross-platform skip is the less-wrong
+#      option — we'd rather not gate than gate on noise.
+#
+# Library ops that don't touch embeddings (brain_search_fts, vec_*, etc.)
+# stay gated cross-platform because their timing is dominated by sqlite3
+# + FTS5 which behave consistently across macOS / ubuntu.
+#
+# To catch real regressions on the exempt ops, run the bench on a
+# platform-matched machine and use `brainctl perf --full`; the CI gate
+# is intentionally narrower.
+#
+# Name preserved (SUBPROCESS_BOUND_OPS) for backwards compatibility with
+# existing contributors who grep for it. New membership sits alongside
+# the original five so the diff is auditable.
 SUBPROCESS_BOUND_OPS = frozenset({
+    # (a) subprocess-bound — original set
     "cli_search_cold",
     "cli_search_warm",
     "cli_remember_cold",
     "cli_remember_warm",
     "cli_stats",
+    # (b) Ollama-dependent — added 2026-04-21 after v2.5.0 main CI
+    # surfaced 3000%+ "regressions" on these ops, all traced to the
+    # darwin / linux embedding-floor divergence.
+    "brain_remember_full",
+    "brain_remember_construct_only",
+    "brain_search_hybrid",
+    "brain_entity",
+    "mcp_memory_search",
 })
 
 
