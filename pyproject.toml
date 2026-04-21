@@ -25,7 +25,16 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.27.0"]
+# The `mcp` extra pulls the core Python MCP SDK plus the HTTP-transport
+# deps (Starlette + uvicorn + structured-logger). Adding them to the
+# existing extra rather than a new one keeps `pip install 'brainctl[mcp]'`
+# the canonical install for every MCP-adjacent use case (stdio and HTTP).
+mcp = [
+    "mcp>=1.27.0",
+    "starlette>=0.37",
+    "uvicorn[standard]>=0.30",
+    "python-json-logger>=2.0",
+]
 # Vector index extra. Pulls sqlite-vec for ANN over `vec_memories`.
 # brainctl uses Ollama (NOT a Python embedding lib) to generate the
 # vectors — so the only extra Python dep here is the sqlite extension
@@ -121,6 +130,10 @@ all = [
 [project.scripts]
 brainctl = "agentmemory.cli:main"
 brainctl-mcp = "agentmemory.mcp_server:run"
+# Streamable HTTP transport — sibling of brainctl-mcp. Stdio path is
+# unchanged; this exposes the same tool surface over HTTP with bearer
+# token + allowlist for remote clients like xAI Grok and Strand.
+brainctl-mcp-http = "agentmemory.mcp_http:main"
 brainctl-consolidate = "agentmemory.hippocampus:main"
 
 [project.urls]
