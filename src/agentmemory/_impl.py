@@ -138,7 +138,24 @@ try:
     _CE_P95_MIN_SAMPLES = int(os.environ.get("BRAINCTL_CE_P95_MIN_SAMPLES", "8"))
 except (TypeError, ValueError):
     _CE_P95_MIN_SAMPLES = 8
+# Warmup / cold-start burn-in. Loading a fresh cross-encoder model
+# (e.g. bge-reranker-v2-m3) takes on the order of 15–40s before the first
+# forward pass returns. Before 2.5.0 that first sample went straight into
+# _CE_LATENCY_SAMPLES_MS and poisoned the rolling p95 for the full 64-call
+# deque rotation — CE would be silently skipped for the next minute+ of
+# queries under the strict latency fallback at the call site below. We now
+# exclude the first N samples from the rolling p95 window so the model-load
+# cost stays off the hot-path guardrail. The warmup latency IS still
+# reported via _debug_skips so operators can see what it cost.
+try:
+    _CE_WARMUP_SAMPLES = int(os.environ.get("BRAINCTL_CE_WARMUP_SAMPLES", "1"))
+except (TypeError, ValueError):
+    _CE_WARMUP_SAMPLES = 1
 _CE_LATENCY_SAMPLES_MS = deque(maxlen=max(8, _CE_LATENCY_WINDOW))
+# Mutable single-slot counter so the module-level guard survives across
+# cmd_search invocations without re-initializing the deque. Reset by tests
+# via `_CE_WARMUP_SEEN[0] = 0`.
+_CE_WARMUP_SEEN = [0]
 
 # FTS5 special characters that cause sqlite3.OperationalError when unescaped.
 # Strip them before passing any user query to a MATCH clause.
@@ -6714,12 +6731,27 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
                             text_key=ce_text_key,
                         )
                         ce_ms = max(0.0, ce_secs * 1000.0)
-                        _CE_LATENCY_SAMPLES_MS.append(ce_ms)
+                        # Skip the first _CE_WARMUP_SAMPLES calls when
+                        # feeding the rolling p95 window — model load
+                        # dominates those samples and would poison p95
+                        # for the full deque rotation. Warmup latency is
+                        # still surfaced via _debug_skips below so it's
+                        # observable, just not policy-enforcing.
+                        is_warmup = _CE_WARMUP_SEEN[0] < _CE_WARMUP_SAMPLES
+                        if is_warmup:
+                            _CE_WARMUP_SEEN[0] += 1
+                            _debug_skips[f"{bucket}.cross_encoder_warmup_ms"] = round(ce_ms, 3)
+                        else:
+                            _CE_LATENCY_SAMPLES_MS.append(ce_ms)
                         post_p95 = _p95_ms(_CE_LATENCY_SAMPLES_MS)
 
                         # Strict fallback behavior: if the current call OR rolling
                         # p95 breaches budget, keep original order for this bucket.
-                        if ce_ms > ce_budget_ms or (
+                        # Warmup calls don't enforce the per-call limit either —
+                        # the model-load cost is a fixed one-time hit and
+                        # skipping CE because of it punishes every subsequent
+                        # query until the warmup sample rotates out.
+                        if (not is_warmup and ce_ms > ce_budget_ms) or (
                             len(_CE_LATENCY_SAMPLES_MS) >= _CE_P95_MIN_SAMPLES
                             and post_p95 > ce_budget_ms
                         ):

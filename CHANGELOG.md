@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.12] — 2026-04-21 — *Audit follow-up: CE warmup burn-in (kills recurring latency-gate flake)*
+
+Fifth slice of the 2026-04-19 audit fix wave. Single-focus release
+closing I23 — the CE cold-start issue that caused the recurring
+`latency-gate` flake in CI.
+
+### Fixed
+
+- **Cross-encoder warmup no longer poisons the rolling p95 latency
+  window.** The first `_ce_rerank_timed` call includes model loading
+  (typically 15–40s for `bge-reranker-v2-m3`). Before 2.4.12 that
+  first sample went straight into `_CE_LATENCY_SAMPLES_MS` and stayed
+  there for the full 64-call deque rotation — the strict latency
+  fallback at the call site then silently skipped CE for the next
+  minute+ of queries without a clear operator signal beyond the
+  missing `cross_encoder_applied` trace. Now the first
+  `_CE_WARMUP_SAMPLES` calls (default 1; env `BRAINCTL_CE_WARMUP_SAMPLES`
+  to override) are tracked separately, excluded from the p95 window,
+  and surfaced as `cross_encoder_warmup_ms` in `_debug_skips` so the
+  cost is still observable. This is what was causing the recurring
+  `latency-gate` flake in CI over the prior release chain.
+
+### Testing
+
+`1878 passed, 28 skipped, 2 xfailed` locally. Two new regression
+tests at `tests/test_ce_warmup_burn_in.py` lock the warmup-exclusion
+behavior and the `BRAINCTL_CE_WARMUP_SAMPLES=0` opt-out path.
+
 ## [2.4.11] — 2026-04-21 — *Audit follow-up: schema symlink + scope guard + docs*
 
 Fourth slice of the 2026-04-19 audit fix wave. Closes the remaining
