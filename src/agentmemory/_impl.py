@@ -6203,9 +6203,17 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     else:
         _intent_result = _builtin_classify_intent(query)
         tables = _intent_result.tables
-    # For decision_lookup intent, ensure decisions table is searched
-    if _intent_result and _intent_result.intent == "decision_lookup" and "decisions" not in results:
-        tables = list(set(tables) | {"memories", "events", "context"})
+    # For decision_lookup intent, ensure decisions table is searched.
+    # Before 2.5.0 this guard checked `"decisions" not in results` — but
+    # `results` is always initialized with a "decisions" key (see the dict
+    # literal near the top of cmd_search), so the `if` body never ran AND
+    # the body itself didn't even add "decisions" to `tables`. Audit I25.
+    if (
+        _intent_result
+        and _intent_result.intent == "decision_lookup"
+        and "decisions" not in tables
+    ):
+        tables = list(set(tables) | {"memories", "events", "context", "decisions"})
     base_fetch = limit * 5 if not no_recency else limit * 3
     fetch_limit = max(limit, round(base_fetch * _nm_breadth))
     # Build an OR-expanded FTS5 MATCH expression so natural-language queries
@@ -8585,7 +8593,11 @@ def cmd_backup(args):
     # Also export to SQL for iCloud-safe backup
     sql_path = BACKUPS_DIR / f"brain_{ts}.sql"
     import subprocess
-    subprocess.run(["sqlite3", str(DB_PATH), ".dump"], stdout=open(str(sql_path), "w"), check=True)
+    # stdout=open(...) without a context manager leaks the fd if the
+    # subprocess raises (audit I30). Use `with` so the file is closed
+    # on CalledProcessError / KeyboardInterrupt / any other exit path.
+    with open(str(sql_path), "w") as _out:
+        subprocess.run(["sqlite3", str(DB_PATH), ".dump"], stdout=_out, check=True)
 
     # Prune old backups (keep last 30)
     backups = sorted(BACKUPS_DIR.glob("brain_*.db"), reverse=True)

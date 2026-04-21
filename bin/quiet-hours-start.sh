@@ -4,4 +4,7 @@
 # Saves prior state so quiet-hours-end.sh can restore exactly
 
 set -euo pipefail
+# Resolve relative to this script so cron (which sets CWD=$HOME)
+# finds the companion .py file. Audit I32.
+cd "$(dirname "$0")"
 exec python3 quiet-hours-start.py

@@ -539,7 +539,14 @@ def _lint(fix: bool = False) -> dict:
                 })
                 if fix:
                     from datetime import timedelta
-                    cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
+                    # datetime.utcnow() is deprecated in Py3.12+ and the
+                    # naive isoformat() output sorts inconsistently against
+                    # Z-suffixed strings stored in access_log.created_at —
+                    # the DELETE cutoff was always lexicographically earlier
+                    # than real rows, under-deleting old log entries.
+                    cutoff = (
+                        datetime.now(timezone.utc) - timedelta(days=30)
+                    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
                     cursor = db.execute("DELETE FROM access_log WHERE created_at < ?", (cutoff,))
                     db.commit()
                     fixed += cursor.rowcount
@@ -610,15 +617,19 @@ def _backup(dest_path: str | None = None) -> dict:
 
         shutil.copy2(str(DB_PATH), str(backup_path))
 
-        # Also export to SQL for safer backup
+        # Also export to SQL for safer backup. The previous
+        # `stdout=open(...)` without a context manager leaked the fd on
+        # any subprocess exception (audit I30) — use `with` so the file
+        # closes on every exit path.
         sql_path = backup_path.with_suffix(".sql")
         try:
-            subprocess.run(
-                ["sqlite3", str(DB_PATH), ".dump"],
-                stdout=open(str(sql_path), "w"),
-                check=True,
-                timeout=60,
-            )
+            with open(str(sql_path), "w") as _out:
+                subprocess.run(
+                    ["sqlite3", str(DB_PATH), ".dump"],
+                    stdout=_out,
+                    check=True,
+                    timeout=60,
+                )
             sql_str = str(sql_path)
         except Exception:
             sql_str = None

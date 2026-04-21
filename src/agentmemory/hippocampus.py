@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -3822,7 +3822,12 @@ def reflexion_propagation_pass(
         "skipped_already_propagated": 0,
     }
 
-    now = datetime.utcnow().isoformat()
+    # datetime.utcnow() is deprecated in Py3.12+ and produces a naive UTC
+    # datetime whose isoformat() output has no timezone marker — which
+    # sorts BEFORE any Z-suffixed string with the same digits
+    # lexicographically. Use the canonical Z-suffixed helper so this
+    # timestamp compares cleanly against other rows in the DB.
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     for row in rows:
         row = dict(row)

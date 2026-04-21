@@ -1059,7 +1059,12 @@ def tool_event_add(agent_id: str, summary: str, event_type: str, detail: str = N
         try:
             now_dt = datetime.fromisoformat(now_ts)
         except Exception:
-            now_dt = datetime.utcnow()
+            # Previously datetime.utcnow() — deprecated in Py3.12+ and
+            # produces a naive datetime, which would TypeError when
+            # subtracted from an aware datetime parsed out of `now_ts`
+            # in the happy path. Keep aware UTC here so both branches
+            # feed the arithmetic below the same way.
+            now_dt = datetime.now(timezone.utc)
         window_start = (now_dt - timedelta(hours=_LABILE_RESCUE_WINDOW_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
         labile_until = (now_dt + timedelta(hours=_LABILE_DURATION_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
         # SELECT candidate memories rather than bulk-UPDATE, so we can filter

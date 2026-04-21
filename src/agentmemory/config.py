@@ -5,9 +5,12 @@ Config file location: ~/.brainctl/config.toml (or $BRAINCTL_CONFIG).
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import tomllib  # Python 3.11+
@@ -79,8 +82,24 @@ def load() -> dict[str, Any]:
                     config[section].update(values)
                 else:
                     config[section] = values
-        except Exception:
-            pass  # malformed config — fall back to defaults
+        except tomllib.TOMLDecodeError as exc:
+            # Malformed TOML — fall back to defaults silently so the CLI
+            # still boots. The user sees defaults every time they run any
+            # brainctl command and will notice the missing overrides.
+            logger.warning(
+                "brainctl: config at %s is not valid TOML, using defaults: %s",
+                cfg_file, exc,
+            )
+        except OSError as exc:
+            # Permission/IO problems were silenced by a bare
+            # `except Exception: pass` before 2.5.0 (audit I29). Surface
+            # via logging but still fall back to defaults so the CLI
+            # boots — a permission-denied config shouldn't brick every
+            # command.
+            logger.warning(
+                "brainctl: cannot read config at %s, using defaults: %s",
+                cfg_file, exc,
+            )
 
     # Apply environment variable overrides
     _apply_env(config)

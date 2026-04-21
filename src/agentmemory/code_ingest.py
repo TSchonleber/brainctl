@@ -136,6 +136,26 @@ class Extraction:
     nodes: List[Node] = field(default_factory=list)
     edges: List[Edge] = field(default_factory=list)
 
+    def add_node_if_new(self, node: "Node") -> bool:
+        """Append ``node`` iff no existing node shares its name.
+
+        Returns True when a node was added, False when deduplicated.
+        Maintains an internal O(1) lookup set so repeated calls stay
+        O(1) instead of the O(n²) per-iteration set-comprehension
+        pattern we replaced in 2.5.0 (audit I26). Callers that append
+        directly to ``.nodes`` bypass dedup — use this helper for any
+        path where duplicates matter (e.g. import targets).
+        """
+        names = getattr(self, "_node_names", None)
+        if names is None:
+            names = {nd.name for nd in self.nodes}
+            self._node_names = names
+        if node.name in names:
+            return False
+        self.nodes.append(node)
+        names.add(node.name)
+        return True
+
 
 @dataclass
 class IngestStats:
@@ -405,9 +425,8 @@ def _emit_python_import(n, src: bytes, file_nm: str, ex: Extraction) -> None:
 
     for modname in mod_names:
         tgt = f"module:{modname}"
-        if tgt not in {nd.name for nd in ex.nodes}:
-            ex.nodes.append(Node(kind="module", name=tgt, label=modname,
-                                 source_file="<external>", language="python"))
+        ex.add_node_if_new(Node(kind="module", name=tgt, label=modname,
+                                source_file="<external>", language="python"))
         ex.edges.append(Edge(file_nm, tgt, "imports", WEIGHT_INFERRED))
 
 
@@ -473,10 +492,9 @@ def extract_typescript(path: Path, src: bytes, relpath: str) -> Extraction:
             if src_node is not None:
                 raw = _node_text(src_node, src).strip("\"'`")
                 tgt = f"module:{raw}"
-                if tgt not in {nd.name for nd in ex.nodes}:
-                    ex.nodes.append(Node(kind="module", name=tgt, label=raw,
-                                         source_file="<external>",
-                                         language="typescript"))
+                ex.add_node_if_new(Node(kind="module", name=tgt, label=raw,
+                                        source_file="<external>",
+                                        language="typescript"))
                 ex.edges.append(Edge(file_nm, tgt, "imports", WEIGHT_INFERRED))
             return
         for c in n.named_children:
@@ -583,9 +601,8 @@ def _emit_go_import_spec(spec, src: bytes, file_nm: str, ex: Extraction) -> None
         return
     raw = _node_text(path_node, src).strip("\"`")
     tgt = f"module:{raw}"
-    if tgt not in {nd.name for nd in ex.nodes}:
-        ex.nodes.append(Node(kind="module", name=tgt, label=raw,
-                             source_file="<external>", language="go"))
+    ex.add_node_if_new(Node(kind="module", name=tgt, label=raw,
+                            source_file="<external>", language="go"))
     ex.edges.append(Edge(file_nm, tgt, "imports", WEIGHT_INFERRED))
 
 

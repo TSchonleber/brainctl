@@ -65,7 +65,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -271,22 +270,14 @@ def _clear_model_cache() -> None:
 # = 48 bits = ~10^14 distinct values, plenty for 1000-entry cache and
 # negligible collision risk. Full hash would just bloat the cache key.
 
-@lru_cache(maxsize=1000)
-def _cached_score(model_name: str, query_h: str, cand_h: str) -> Optional[float]:
-    """Internal cache shim. Always returns None (cache-miss sentinel)
-    on the first call; the populating logic happens in score_pairs.
+# _cached_score used to exist here as an @lru_cache(maxsize=1000) shim
+# whose docstring claimed score_pairs "writes hits via its inner
+# closure". It didn't — the function had no callers and always
+# returned None regardless. The real score cache is the manual
+# _score_cache dict below. Dead code removed in 2.5.0 (audit I24).
 
-    This function exists purely so functools.lru_cache gives us a
-    stable per-process cache. score_pairs writes hits via its inner
-    closure (see below).
-    """
-    return None
-
-
-# We can't easily set lru_cache entries from outside, so we use a
-# manual dict layered with explicit eviction matching the LRU bound.
-# This keeps the API simple (str keys) and lets tests inspect the
-# cache directly.
+# The explicit dict layered with an eviction list keeps the API
+# simple (str keys) and lets tests inspect the cache directly.
 _score_cache: "Dict[Tuple[str, str, str], float]" = {}
 _score_cache_order: "List[Tuple[str, str, str]]" = []
 _SCORE_CACHE_MAX = 1000

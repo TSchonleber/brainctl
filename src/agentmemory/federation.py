@@ -227,7 +227,18 @@ def federated_memory_search(
 
     # Sort merged results by created_at descending
     results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return {"ok": True, "results": results[:limit], "total_results": len(results)}
+    # total_results counts the pre-slice match pool across all federated
+    # DBs; the returned `results` array is truncated to `limit`. The two
+    # numbers can diverge when matches > limit, which confused callers
+    # branching on `total_results == len(results)` before 2.5.0. Audit
+    # I31 — return `returned_count` alongside so the intent is explicit.
+    sliced = results[:limit]
+    return {
+        "ok": True,
+        "results": sliced,
+        "total_results": len(results),
+        "returned_count": len(sliced),
+    }
 
 
 def federated_entity_search(
@@ -433,9 +444,13 @@ def federated_search(
 
     # Sort merged results by created_at descending
     results.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    sliced = results[:limit]
+    # See federated_memory_search for the total_results vs
+    # returned_count rationale (audit I31).
     return {
         "ok": True,
-        "results": results[:limit],
+        "results": sliced,
         "db_count": db_count,
         "total_results": len(results),
+        "returned_count": len(sliced),
     }

@@ -5,6 +5,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.4.10] — 2026-04-20 — *Audit follow-up: structural cleanup + datetime gate*
+
+Third slice of the 2026-04-19 audit fix wave. Focuses on long-tail
+correctness + hygiene; the larger 2.5.0 items (root `init_schema.sql`
+sync, CE warmup off the latency deque, top-heavy MCP exposure, competitor
+bench rerun) are still outstanding and will land in a coordinated 2.5.0
+release.
+
+### Fixed
+
+- **`datetime.utcnow()` removed everywhere it was being called.** Three
+  sites in `hippocampus.py`, `mcp_server.py`, `mcp_tools_health.py`
+  switched to `datetime.now(timezone.utc)`. The `mcp_tools_health` cutoff
+  for `access_log` pruning was also producing naive ISO strings that
+  sorted incorrectly against Z-suffixed `created_at` rows — under-deletes
+  fixed.
+- **`decision_lookup` intent now actually queries the `decisions`
+  table.** The pre-2.5.0 guard checked `"decisions" not in results`
+  (`results` is pre-initialized with that key — guard always False), and
+  the body's set union didn't include `"decisions"` either. Two-bug fix
+  on a single line. Source-locked by regression test.
+- **`config.load()` no longer silently swallows permission errors.**
+  Bare `except Exception: pass` replaced with `tomllib.TOMLDecodeError`
+  + `OSError` branches that log a warning then fall back to defaults.
+  CLI still boots when `config.toml` is unreadable; the user sees the
+  reason in stderr instead of stale defaults.
+- **`federated_memory_search` / `federated_search` now expose
+  `returned_count`** alongside `total_results` so callers can branch on
+  the slice without inferring from `len(results)`. `total_results`
+  semantics unchanged (full pre-slice match pool).
+
+### Changed — performance + hygiene
+
+- `code_ingest.Extraction.add_node_if_new()` replaces three O(n²)
+  set-comprehension dedup sites in the python / typescript / go
+  extractors. Indistinguishable on small trees, real difference on a
+  100-file ingest.
+- `_cached_score` lru_cache shim removed from `rerank.py` — it had no
+  callers and always returned `None`. Real cache (`_score_cache`
+  dict + eviction list) untouched.
+- Subprocess `stdout=open(...)` replaced with `with open(...)` at the
+  two backup sites (`_impl.py`, `mcp_tools_health.py`) so the fd
+  closes on every exit path, not just success.
+- `bin/quiet-hours-{start,end}.sh` cd into the script dir before
+  invoking the python sibling so cron (which sets CWD=$HOME) finds
+  the file.
+
+### CI
+
+- New `tests/test_datetime_hygiene.py` regex-asserts no `datetime.utcnow()`
+  calls remain anywhere in `src/agentmemory/`. The earlier draft of this
+  gate also tracked bare `datetime.now()` against an allowlist; that
+  half was dropped because line-numbered allowlists drift on every PR
+  that touches a long file. Naked-`now()` cleanup will follow as part
+  of the coordinated local→UTC timestamp migration.
+
+### Testing
+
+`1874 passed, 28 skipped, 2 xfailed` locally. Three new regression
+tests at `tests/test_audit_2_5_0_regressions.py` lock I25, I29, I31.
+
 ## [2.4.9] — 2026-04-20 — *Audit follow-up: retrieval correctness, scoring parity, MCP hygiene*
 
 Second slice of the 2026-04-19 audit fix wave. Ships the remaining HIGHs
