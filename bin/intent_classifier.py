@@ -42,16 +42,16 @@ class IntentResult:
 # Each entry is (primary_tables, secondary_tables).
 # The final merged list fed to --tables is primary + secondary (de-duped).
 _TABLE_ROUTES = {
-    "cross_reference":    ["events", "memories", "context"],
-    "troubleshooting":    ["events", "memories", "context"],
+    "cross_reference":    ["events", "memories", "context", "procedures"],
+    "troubleshooting":    ["procedures", "events", "memories", "context", "decisions"],
     "task_status":        ["events", "context", "memories"],
-    "entity_lookup":      ["memories", "context", "events"],   # entities not in universal search pipeline
-    "historical_timeline":["events", "context", "memories"],
-    "how_to":             ["memories", "context"],
-    "decision_rationale": ["memories", "context", "events"],
-    "research_concept":   ["memories", "context"],
-    "orientation":        ["memories", "events", "context"],
-    "factual_lookup":     ["memories", "context", "events"],   # same as default
+    "entity_lookup":      ["memories", "entities", "context", "events", "procedures"],
+    "historical_timeline":["events", "memories", "context", "procedures"],
+    "how_to":             ["procedures", "memories", "context", "events", "decisions"],
+    "decision_rationale": ["decisions", "memories", "context", "events", "procedures"],
+    "research_concept":   ["memories", "procedures", "context"],
+    "orientation":        ["memories", "events", "context", "procedures"],
+    "factual_lookup":     ["memories", "entities", "decisions", "context", "events", "procedures"],
 }
 
 _FORMAT_HINTS = {
@@ -81,6 +81,17 @@ _PROPER_NOUN_ALONE_RE = re.compile(r'^[A-Z][A-Za-z]{2,}(\s+[A-Z&][A-Za-z&/]*)*(\
 _WAVE_RE = re.compile(r'\bwave\s*\d+\b', re.IGNORECASE)
 _HOW_RE = re.compile(r'\bhow\s+(to|do|does|can|should)\b', re.IGNORECASE)
 _WHY_RE = re.compile(r'\bwhy\b', re.IGNORECASE)
+_PROCEDURAL_RE = re.compile(r'\b(runbook|playbook|rollback|roll back|procedure|workflow|steps?|migrate|deployment?|troubleshoot|debug)\b', re.IGNORECASE)
+_ENTITY_FACT_RE = re.compile(
+    r'\b('
+    r'who(?:\s+is|\s+owns?)?|'
+    r'what\s+does|'
+    r'owner|maintainer|reviewer|assignee|'
+    r'prefers?|preference|'
+    r'role|responsible'
+    r')\b',
+    re.IGNORECASE,
+)
 # First-person/identity statement (Hermes memory dumps stored as queries)
 _IDENTITY_STMT_RE = re.compile(
     r'^(I |My |The vault|Chief wakes|Continuity is|Tasks that|Learn the|'
@@ -157,12 +168,12 @@ def classify_intent(query: str) -> IntentResult:
         )
 
     # ---- Rule 4: How-to ----
-    if _HOW_RE.search(q):
+    if _HOW_RE.search(q) or _PROCEDURAL_RE.search(q):
         return IntentResult(
             intent="how_to",
             confidence=0.88,
             tables=_TABLE_ROUTES["how_to"],
-            matched_rule="how_to_regex",
+            matched_rule="how_to_regex" if _HOW_RE.search(q) else "procedural_kw_regex",
             format_hint=_FORMAT_HINTS["how_to"],
         )
 
@@ -264,14 +275,14 @@ def classify_intent(query: str) -> IntentResult:
     # Note: 'agent', 'assigned' here can be intentionally claimed earlier by
     # Rule 2 (troubleshooting) or Rule 3 (task_status); that's the richer
     # external taxonomy winning over the builtin's broader bucket.
-    _ENTITY_KW = ["who ", "person", "agent", "team", "assigned"]
+    _ENTITY_KW = ["who ", "person", "agent", "team", "assigned", "owner", "maintainer", "reviewer", "preference", "prefer"]
     hit = _kw(ql, _ENTITY_KW)
-    if hit:
+    if hit or _ENTITY_FACT_RE.search(q):
         return IntentResult(
             intent="entity_lookup",
             confidence=0.80,
             tables=_TABLE_ROUTES["entity_lookup"],
-            matched_rule=f"entity_kw:{hit.strip()}",
+            matched_rule=f"entity_kw:{(hit or 'entity_fact_regex').strip()}",
             format_hint=_FORMAT_HINTS["entity_lookup"],
         )
     if _PROPER_NOUN_ALONE_RE.match(q):

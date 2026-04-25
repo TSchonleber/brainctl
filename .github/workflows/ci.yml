@@ -155,7 +155,9 @@ jobs:
               - 'src/agentmemory/rerank.py'
               - 'src/agentmemory/embeddings.py'
               - 'src/agentmemory/retrieval.py'
+              - 'src/agentmemory/retrieval/**'
               - 'bin/intent_classifier.py'
+              - 'benchmarks/**'
               - 'tests/bench/**'
 
       - name: Set up Python

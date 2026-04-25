@@ -15,6 +15,7 @@ Before starting any task, check what's already known:
 
 ```bash
 brainctl -a myagent search "task keywords" --limit 10
+brainctl -a myagent procedure search "task keywords" --limit 5
 brainctl event tail -n 10
 brainctl decision list
 ```
@@ -35,8 +36,23 @@ When you find something non-obvious, save it right away:
 brainctl -a myagent memory add "what you discovered" -c CATEGORY -s SCOPE
 ```
 
+If what you learned is reusable execution knowledge rather than a plain fact,
+store it as a procedure:
+
+```bash
+brainctl -a myagent procedure add \
+  --title "staging deploy runbook" \
+  --goal "deploy to staging safely" \
+  --step "run tests" \
+  --step "brainctl migrate" \
+  --step "deploy and verify health"
+```
+
 **Good memories:** "The API rate-limits at 100 req/15s with Retry-After header"
 **Bad memories:** "I ran npm install" (trivial) / "The build passed" (transient)
+
+**Good procedures:** rollback plans, troubleshooting sequences, migration
+runbooks, validated tool-use recipes.
 
 ### Categories
 

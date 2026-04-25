@@ -5,7 +5,8 @@
 brainctl is a persistent memory system for AI agents backed by a single SQLite
 database. No server process, no external dependencies beyond Python and SQLite.
 Multiple agents (or a single agent across sessions) share one `brain.db` file
-for memories, events, entities, decisions, and a knowledge graph.
+for episodic, semantic, and procedural memory plus events, entities,
+decisions, and a knowledge graph.
 
 ## Project Structure
 
@@ -18,7 +19,9 @@ src/agentmemory/
   cli.py               Entry point
   mcp_server.py        MCP server entry
   hippocampus.py       Consolidation engine (brainctl-consolidate entry point)
-  commands/            24 command modules
+  procedural.py        Canonical procedural memory service + heuristics
+  retrieval/           Query planner, candidate generation, evidence fusion, answerability
+  commands/            25 command modules
     agent.py           Agent registration and state
     memory.py          Memory CRUD and search
     event.py           Event logging and queries
@@ -55,6 +58,11 @@ All state lives in a single `brain.db` file (SQLite, WAL mode).
 | Table | Purpose |
 |-------|---------|
 | `memories` | Durable facts, preferences, lessons, conventions |
+| `procedures` | Canonical procedural memories linked 1:1 to bridge rows in `memories` |
+| `procedure_steps` | Ordered step projection for procedures |
+| `procedure_sources` | Provenance links from procedures back to memories/events/decisions/entities |
+| `procedure_runs` | Execution/application feedback history for procedures |
+| `procedure_candidates` | Repeat-pattern staging area before promotion to canonical procedures |
 | `events` | Timestamped event log (append-oriented) |
 | `entities` | Named entities (people, projects, tools, concepts) |
 | `knowledge_edges` | Typed, weighted edges between any two records |
@@ -69,6 +77,15 @@ All state lives in a single `brain.db` file (SQLite, WAL mode).
 | `embeddings` | Vector embedding storage |
 
 See `db/init_schema.sql` for full column definitions and migrations.
+
+`memories.memory_type` is now a three-way core layer selector:
+- `episodic` — specific events, traces, and observations
+- `semantic` — distilled facts, preferences, and conventions
+- `procedural` — reusable workflows, runbooks, troubleshooting sequences, rollback plans
+
+The canonical structured procedure lives in `procedures`; the linked
+`memories` row keeps a human-readable synopsis so legacy memory search and
+older interfaces continue to see something useful.
 
 ### Vector Tables (optional, requires sqlite-vec)
 
@@ -94,17 +111,31 @@ natural-language queries ("what does Alice prefer?") match memories that
 contain *any* meaningful term, not only memories that contain every word.
 Stopwords are dropped before OR expansion.
 
-### Hybrid Search + Reciprocal Rank Fusion
+### Retrieval Executive + Hybrid Search
 
-`cmd_search` merges FTS5 and sqlite-vec results with Reciprocal Rank Fusion
-(`rrf_score = 1/(60 + rank)`), applies temporal decay, category half-life,
-and adaptive salience weighting, then runs a regex-based query intent
-classifier (`bin/intent_classifier.py`) whose output is normalized inside
-`cmd_search` onto six rerank profiles: `entity_lookup`, `event_lookup`,
-`decision_lookup`, `graph_traversal`, `procedural`, `general`. The
-classifier covers ~80% of real agent queries with zero latency; the
-rerank branch applied to the blend is reported in the
-`metacognition.rerank_branch` field of every response.
+`cmd_search` now acts as a compatibility shell around a retrieval executive:
+
+1. `retrieval.query_planner` inspects the query and emits a structured plan
+   (`normalized_intent`, `answer_type`, target entities, temporal anchors,
+   preferred memory layers, candidate tables, abstain policy).
+2. `cmd_search` still performs the existing FTS5/sqlite-vec retrieval paths
+   for memories, events, and context.
+3. `retrieval.candidate_generation` adds a first-class procedural candidate
+   path using `procedures_fts` plus structured fallback search.
+4. `retrieval.evidence_graph` expands top procedures over
+   `procedure_sources` and `knowledge_edges` to gather supporting episodes,
+   decisions, events, tools, and rollback relations.
+5. `retrieval.late_reranker` deterministically fuses direct lexical match,
+   procedural structure match, validation recency, execution history, and
+   evidence support.
+6. `retrieval.answerability` decides whether to abstain instead of returning
+   ungrounded nearest-neighbor junk.
+
+The effective plan and answerability diagnostics surface in `_debug` /
+`metacognition` so benchmark misses remain explainable.
+
+The old hybrid core is preserved: memories/events/context still merge FTS5
+and sqlite-vec via Reciprocal Rank Fusion when vector search is available.
 
 ### Vector Search (optional)
 
@@ -123,14 +154,18 @@ Multi-hop neighbor queries across the knowledge graph via `brainctl graph`.
 
 ### Retrieval Regression Gate
 
-`tests/bench/` ships a deterministic search-quality harness: 30 synthetic
-memories + 8 events + 6 entities + 20 graded queries (3=primary, 2=related,
-1=tangential) across seven query classes (entity / procedural / decision /
-temporal / troubleshooting / negative / ambiguous). The runner reports
-P@1, P@5, Recall@5, MRR, nDCG@5 against a committed baseline at
+`tests/bench/` ships a deterministic search-quality harness: synthetic
+memories + procedures + events + entities with graded queries (3=primary,
+2=related, 1=tangential) across entity / procedural / decision / temporal /
+troubleshooting / negative / ambiguous classes. The runner reports
+P@1, P@5, Recall@5, MRR, nDCG@5 plus P@5 ceiling diagnostics
+(`p_at_5_ceiling`, `p_at_5_ratio_to_ceiling`) against a committed baseline at
 `tests/bench/baselines/search_quality.json`. Any >2% drop on a headline
 metric fails the `test_search_quality_bench.py` pytest regression test.
-Run with `python3 -m tests.bench.run` or `bin/brainctl-bench`.
+The harness also records failure modes (`retrieval_failure`,
+`utilization_failure`, `hallucination`, `correct_abstain`) and captures the
+retrieval executive debug payload. Run with `python3 -m tests.bench.run` or
+`bin/brainctl-bench`.
 
 ## Knowledge Graph
 
@@ -190,6 +225,7 @@ Runs as part of the nightly consolidation cycle; results surface in
 | **Compression** | Merges clusters of related low-value memories into summaries |
 | **Dream** | Synthesizes new hypotheses from loosely connected memories |
 | **Hebbian** | Strengthens edges between frequently co-accessed records |
+| **Procedural synthesis** | Promotes repeated successful action patterns into procedure candidates or canonical procedures |
 
 `bin/consolidation-cycle.sh` chains the hippocampus passes with:
 

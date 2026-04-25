@@ -142,6 +142,11 @@ class TestMigrateGetMigrations:
         versions = [v for v, _, _ in migrations]
         assert versions == sorted(versions)
 
+    def test_includes_procedural_memory_layer_migration(self):
+        migrations = migrate._get_migrations()
+        versions = [v for v, _, _ in migrations]
+        assert 52 in versions
+
     def test_excludes_non_numbered_files(self):
         # quantum_schema_migration_sqlite.sql should NOT be included
         migrations = migrate._get_migrations()

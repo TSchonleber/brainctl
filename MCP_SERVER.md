@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (201)
+## Available Tools (209)
 
 | Tool | Description |
 |------|-------------|
@@ -69,12 +69,20 @@ server over stdio.
 | `trigger_update` | Update fields on an existing trigger |
 | `trigger_delete` | Cancel/delete a trigger by ID |
 | `decision_add` | Record a decision with rationale |
+| `procedure_add` | Create a structured procedural memory with ordered steps |
+| `procedure_get` | Fetch a canonical procedure with steps and provenance |
+| `procedure_list` | List procedures with scope/status filters |
+| `procedure_search` | Search procedural memories and return structured matches |
+| `procedure_update` | Update a canonical procedure |
+| `procedure_feedback` | Record execution outcome / validation against a procedure |
+| `procedure_backfill` | Promote likely procedures from existing memories/events/decisions |
+| `procedure_stats` | Show canonical procedure and candidate counts |
 | `handoff_add` | Create a structured handoff packet |
 | `handoff_latest` | Fetch the latest matching handoff packet |
 | `handoff_consume` | Mark a handoff packet consumed |
 | `handoff_pin` | Pin a handoff packet for preservation |
 | `handoff_expire` | Mark a handoff packet expired |
-| `search` | Cross-table search (memories + events + entities) |
+| `search` | Cross-table search with retrieval planning across memories + procedures + events + entities |
 | `pagerank` | Compute PageRank centrality over knowledge graph |
 | `stats` | Database statistics and health summary |
 | `resolve_conflict` | AGM credibility-weighted belief conflict resolution |
@@ -114,6 +122,7 @@ server over stdio.
 
 **Store information:**
 - Durable fact/lesson/convention: `memory_add` (enforces W(m) write gate)
+- Durable workflow/runbook: `procedure_add` or `memory_add(memory_type="procedural")`
 - What just happened: `event_add` (timestamped, no gate)
 - Why a choice was made: `decision_add` (with rationale)
 - Working state for next session: `handoff_add`
@@ -121,6 +130,7 @@ server over stdio.
 **Find information:**
 - Everything about a topic: `search` (memories + events + entities)
 - Just memories: `memory_search` (supports category, scope, pagerank_boost)
+- Just procedures: `procedure_search`
 - Just events: `event_search` (supports event_type, project)
 - A specific entity: `entity_get`
 - Entities matching a query: `entity_search`
@@ -144,6 +154,7 @@ server over stdio.
 
 | Category | Tools | When to use |
 |----------|-------|-------------|
+| Procedural memory | `procedure_add`, `procedure_search`, `procedure_feedback`, `procedure_backfill`, `procedure_stats` | Runbooks, rollback plans, troubleshooting routines, validated workflows |
 | Consolidation | `consolidation_run`, `replay_boost`, `replay_queue` | Memory maintenance |
 | Reconsolidation | `reconsolidation_check`, `reconsolidate` | Lability window mechanics |
 | Beliefs & Conflicts | `resolve_conflict`, `belief_collapse` | When memories contradict |
@@ -165,6 +176,7 @@ What do you need?
 |
 +-- Store something?
 |   +-- Durable fact ----------> memory_add
+|   +-- Durable runbook -------> procedure_add
 |   +-- What just happened ----> event_add
 |   +-- Why a choice was made -> decision_add
 |   +-- State for next session > handoff_add
@@ -172,6 +184,7 @@ What do you need?
 +-- Find something?
 |   +-- Broad topic search ----> search
 |   +-- Memories only ---------> memory_search
+|   +-- Procedures only -------> procedure_search
 |   +-- Events only -----------> event_search
 |   +-- Entity by name --------> entity_get
 |

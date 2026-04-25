@@ -720,6 +720,23 @@ def cmd_consolidate(args):
         print("\n[DRY RUN] No changes written.")
     else:
         print(f"\nDone. {total_clusters} cluster(s) consolidated, {total_retired} memories retired.")
+    try:
+        from agentmemory import procedural as _procedural
+
+        synth_stats = _procedural.synthesize_procedure_candidates(
+            conn,
+            agent_id=args.agent,
+            dry_run=args.dry_run,
+        )
+        print(
+            "Procedural synthesis: "
+            f"candidates_updated={synth_stats.get('candidates_updated', 0)}, "
+            f"promoted={synth_stats.get('promoted', 0)}"
+        )
+        if not args.dry_run:
+            conn.commit()
+    except Exception as exc:
+        print(f"Procedural synthesis skipped: {exc}", file=sys.stderr)
 
 
 # =============================================================================
@@ -2279,6 +2296,18 @@ def cmd_consolidation_cycle(args):
     # Pass 7: Episodic-to-semantic promotion
     promotion_stats = promote_episodic_to_semantic(db)
 
+    # Pass 7b: repeated procedural traces -> procedure candidates / canonical procedures
+    try:
+        from agentmemory import procedural as _procedural
+
+        procedural_stats = _procedural.synthesize_procedure_candidates(
+            db,
+            agent_id=args.agent,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        procedural_stats = {"error": str(exc), "candidates_updated": 0, "promoted": 0}
+
     # Pass 8 (CLF): Experience replay — re-process top-10 highest-recalled memories
     # Prevents catastrophic forgetting by re-anchoring important old knowledge.
     replay_stats = experience_replay(db, top_k=10, now=now)
@@ -2326,6 +2355,7 @@ def cmd_consolidation_cycle(args):
             "semantic_memories_created": promotion_stats.get("semantic_memories_created", 0),
             "source_memories_tagged": promotion_stats.get("source_memories_tagged", 0),
         },
+        "procedural_synthesis": procedural_stats,
         "experience_replay": replay_stats,
         "hebbian": hebbian_stats,
         "causal_chain_mining": causal_stats,

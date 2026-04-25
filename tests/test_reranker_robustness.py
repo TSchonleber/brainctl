@@ -209,6 +209,8 @@ def _build_args(query: str, limit: int = 10, **overrides) -> types.SimpleNamespa
         pagerank_boost=0.0,
         quantum=False,
         benchmark=False,
+        benchmark_ranking_mode="full",
+        second_stage=False,
         agent="robustness-agent",
         output="json",
         format="json",
@@ -426,24 +428,28 @@ class TestBenchmarkFlag:
         _seed_locomo_shape(db_path, n=50)
         return db_path
 
-    def test_benchmark_skips_three_rerankers(self, db):
+    def test_benchmark_full_mode_keeps_second_stage_opt_in(self, db):
         args = _build_args("alice prefers dark mode", benchmark=True)
         out = _call_cmd_search(db, args)
         debug = out.get("_debug", {})
+        assert debug.get("benchmark.ranking_mode") == "full"
+        assert debug.get("second_stage", {}).get("enabled") is False
         assert debug.get("memories.recency_skipped") == "benchmark_mode"
-        assert debug.get("memories.salience_skipped") == "benchmark_mode"
         assert debug.get("memories.qvalue_skipped") == "benchmark_mode"
 
-    def test_benchmark_preserves_trust(self, db):
-        """Spec: trust reranker is preserved under --benchmark (different
-        signal class — provenance, not stale-data). Even on a uniform-trust
-        corpus the trust skip reason must NOT show up under benchmark."""
+        args = _build_args("alice prefers dark mode", benchmark=True, second_stage=True)
+        out = _call_cmd_search(db, args)
+        debug = out.get("_debug", {})
+        assert debug.get("benchmark.ranking_mode") == "full"
+        assert debug.get("second_stage", {}).get("enabled") is True
+        assert debug.get("memories.recency_skipped") == "benchmark_mode"
+        assert debug.get("memories.qvalue_skipped") == "benchmark_mode"
+
+    def test_benchmark_full_mode_uses_normal_trust_gate(self, db):
         args = _build_args("alice prefers dark mode", benchmark=True)
         out = _call_cmd_search(db, args)
         debug = out.get("_debug", {})
-        assert "memories.trust_skipped" not in debug, (
-            f"trust must be preserved under --benchmark; debug={debug}"
-        )
+        assert "memories.trust_skipped" not in debug, debug
 
     def test_benchmark_emits_stderr_note(self, db):
         # Capture the stderr message.
@@ -460,7 +466,7 @@ class TestBenchmarkFlag:
                 with contextlib.redirect_stderr(buf_err):
                     _impl.cmd_search(args)
             assert "--benchmark" in buf_err.getvalue()
-            assert "raw FTS+vec ranking" in buf_err.getvalue()
+            assert "stable-eval mode" in buf_err.getvalue()
         finally:
             _impl.json_out = saved_json
 
@@ -500,7 +506,16 @@ class TestBenchmarkFlag:
         # Parse the JSON payload off stdout.
         payload = json.loads(result.stdout)
         debug = payload.get("_debug", {})
+        assert debug.get("benchmark.ranking_mode") == "raw"
+
+    def test_benchmark_raw_mode_preserves_legacy_ablation(self, db):
+        args = _build_args("alice prefers dark mode", benchmark=True, benchmark_ranking_mode="raw")
+        out = _call_cmd_search(db, args)
+        debug = out.get("_debug", {})
+        assert debug.get("benchmark.ranking_mode") == "raw"
         assert debug.get("memories.recency_skipped") == "benchmark_mode"
+        assert debug.get("memories.salience_skipped") == "benchmark_mode"
+        assert debug.get("memories.qvalue_skipped") == "benchmark_mode"
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +564,86 @@ class TestExistingBenchRegression:
             f"query {query!r} top-1 should mention {must_contain!r}, "
             f"got: {top_text[:120]!r}"
         )
+
+    def test_entity_bucket_populated_for_entity_query(self, bench_db):
+        args = _build_args(
+            "Who owns the consolidation daemon?",
+            agent="bench-agent",
+            tables="memories,events,context,entities,decisions,procedures",
+            benchmark=True,
+        )
+        out = _call_cmd_search(bench_db, args)
+        assert out.get("entities"), "entity query should populate entities bucket"
+        assert out["entities"][0]["name"] == "Bob"
+
+    def test_negative_out_of_domain_query_abstains(self, bench_db):
+        args = _build_args(
+            "Summary of yesterday's basketball game",
+            agent="bench-agent",
+            tables="memories,events,context,entities,decisions,procedures",
+            benchmark=True,
+        )
+        out = _call_cmd_search(bench_db, args)
+        assert out.get("metacognition", {}).get("abstained") is True
+        for bucket in ("memories", "events", "context", "entities", "decisions", "procedures"):
+            assert not out.get(bucket), f"{bucket} should be empty after abstention"
+
+
+def test_entity_alias_expansion_promotes_canonical_memory(tmp_path):
+    db_path = tmp_path / "alias-linking.db"
+    _seed_schema(db_path)
+    now = _utc_iso()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO memories (
+                agent_id, category, scope, content, confidence,
+                created_at, updated_at
+            ) VALUES (?, 'preference', 'global', ?, 0.9, ?, ?)
+            """,
+            ("robustness-agent", "Bob prefers four-space indentation for Python code.", now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO entities (
+                name, entity_type, properties, observations, agent_id, confidence,
+                scope, created_at, updated_at, aliases, compiled_truth
+            ) VALUES (?, 'person', '{}', ?, ?, 0.95, 'global', ?, ?, ?, ?)
+            """,
+            (
+                "Bob",
+                json.dumps(["Prefers four-space indentation"], ensure_ascii=True),
+                "robustness-agent",
+                now,
+                now,
+                json.dumps(["Robert"], ensure_ascii=True),
+                "Bob prefers four-space indentation.",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    args = _build_args(
+        "What does Robert prefer?",
+        agent="robustness-agent",
+        tables="memories,entities",
+        benchmark=True,
+    )
+    out = _call_cmd_search(db_path, args)
+    flat = []
+    for bucket in ("entities", "memories"):
+        flat.extend(out.get(bucket, []) or [])
+    flat.sort(key=lambda row: row.get("final_score", 0.0), reverse=True)
+    assert flat, "alias-linked query should return at least one result"
+    top_text = (
+        flat[0].get("content")
+        or flat[0].get("name")
+        or flat[0].get("summary")
+        or ""
+    ).lower()
+    assert "bob" in top_text, top_text
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ try:
         mcp_tools_merge,
         mcp_tools_neuro,
         mcp_tools_policy,
+        mcp_tools_procedural,
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
@@ -84,6 +85,7 @@ try:
         mcp_tools_merge,
         mcp_tools_neuro,
         mcp_tools_policy,
+        mcp_tools_procedural,
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
@@ -126,26 +128,26 @@ def _builtin_classify_intent(query):
     if any(w in q for w in ['who ', 'person', 'agent', 'team', 'assigned']):
         return _BuiltinIntentResult('entity_lookup', 0.8, 'keyword:entity',
                                      'Show entity details with relations',
-                                     ['memories', 'events', 'context'])
+                                     ['memories', 'procedures', 'events', 'context'])
     if any(w in q for w in ['what happened', 'when did', 'history', 'timeline', 'log']):
         return _BuiltinIntentResult('event_lookup', 0.8, 'keyword:event',
                                      'Show events in chronological order',
-                                     ['events', 'memories', 'context'])
-    if any(w in q for w in ['how to', 'how do', 'procedure', 'steps', 'guide']):
+                                     ['events', 'memories', 'context', 'procedures'])
+    if any(w in q for w in ['how to', 'how do', 'procedure', 'steps', 'guide', 'rollback', 'runbook', 'playbook', 'troubleshoot']):
         return _BuiltinIntentResult('procedural', 0.7, 'keyword:procedural',
                                      'Show step-by-step instructions',
-                                     ['memories', 'context', 'events'])
+                                     ['procedures', 'memories', 'decisions', 'events', 'context'])
     if any(w in q for w in ['why ', 'decision', 'rationale', 'reason']):
         return _BuiltinIntentResult('decision_lookup', 0.8, 'keyword:decision',
                                      'Show decisions with rationale',
-                                     ['memories', 'events', 'context'])
+                                     ['decisions', 'memories', 'procedures', 'events', 'context'])
     if any(w in q for w in ['related', 'connected', 'depends', 'link']):
         return _BuiltinIntentResult('graph_traversal', 0.7, 'keyword:graph',
                                      'Show connected nodes and edges',
-                                     ['memories', 'events', 'context'])
+                                     ['memories', 'events', 'context', 'procedures'])
     return _BuiltinIntentResult('general', 0.5, 'default',
                                  'Standard search results',
-                                 ['memories', 'events', 'context'])
+                                 ['memories', 'procedures', 'events', 'context'])
 
 # Quantum amplitude scorer (optional re-ranking).
 # Ships in-tree as of 2.4.9 under agentmemory.lib.quantum_retrieval so
@@ -431,8 +433,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         return {"ok": False, "error": f"Invalid category: {category}. Must be one of: {', '.join(VALID_MEMORY_CATEGORIES)}"}
     if not (0.0 <= confidence <= 1.0):
         return {"ok": False, "error": "confidence must be between 0.0 and 1.0"}
-    if memory_type not in ("episodic", "semantic"):
-        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+    if memory_type not in ("episodic", "semantic", "procedural"):
+        return {"ok": False, "error": "memory_type must be 'episodic', 'semantic', or 'procedural'"}
     if scope != "global" and not scope.startswith("project:") and not scope.startswith("agent:"):
         return {"ok": False, "error": "scope must be 'global', 'project:<name>', or 'agent:<id>'"}
     if source not in _SOURCE_TRUST_WEIGHTS:
@@ -700,6 +702,27 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     mid = cur.lastrowid
     db.commit()  # ensure the INSERT (and FTS trigger) is committed
 
+    procedure_id = None
+    if memory_type == "procedural":
+        try:
+            from agentmemory import procedural as _procedural
+
+            proc = _procedural.ensure_procedure_for_memory(db, memory_id=mid, agent_id=agent_id)
+            procedure_id = proc.get("id")
+            db.commit()
+        except Exception:
+            pass
+
+    indexed_row = db.execute(
+        "SELECT content, category, tags FROM memories WHERE id = ?",
+        (mid,),
+    ).fetchone()
+    indexed_content = indexed_row["content"] if indexed_row else content
+    indexed_category = indexed_row["category"] if indexed_row else category
+    indexed_tags = indexed_row["tags"] if indexed_row else (tags_json or "")
+    if indexed_content != content:
+        blob = None
+
     # Workaround: FTS5 content-external tables may not build the inverted index
     # from trigger INSERTs on some SQLite versions. Force a re-index for this memory.
     if do_index:
@@ -707,11 +730,11 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             db.execute(
                 "INSERT INTO memories_fts(memories_fts, rowid, content, category, tags) "
                 "VALUES('delete', ?, ?, ?, ?)",
-                (mid, content, category, tags_json or ''))
+                (mid, indexed_content, indexed_category, indexed_tags or ''))
             db.execute(
                 "INSERT INTO memories_fts(rowid, content, category, tags) "
                 "VALUES (?, ?, ?, ?)",
-                (mid, content, category, tags_json or ''))
+                (mid, indexed_content, indexed_category, indexed_tags or ''))
             db.commit()
         except Exception:
             pass  # non-fatal
@@ -752,7 +775,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     if do_index:
         try:
             if not blob:
-                blob = _embed_safe(content)
+                blob = _embed_safe(indexed_content)
             if blob:
                 vdb = _get_vec_db()
                 if vdb:
@@ -771,6 +794,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
               "surprise_score": surprise, "surprise_method": surprise_method,
               "source": source, "trust_score": source_trust,
               "memory_type": memory_type}
+    if procedure_id is not None:
+        result["procedure_id"] = procedure_id
     if _schema_resonance_hit:
         result["schema_resonance"] = _schema_resonance
         result["schema_resonance_fast_track"] = True
@@ -806,8 +831,8 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     expansion adjuncts come after). Falls through gracefully if
     sentence-transformers isn't installed.
     """
-    if memory_type and memory_type not in ("episodic", "semantic"):
-        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+    if memory_type and memory_type not in ("episodic", "semantic", "procedural"):
+        return {"ok": False, "error": "memory_type must be 'episodic', 'semantic', or 'procedural'"}
 
     # Cross-agent borrow restricts the SQL to `scope='global'` (line ~846).
     # Combining that with an explicit non-global scope produces an
@@ -1719,167 +1744,45 @@ def tool_agent_wrap_up(agent_id: str, summary: str, goal: str = None,
 
 def tool_search(agent_id: str, query: str, limit: int = 20, vector: bool = False,
                 profile: str = None) -> dict:
-    """Cross-table search: memories + events + entities. Intent-aware routing."""
-    db = get_db()
-    fts_q = _safe_fts(query)
-    if not fts_q:
+    """Cross-table search routed through the canonical CLI retrieval path."""
+    if not query or not str(query).strip():
         return {"ok": False, "error": "Empty query"}
+    try:
+        from types import SimpleNamespace
+        from agentmemory._impl import cmd_search as _cmd_search
 
-    # Profile: resolve task-scoped table constraints before intent routing
-    _profile_tables = None
-    _profile_categories = None
-    if profile:
+        db = get_db()
+        args = SimpleNamespace(
+            query=query,
+            limit=limit,
+            output="return",
+            tables=None,
+            profile=profile,
+            no_recency=False,
+            no_graph=False,
+            budget=None,
+            min_salience=None,
+            mmr=False,
+            mmr_lambda=0.7,
+            explore=False,
+            benchmark=False,
+            agent=agent_id,
+            project=None,
+            debug=True,
+            quantum=False,
+        )
         try:
-            from agentmemory.profiles import resolve_profile as _resolve_profile
-            _prof = _resolve_profile(profile, DB_PATH)
-            if _prof is None:
-                return {"ok": False, "error": f"Unknown profile '{profile}'"}
-            if _prof.get("tables"):
-                _profile_tables = set(_prof["tables"])
-            if _prof.get("categories"):
-                _profile_categories = _prof["categories"]
-        except Exception:
-            pass
-
-    # Classify intent and route to appropriate tables
-    intent_meta = {}
-    intent_tables = {"memories", "events", "entities"}  # default: all three
-    ir = None
-    if _INTENT_AVAILABLE:
-        try:
-            ir = _classify_intent(query)
-        except Exception:
-            ir = _builtin_classify_intent(query)
-    else:
-        ir = _builtin_classify_intent(query)
-
-    if ir:
-        intent_meta = {
-            "intent": ir.intent,
-            "intent_confidence": ir.confidence,
-            "format_hint": ir.format_hint,
-        }
-        # Map intent tables to MCP table set (entities replaces context in MCP)
-        _routed = set(ir.tables)
-        intent_tables = set()
-        if "memories" in _routed:
-            intent_tables.add("memories")
-        if "events" in _routed:
-            intent_tables.add("events")
-        # entity_lookup intent: include entities; also include for all intents by default
-        if ir.intent == "entity_lookup" or "context" in _routed:
-            intent_tables.add("entities")
-        if not intent_tables:
-            intent_tables = {"memories", "events", "entities"}
-
-    # Profile table override: if profile specifies tables, intersect with intent routing
-    if _profile_tables:
-        intent_tables = intent_tables & _profile_tables
-        if not intent_tables:
-            intent_tables = _profile_tables  # use profile tables if intersection is empty
-
-    results = []
-
-    if "memories" in intent_tables:
-        _mem_conditions = ["m.retired_at IS NULL"]
-        _mem_params: list = [fts_q]
-        if _profile_categories:
-            ph = ",".join("?" * len(_profile_categories))
-            _mem_conditions.append(f"m.category IN ({ph})")
-            _mem_params.extend(_profile_categories)
-        _mem_params.append(limit)
-        _mem_where = " AND ".join(_mem_conditions)
-        memories = rows_to_list(db.execute(
-            f"SELECT m.id, 'memory' as type, m.content as text, m.category, m.confidence, m.created_at "
-            f"FROM memories_fts fts JOIN memories m ON m.id=fts.rowid "
-            f"WHERE memories_fts MATCH ? AND {_mem_where} ORDER BY rank LIMIT ?",
-            _mem_params
-        ).fetchall())
-        # Quantum amplitude re-ranking — transparent to callers
-        if _QUANTUM_AVAILABLE and memories:
-            try:
-                memories = _quantum_rerank(memories, db_path=str(DB_PATH))
-            except Exception:
-                pass
-        results.extend(memories)
-
-    if "events" in intent_tables:
-        events = rows_to_list(db.execute(
-            "SELECT e.id, 'event' as type, e.summary as text, e.event_type as category, e.importance as confidence, e.created_at "
-            "FROM events_fts fts JOIN events e ON e.id=fts.rowid "
-            "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
-            (fts_q, limit)
-        ).fetchall())
-        results.extend(events)
-
-    if "entities" in intent_tables:
-        entities = rows_to_list(db.execute(
-            "SELECT e.id, 'entity' as type, e.name as text, e.entity_type as category, e.confidence, e.created_at "
-            "FROM entities_fts fts JOIN entities e ON e.id=fts.rowid "
-            "WHERE entities_fts MATCH ? AND e.retired_at IS NULL ORDER BY rank LIMIT ?",
-            (fts_q, limit)
-        ).fetchall())
-        results.extend(entities)
-
-    # Vector search path (issue #19).
-    if vector:
-        try:
-            from agentmemory.vec import embed_text as _embed_text
-            blob = _embed_text(query)
-            if blob:
-                db_vec = _get_vec_db()
-                if db_vec:
-                    try:
-                        vmem_rows = db_vec.execute(
-                            "SELECT rowid, distance FROM vec_memories WHERE embedding MATCH ? AND k=?",
-                            (blob, limit)
-                        ).fetchall()
-                        for vr in vmem_rows:
-                            mid = vr[0] if isinstance(vr, tuple) else vr["rowid"]
-                            dist = vr[1] if isinstance(vr, tuple) else vr["distance"]
-                            mr = db.execute(
-                                "SELECT id, 'memory' as type, content as text, category, confidence, created_at "
-                                "FROM memories WHERE id = ? AND retired_at IS NULL", (mid,)
-                            ).fetchone()
-                            if mr:
-                                row = dict(mr)
-                                row["_vscore"] = round(1.0 - float(dist), 4)
-                                row["source_type"] = "memory"
-                                results.append(row)
-                        vent_rows = db_vec.execute(
-                            "SELECT rowid, distance FROM vec_entities WHERE embedding MATCH ? AND k=?",
-                            (blob, limit)
-                        ).fetchall()
-                        for vr in vent_rows:
-                            eid = vr[0] if isinstance(vr, tuple) else vr["rowid"]
-                            dist = vr[1] if isinstance(vr, tuple) else vr["distance"]
-                            er = db.execute(
-                                "SELECT id, 'entity' as type, name as text, entity_type as category, confidence, created_at "
-                                "FROM entities WHERE id = ? AND retired_at IS NULL", (eid,)
-                            ).fetchone()
-                            if er:
-                                row = dict(er)
-                                row["_vscore"] = round(1.0 - float(dist), 4)
-                                row["source_type"] = "entity"
-                                results.append(row)
-                    finally:
-                        db_vec.close()
-                    seen = set()
-                    deduped = []
-                    for r in results:
-                        key = (r.get("type", ""), r.get("id", ""))
-                        if key not in seen:
-                            seen.add(key)
-                            deduped.append(r)
-                    results = sorted(deduped, key=lambda r: -r.get("_vscore", 0.0))
-                    for r in results:
-                        r.pop("_vscore", None)
-        except Exception:
-            pass
-
-    log_access(db, agent_id, "search", query=query, result_count=len(results))
-    db.commit(); db.close()
-    return {"ok": True, "count": len(results), "results": results, **intent_meta}
+            out = _cmd_search(args, db=db, db_path=str(DB_PATH))
+        finally:
+            db.close()
+        if not isinstance(out, dict):
+            return {"ok": False, "error": "search returned no result payload"}
+        if vector:
+            out.setdefault("metacognition", {})
+            out["metacognition"]["vector_hint"] = "hybrid retrieval is automatic when sqlite-vec is available"
+        return {"ok": True, **out}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def tool_pagerank(table: str = None, damping: float = 0.85, iterations: int = 20,
@@ -2176,7 +2079,7 @@ TOOLS = [
                 "scope": {"type": "string", "description": "Scope: 'global', 'project:<name>', or 'agent:<id>'", "default": "global"},
                 "confidence": {"type": "number", "description": "Confidence 0.0-1.0", "default": 1.0},
                 "tags": {"type": "string", "description": "Comma-separated tags"},
-                "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "default": "episodic"},
+                "memory_type": {"type": "string", "enum": ["episodic", "semantic", "procedural"], "default": "episodic"},
                 "force": {"type": "boolean", "description": "Bypass W(m) worthiness gate", "default": False},
                 "supersedes_id": {"type": "integer", "description": "ID of memory being superseded; triggers PII recency gate"},
                 "source": {
@@ -2203,7 +2106,7 @@ TOOLS = [
                 "category": {"type": "string", "enum": VALID_MEMORY_CATEGORIES},
                 "scope": {"type": "string"},
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
-                "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
+                "memory_type": {"type": "string", "enum": ["episodic", "semantic", "procedural"], "description": "Filter to one memory store. Unset searches all supported memory types; semantic gets a mild confidence bonus in memory_search."},
                 "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
                 "borrow_from": {"type": "string", "description": "Agent ID to borrow from. When set, searches only that agent's scope='global' memories and logs the cross-agent access in access_log."},
                 "multi_pass": {"type": "boolean", "default": False, "description": "SDM-style iterative convergence: use pass-1 results to build a richer pass-2 query; merge and deduplicate both passes (items in both passes ranked first)."},

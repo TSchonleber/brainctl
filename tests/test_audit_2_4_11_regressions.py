@@ -23,13 +23,18 @@ def test_root_init_schema_is_a_symlink_to_packaged():
     before 2.5.0 cleanup."""
     root_path = ROOT / "db" / "init_schema.sql"
     packaged = ROOT / "src" / "agentmemory" / "db" / "init_schema.sql"
-    assert root_path.is_symlink(), (
-        f"{root_path.relative_to(ROOT)} must be a symlink to the "
-        f"packaged schema so the two copies can't drift"
-    )
-    assert root_path.resolve() == packaged.resolve(), (
-        f"symlink must point to {packaged.relative_to(ROOT)}, "
-        f"currently resolves to {root_path.resolve()}"
+    if root_path.is_symlink():
+        assert root_path.resolve() == packaged.resolve(), (
+            f"symlink must point to {packaged.relative_to(ROOT)}, "
+            f"currently resolves to {root_path.resolve()}"
+        )
+        return
+    # Windows developer-mode / elevation is not guaranteed in CI or local
+    # shells. When symlink creation is blocked, the fallback contract is an
+    # exact byte-for-byte copy of the packaged canonical.
+    assert root_path.read_text(encoding="utf-8") == packaged.read_text(encoding="utf-8"), (
+        f"{root_path.relative_to(ROOT)} must match the packaged schema when "
+        "a symlink cannot be created"
     )
 
 

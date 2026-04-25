@@ -103,6 +103,27 @@ Models load from the Hugging Face Hub on first use (cached at
 `~/.cache/huggingface/`). After the first call the model is held in
 the per-process module cache.
 
+## Second-stage tiny MLP artifact policy
+
+The local second-stage reranker can optionally load a tiny JSON MLP artifact
+from `src/agentmemory/retrieval/models/tiny_mlp_v1.json`, or from an explicit
+path passed through the internal reranker configuration. That artifact is not
+checked into git. If the file is absent, the second-stage path falls back to
+the deterministic heuristic slate scorer and search remains fully functional.
+
+This keeps the default package local-first and reviewable:
+
+- no mandatory network fetch,
+- no opaque weights bundled in source,
+- no hard dependency on numpy at import time,
+- no failure when the model artifact is unavailable.
+
+Training and calibration scripts live under `benchmarks/` and emit JSON
+artifacts into ignored benchmark/training output directories. If a trained
+artifact is published later, it should be attached as a release asset or LFS
+object with a short provenance record containing the source commit, training
+bundle, feature version, and held-out metrics.
+
 ## Latency / quality tradeoff
 
 Measured on Apple Silicon M-series, CPU only (no MPS), Python 3.14,

@@ -390,6 +390,8 @@ class TestHelpers:
         q = meb_mod._sanitize_fts_query
         assert q("hello.world") == "hello world"
         assert q("foo AND (bar)") == "foo AND bar"
+        assert q("Where did I redeem a $5 coupon?") == "Where did I redeem a 5 coupon"
+        assert q("What LGBTQ+ events used SIAC_GEE?") == "What LGBTQ events used SIAC GEE"
         assert q("") == ""
 
     def test_age_str_just_now(self):

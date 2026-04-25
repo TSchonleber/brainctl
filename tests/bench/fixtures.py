@@ -45,10 +45,30 @@ class EntityFixture:
 
 
 @dataclass
+class ProcedureFixture:
+    key: str
+    title: str
+    goal: str
+    description: str
+    procedure_kind: str = "workflow"
+    steps: List[str] = field(default_factory=list)
+    tools: List[str] = field(default_factory=list)
+    failure_modes: List[str] = field(default_factory=list)
+    rollback_steps: List[str] = field(default_factory=list)
+    success_criteria: List[str] = field(default_factory=list)
+    status: str = "active"
+    scope: str = "global"
+    execution_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    stale_after_days: int = 90
+
+
+@dataclass
 class Query:
     text: str
     category: str                     # entity|temporal|procedural|decision|troubleshooting|negative
-    # Map of {"mem:<key>" | "evt:<key>" | "ent:<name>": relevance grade 1-3}
+    # Map of {"mem:<key>" | "evt:<key>" | "ent:<name>" | "proc:<key>": relevance grade 1-3}
     relevance: Dict[str, int] = field(default_factory=dict)
 
 
@@ -189,6 +209,98 @@ EVENTS: List[Event] = [
 ]
 
 
+PROCEDURES: List[ProcedureFixture] = [
+    ProcedureFixture(
+        key="deploy-staging",
+        title="Staging deploy runbook",
+        goal="Deploy the current branch to staging safely",
+        description="Canonical staging deployment sequence. [key=proc:deploy-staging]",
+        procedure_kind="runbook",
+        steps=[
+            "Run the full test suite and confirm CI is green.",
+            "Apply pending database migrations with brainctl migrate.",
+            "Deploy the release to staging.",
+            "Verify health checks and smoke tests after rollout.",
+        ],
+        tools=["pytest", "brainctl", "deployctl"],
+        rollback_steps=["Redeploy the previous staging release.", "Verify health checks return to green."],
+        success_criteria=["Staging health checks are green.", "Smoke tests pass after deploy."],
+        execution_count=8,
+        success_count=7,
+        failure_count=1,
+    ),
+    ProcedureFixture(
+        key="rollback-release",
+        title="Rollback bad release",
+        goal="Roll back a bad release without extending downtime",
+        description="Rollback playbook for failed deploys. [key=proc:rollback-release]",
+        procedure_kind="rollback",
+        steps=[
+            "Pause further deploys and identify the last known good release.",
+            "Redeploy the previous release artifact.",
+            "Re-run health checks and confirm error rates recover.",
+            "Open a follow-up incident note with the failing release id.",
+        ],
+        tools=["deployctl", "healthcheck"],
+        failure_modes=["Health checks still failing after rollback."],
+        rollback_steps=["Escalate to on-call and keep the platform on the last known good release."],
+        success_criteria=["Previous release is serving traffic cleanly."],
+        execution_count=6,
+        success_count=6,
+    ),
+    ProcedureFixture(
+        key="apply-migrations",
+        title="Apply pending migrations",
+        goal="Apply schema migrations before restarting dependent services",
+        description="Migration runbook used during deploys. [key=proc:apply-migrations]",
+        procedure_kind="workflow",
+        steps=[
+            "Inspect the pending migration list.",
+            "Run brainctl migrate against the target database.",
+            "Restart the dependent service after migrations complete.",
+        ],
+        tools=["brainctl"],
+        success_criteria=["Schema version matches the newest applied migration."],
+        execution_count=5,
+        success_count=5,
+    ),
+    ProcedureFixture(
+        key="fts-punctuation",
+        title="Troubleshoot FTS5 punctuation errors",
+        goal="Fix FTS5 syntax errors caused by punctuation in queries",
+        description="Troubleshooting playbook for punctuation-sensitive FTS5 queries. [key=proc:fts-punctuation]",
+        procedure_kind="troubleshooting",
+        steps=[
+            "Reproduce the failing query and capture the sqlite3 error message.",
+            "Sanitize punctuation with _sanitize_fts_query before sending the query to MATCH.",
+            "Re-run the search and verify the syntax error no longer occurs.",
+        ],
+        tools=["sqlite3", "brainctl"],
+        failure_modes=["Unsafe punctuation reaches MATCH unchanged."],
+        rollback_steps=["Fallback to a LIKE query while the sanitizer fix is being rolled out."],
+        success_criteria=["Search completes without an FTS5 syntax error."],
+        execution_count=4,
+        success_count=4,
+    ),
+    ProcedureFixture(
+        key="deploy-staging-legacy",
+        title="Legacy staging deploy",
+        goal="Old staging deploy sequence kept for audit history",
+        description="Deprecated staging deployment sequence. [key=proc:deploy-staging-legacy]",
+        procedure_kind="runbook",
+        steps=[
+            "Deploy directly to staging.",
+            "Run tests after the deploy completes.",
+        ],
+        status="stale",
+        execution_count=2,
+        success_count=1,
+        failure_count=1,
+        stale_after_days=14,
+    ),
+]
+
+
 ENTITIES: List[EntityFixture] = [
     EntityFixture("Alice", "person", ["Owns retrieval pipeline", "Prefers dark mode"]),
     EntityFixture("Bob",   "person", ["Owns consolidation daemon", "Writes Python"]),
@@ -243,10 +355,13 @@ QUERIES: List[Query] = [
 
     # Procedural / how-to
     Query("How do I deploy to staging?", "procedural", {
+        "proc:deploy-staging": 3,
         "mem:how-deploy": 3,
+        "proc:deploy-staging-legacy": 1,
         "evt:evt-deploy-v1": 1,
     }),
     Query("How do I roll back a bad release?", "procedural", {
+        "proc:rollback-release": 3,
         "mem:how-rollback": 3,
         "evt:evt-rollback": 2,
     }),
@@ -254,6 +369,7 @@ QUERIES: List[Query] = [
         "mem:how-test": 3,
     }),
     Query("How do I apply migrations?", "procedural", {
+        "proc:apply-migrations": 3,
         "mem:how-migrate": 3,
         "evt:evt-migration-031": 2,
     }),
@@ -283,6 +399,7 @@ QUERIES: List[Query] = [
 
     # Troubleshooting
     Query("FTS5 syntax error on punctuation", "troubleshooting", {
+        "proc:fts-punctuation": 3,
         "mem:lesson-fts-escape": 3,
         "evt:evt-error-fts": 3,
     }),
@@ -292,12 +409,18 @@ QUERIES: List[Query] = [
 
     # Negative control — nothing in the corpus should match
     Query("Summary of yesterday's basketball game", "negative", {}),
+    Query("How do I calibrate the lunar sensor array?", "negative", {}),
 
     # Ambiguous — multiple tangential results, no single primary
     Query("dark mode indentation coffee", "ambiguous", {
         "mem:pref-dark-mode": 1,
         "mem:pref-tabs": 1,
         "mem:pref-coffee": 1,
+    }),
+    Query("Which staging deploy should I use?", "ambiguous", {
+        "proc:deploy-staging": 2,
+        "proc:deploy-staging-legacy": 1,
+        "mem:how-deploy": 1,
     }),
 ]
 
@@ -309,10 +432,18 @@ def key_for_result(result: dict) -> str:
     marker of the form `[key=foo-bar]` so we can re-derive it after FTS5
     roundtrip. Falls back to None when the marker is missing.
     """
-    text = (result.get("content") or result.get("summary") or result.get("name") or "")
-    if "[key=" in text:
-        tail = text.split("[key=", 1)[1]
-        return tail.split("]", 1)[0].strip()
+    probes = [
+        result.get("content"),
+        result.get("summary"),
+        result.get("name"),
+        result.get("title"),
+        result.get("goal"),
+        result.get("description"),
+    ]
+    for text in probes:
+        if text and "[key=" in text:
+            tail = text.split("[key=", 1)[1]
+            return tail.split("]", 1)[0].strip()
     # Entity-name results have no marker
     if result.get("type") == "entity" and result.get("name"):
         return f"ent:{result['name']}"

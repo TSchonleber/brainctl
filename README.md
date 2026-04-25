@@ -2,14 +2,19 @@
 
 **Forgetful agents, fixed by a SQLite file.**
 
-One `brain.db` gives your agent durable memory across sessions — facts learned, decisions made, entities tracked, and state handed off. No server. No API keys. No LLM calls required.
+One `brain.db` gives your agent durable memory across sessions — episodic evidence, semantic facts, procedural runbooks, decisions made, entities tracked, and state handed off. No server. No API keys. No LLM calls required.
 
 ```python
 from agentmemory import Brain
 
 brain = Brain(agent_id="my-agent")
-ctx = brain.orient(project="api-v2")           # session start: handoff + events + triggers + memories
+ctx = brain.orient(project="api-v2")           # handoff + events + triggers + memories + procedures
 brain.remember("rate-limit: 100/15s", category="integration")
+brain.remember_procedure(
+    goal="Deploy to staging safely",
+    steps=["Run tests", "brainctl migrate", "Deploy", "Check health"],
+    title="Staging deploy runbook",
+)
 brain.decide("use Retry-After for backoff", "server controls timing", project="api-v2")
 brain.wrap_up("auth module complete", project="api-v2")  # session end: logs + handoff for next run
 ```
@@ -45,6 +50,7 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 
 **Memory types**
 - `convention`, `decision`, `environment`, `identity`, `integration`, `lesson`, `preference`, `project`, `user`
+- Core memory layers: episodic, semantic, and procedural
 - Category controls natural half-life: identity decays over ~1 year; integration details over ~1 month
 - Hard cap: 10,000 memories per agent. Emergency compression retires lowest-confidence entries.
 
@@ -52,6 +58,7 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - FTS5 full-text search with stemming (default, zero dependencies)
 - Vector similarity via sqlite-vec + Ollama nomic-embed-text (`brainctl[vec]`)
 - Hybrid: Reciprocal Rank Fusion over FTS5 + vector results
+- Retrieval executive above memories/events/context/decisions/procedures: query planning, candidate fusion, procedural evidence expansion, deterministic late reranking, grounded abstention
 - Context profiles: named search presets scoped to task type (`--profile ops`, `--profile research`, etc.)
 - `--benchmark` preset: flattens recency/salience for synthetic evaluation runs
 
@@ -62,7 +69,7 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - Cross-encoder controls: `--rerank-top-n` and `--rerank-budget-ms` tune candidate window + strict latency budget
 - Top-heavy staged rollout controls (I6): `--rollout-mode`, `--rollout-canary-agents`, `--rollout-canary-percent`, `--rollback-top-heavy`
 - Env mirrors for rollout controls: `BRAINCTL_TOPHEAVY_ROLLOUT_MODE`, `BRAINCTL_TOPHEAVY_CANARY_AGENTS`, `BRAINCTL_TOPHEAVY_CANARY_PERCENT`, `BRAINCTL_TOPHEAVY_ROLLBACK`
-- Retrieval regression-gated in CI: >2% drop on P@1/P@5/MRR/nDCG@5 fails the build
+- Retrieval regression-gated in CI: >2% drop on P@1/P@5/MRR/nDCG@5 fails the build. Search-quality output also reports the fixture-specific P@5 ceiling and ratio-to-ceiling so sparse graded queries do not make raw P@5 look worse than it is.
 
 **Knowledge graph**
 - Typed entity nodes: `agent`, `concept`, `document`, `event`, `location`, `organization`, `person`, `project`, `service`, `tool`
@@ -112,7 +119,7 @@ Trading bots:
 | `plugins/octobot/` | OctoBot |
 | `plugins/coinbase-agentkit/` | Coinbase AgentKit |
 
-## MCP server (201 tools)
+## MCP server (209 tools)
 
 ```json
 {
@@ -130,7 +137,11 @@ Add to `~/.claude/claude_desktop_config.json`, `~/.cursor/mcp.json`, or equivale
 
 ```bash
 brainctl memory add "content" -c convention   # store a memory
+brainctl memory add "rollback steps..." -c convention --type procedural
 brainctl search "query"                       # FTS5 search
+brainctl procedure add --goal "Deploy to staging safely" --step "Run tests" --step "brainctl migrate"
+brainctl procedure search "how do I deploy to staging?"
+brainctl procedure feedback 12 --success --validated --outcome "deploy completed cleanly"
 brainctl vsearch "semantic query"             # vector search (requires [vec])
 brainctl entity create "Alice" -t person      # create entity
 brainctl entity relate Alice works_at Acme    # link entities
@@ -146,14 +157,17 @@ brainctl gaps scan                            # coverage + orphan + broken-edge 
 brainctl consolidate cycle                    # full consolidation pass
 ```
 
-## Python API (22 methods)
+## Python API
 
 | Method | What it does |
 |--------|--------------|
 | `orient(project)` | One-call session start: handoff + events + triggers + memories |
 | `wrap_up(summary)` | One-call session end: logs event + creates handoff |
 | `remember(content, category)` | Store a durable fact through the W(m) write gate |
+| `remember(content, category, memory_type="procedural")` | Store free text and compile it into a structured procedure when appropriate |
+| `remember_procedure(goal, steps, ...)` | Create a canonical procedural memory with structured fields |
 | `search(query)` | FTS5 full-text search with stemming |
+| `search_procedures(query)` | Search structured procedures with deterministic procedural scoring |
 | `vsearch(query)` | Vector similarity search (optional) |
 | `think(query)` | Spreading-activation recall across the knowledge graph |
 | `forget(memory_id)` | Soft-delete a memory |
@@ -167,6 +181,8 @@ brainctl consolidate cycle                    # full consolidation pass
 | `resume()` | Fetch and consume latest handoff |
 | `doctor()` | Diagnostic health check |
 | `consolidate()` | Promote high-importance memories |
+| `procedure_feedback(procedure_id, ...)` | Record execution outcome, validation, and utility for a procedure |
+| `backfill_procedures()` | Synthesize candidate/canonical procedures from existing memories, events, and decisions |
 | `tier_stats()` | Write-tier distribution |
 | `stats()` | Database overview |
 | `affect(text)` | Classify emotional state |
@@ -177,9 +193,10 @@ brainctl consolidate cycle                    # full consolidation pass
 
 - **Write gate** (W(m)): surprise scoring rejects redundant writes. Bypass with `force=True`.
 - **Three-tier routing**: high-value memories get full indexing; low-value get lightweight storage.
+- **Procedural compilation**: explicit runbooks live in dedicated procedure tables; `memory_type="procedural"` free text is heuristically compiled without deleting the original evidence.
 - **Duplicate suppression**: near-duplicates reinforce existing memories instead of creating new rows.
 - **Half-life decay**: unused memories fade at a rate set by category. Recalled memories are reinforced.
-- **Consolidation**: Hebbian learning, temporal promotion, compression — runs on a cron schedule.
+- **Consolidation**: Hebbian learning, temporal promotion, compression, and procedural candidate synthesis — runs on a cron schedule.
 
 ## Retrieval benchmarks
 
@@ -187,7 +204,8 @@ Tested with default settings, no tuning for benchmark data. Two harnesses
 ship in the tree:
 
 * `tests/bench/` — single-system retrieval baselines for `Brain.search`
-  and `cmd_search`, gated against regression in CI.
+  and `cmd_search`, now covering procedural lookup, rollback/troubleshooting,
+  ambiguity, and abstention, gated against regression in CI.
 * `tests/bench/competitor_runs/` — same-fixture head-to-head harness
   with adapters for Mem0, Letta, Zep, Cognee, MemPalace, OpenAI Memory.
   Skip-not-fabricate contract: missing SDK / API key raises

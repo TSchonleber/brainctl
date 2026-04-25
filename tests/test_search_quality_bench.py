@@ -98,3 +98,22 @@ def test_metric_primitives():
     assert bench_eval.ndcg_at_k(["c", "b", "a"], rel, 3) < 1.0
     # Empty relevance is vacuously perfect
     assert bench_eval.ndcg_at_k(["a"], {}, 3) == 1.0
+    # Sparse relevance caps attainable P@k below 1.0
+    assert bench_eval.p_at_k_ceiling({"a": 3}, 5) == 0.2
+    assert bench_eval.p_at_k_ceiling({"a": 3, "b": 2, "c": 1}, 5) == 0.6
+    assert bench_eval.p_at_k_ceiling({}, 5) == 0.0
+
+
+def test_p_at_5_diagnostics_expose_fixture_ceiling():
+    result = bench_eval.run(pipeline="cmd")
+    overall = result["overall"]
+
+    assert overall["answerable_queries"] == 20
+    assert overall["empty_relevance_queries"] == 2
+    assert overall["p_at_5_ceiling"] == pytest.approx(0.4273)
+    assert overall["p_at_5_answerable_ceiling"] == pytest.approx(0.47)
+    assert overall["p_at_5_answerable"] == pytest.approx(0.42)
+    assert overall["p_at_5_ratio_to_ceiling"] == pytest.approx(0.8935, abs=1e-4)
+    assert overall["p_at_5_macro_ratio_to_ceiling"] == pytest.approx(0.9167, abs=1e-4)
+    assert overall["p_at_5_answerable_ratio_to_ceiling"] == pytest.approx(0.8936, abs=1e-4)
+    assert overall["p_at_5_answerable_macro_ratio_to_ceiling"] == pytest.approx(0.9167, abs=1e-4)
