@@ -80,6 +80,11 @@ class TestMigrateRun:
             for m in result["migrations"]:
                 assert m.get("dry_run") is True
 
+    def test_run_accepts_cli_backup_options(self, fresh_db):
+        result = migrate.run(fresh_db, dry_run=True, backup=True, backup_retain=2)
+        assert result["ok"] is True
+        assert result["backup"] is None
+
     def test_already_up_to_date(self, fresh_db):
         # Mark all migrations as applied manually
         conn = sqlite3.connect(fresh_db)
