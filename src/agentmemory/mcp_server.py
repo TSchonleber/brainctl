@@ -1607,38 +1607,69 @@ def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: s
     return {"ok": True, "handoff_id": handoff_id, "status": validated["status"]}
 
 
-def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = None,
+def tool_handoff_latest(agent_id: str, status: str | None = None, project: str = None,
                         chat_id: str = None, thread_id: str = None, user_id: str = None,
                         **kw) -> dict:
+    """Fetch the latest matching handoff packet.
+
+    When ``status`` is omitted, both ``pending`` and ``pinned`` packets
+    are considered (the two "active" states an agent would care about
+    at session start), with pinned packets winning ties since they were
+    explicitly retained. Issue #97-3: the prior default of
+    ``status="pending"`` silently skipped pinned handoffs, undermining
+    the whole point of pinning at the most critical moment — session
+    startup orientation.
+
+    Pass ``status`` explicitly (``"pending"``, ``"pinned"``, ``"consumed"``,
+    or ``"expired"``) to retain the old single-status behavior.
+    """
+    # Bypass the legacy "default to pending" coercion in _validate_handoff_fields
+    # by validating status separately when caller didn't pass one.
+    multi_status = status is None
     validated = _validate_handoff_fields(
         agent_id=agent_id, project=project, chat_id=chat_id,
-        thread_id=thread_id, user_id=user_id, status=status,
+        thread_id=thread_id, user_id=user_id,
+        status=status if status is not None else "pending",
     )
+
+    if multi_status:
+        statuses = ("pinned", "pending")
+        # Order so pinned wins ties (newest pinned first, then newest pending).
+        status_clause = "status IN (?, ?)"
+        status_order = (
+            "CASE status WHEN 'pinned' THEN 0 ELSE 1 END, created_at DESC"
+        )
+        status_params = list(statuses)
+    else:
+        status_clause = "status = ?"
+        status_order = "created_at DESC"
+        status_params = [validated["status"]]
+
     db = get_db()
     candidates = []
     if validated["chat_id"] and validated["thread_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["chat_id"], validated["thread_id"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["chat_id"], validated["thread_id"], *status_params, validated["agent_id"]],
         ))
     if validated["chat_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["chat_id"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE chat_id = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["chat_id"], *status_params, validated["agent_id"]],
         ))
     if validated["project"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["project"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE project = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["project"], *status_params, validated["agent_id"]],
         ))
     if validated["user_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["user_id"], validated["agent_id"], validated["status"]),
+            f"SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND {status_clause} ORDER BY {status_order} LIMIT 1",
+            [validated["user_id"], validated["agent_id"], *status_params],
         ))
     candidates.append((
-        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-        (validated["agent_id"], validated["status"]),
+        f"SELECT * FROM handoff_packets WHERE agent_id = ? AND {status_clause} ORDER BY {status_order} LIMIT 1",
+        [validated["agent_id"], *status_params],
     ))
     row = None
     for sql, params in candidates:
@@ -2481,11 +2512,24 @@ TOOLS = [
     ),
     Tool(
         name="handoff_latest",
-        description="Fetch the latest matching handoff packet, preferring thread, then chat, then project, then user scope.",
+        description=(
+            "Fetch the latest matching handoff packet, preferring thread, "
+            "then chat, then project, then user scope. When `status` is "
+            "omitted, both `pending` and `pinned` packets are considered "
+            "(pinned wins ties) — pass status explicitly to filter to a "
+            "single state."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "consumed", "expired", "pinned"],
+                    "description": (
+                        "Optional. If omitted, returns the latest pending "
+                        "or pinned packet (pinned preferred)."
+                    ),
+                },
                 "project": {"type": "string"},
                 "chat_id": {"type": "string"},
                 "thread_id": {"type": "string"},
