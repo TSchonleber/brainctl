@@ -12,6 +12,7 @@ Usage:
   brainctl-mcp --doctor --json  # also output JSON results
 """
 
+import inspect
 import json
 import logging
 import os
@@ -2872,6 +2873,38 @@ def tool_affect_monitor(agent_id="mcp-client", **kw):
 app = Server("brainctl")
 
 
+def _invoke_dispatch_fn(fn, agent_id: str, arguments: dict):
+    """Call a tool dispatcher, adapting to its signature.
+
+    Two extension-module conventions exist alongside the native
+    ``fn(agent_id=..., **kwargs)`` shape: a ``fn(args: dict)`` shape used by
+    `mcp_tools_health` and `mcp_tools_lifecycle`. Without introspection,
+    blindly calling ``fn(agent_id=..., **arguments)`` fails on the latter
+    with ``unexpected keyword argument 'agent_id'`` and breaks `health`,
+    `lint`, `validate`, `decay_report`, etc. (issue #97).
+    """
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        params = None
+
+    single_dict_arg = (
+        params is not None
+        and len(params) == 1
+        and params[0].kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    )
+
+    if single_dict_arg:
+        args_dict = dict(arguments)
+        args_dict.setdefault("agent_id", agent_id)
+        return fn(args_dict)
+
+    return fn(agent_id=agent_id, **arguments)
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return TOOLS
@@ -2935,7 +2968,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "stats":
             result = fn()
         else:
-            result = fn(agent_id=agent_id, **arguments)
+            result = _invoke_dispatch_fn(fn, agent_id, arguments)
     except Exception as e:
         result = {"error": str(e)}
 
