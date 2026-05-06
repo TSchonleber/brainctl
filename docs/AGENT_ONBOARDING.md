@@ -195,6 +195,48 @@ Schedule periodic consolidation (decay, compress, promote):
 0 */4 * * * BRAIN_DB=~/agentmemory/db/brain.db brainctl-consolidate cycle
 ```
 
+## Environment Variables
+
+brainctl resolves the database location at process start. The relevant env vars:
+
+| Variable | Purpose |
+|---|---|
+| `BRAINCTL_HOME` | Root for `db/brain.db`, `backups/`, etc. Defaults to `~/agentmemory`. |
+| `BRAIN_DB` | Direct path to a `brain.db` file. Overrides `BRAINCTL_HOME`. |
+| `BRAIN_DB_FEDERATION` | Federated multi-DB routing config (multi-profile setups). |
+
+### Service-launched processes (systemd, launchd, gateway daemons)
+
+These vars are read **once at process start** from the process environment.
+A long-lived service (systemd unit, launchd plist, supervisor entry, custom
+gateway) does **not** inherit interactive shell exports. If you set
+`BRAINCTL_HOME` in `~/.zshrc` and the service is launched separately,
+interactive `brainctl …` calls hit the right DB but the service writes to
+the default location instead — a silent split-brain.
+
+When integrating brainctl into a service definition:
+
+- **systemd** — declare the vars with `Environment=` (or `EnvironmentFile=`)
+  in the unit, e.g. `Environment=BRAINCTL_HOME=/var/lib/brainctl`.
+- **launchd** — set them under `EnvironmentVariables` in the plist.
+- **Hermes gateway / OpenClaw / similar agent runtimes** — verify the
+  service generator propagates `BRAINCTL_HOME` / `BRAIN_DB` /
+  `BRAIN_DB_FEDERATION` into the generated unit. Profile `.env` and
+  `config.yaml` only help if the runner forwards them. (Tracked upstream
+  in [hermes-agent#13246](https://github.com/NousResearch/hermes-agent/pull/13246);
+  history in brainctl issue #89.)
+
+To confirm at runtime, check what the running process actually sees:
+
+```bash
+brainctl stats              # interactive shell
+ps -eo pid,comm,etime | grep <service>
+cat /proc/<pid>/environ | tr '\0' '\n' | grep -E 'BRAIN(_DB|CTL_HOME)'
+```
+
+If the service env is empty or different from your shell, the unit is
+not propagating — fix it there, not in brainctl.
+
 ## Common Patterns
 
 ### Autonomous Agent (long-running, self-directed)
