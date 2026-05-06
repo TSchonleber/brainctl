@@ -290,19 +290,26 @@ def tool_gaps_scan(**kwargs) -> dict:
         # Ensure coverage stats are current
         _run_refresh_inline(conn, now)
 
-        # 1. Coverage holes: active agents without any coverage entry
-        agent_scopes = {
-            f"agent:{r['id']}"
-            for r in conn.execute(
-                "SELECT id FROM agents WHERE status='active'"
-            ).fetchall()
-        }
-        covered_scopes = {
-            r["scope"]
-            for r in conn.execute("SELECT scope FROM knowledge_coverage").fetchall()
-        }
-
-        for scope in agent_scopes - covered_scopes:
+        # 1. Coverage holes: active agents that have written zero memories.
+        #
+        # Issue #97-6: the prior implementation looked for ``agent:<id>``
+        # entries in ``knowledge_coverage`` and treated their absence as
+        # a hole. ``knowledge_coverage`` is populated from ``memories.scope``
+        # though — typical scopes are ``global`` or ``project:foo``, not
+        # ``agent:<id>`` — so even agents with dozens of memories were
+        # always flagged at severity 1.0. Fix: ask the question we
+        # actually care about (does this agent have any active memories?)
+        # rather than depending on a scope-label coincidence.
+        uncovered_agents = conn.execute(
+            "SELECT a.id FROM agents a "
+            "WHERE a.status = 'active' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM memories m "
+            "    WHERE m.agent_id = a.id AND m.retired_at IS NULL"
+            "  )"
+        ).fetchall()
+        for r in uncovered_agents:
+            scope = f"agent:{r['id']}"
             severity = 1.0
             _log_gap(conn, "coverage_hole", scope, severity, triggered_by="gap-scan")
             report["coverage_holes"].append({"scope": scope, "severity": severity})
