@@ -132,7 +132,9 @@ def tool_infer(
         l1_memories, l1_events = _reason_l1_search(conn, query, limit=limit)
         l2_expanded, _ = _reason_l2_expand(conn, l1_memories, l1_events, hops=hops, top_k=15)
         inference, all_evidence, matched_policies, rules_evaluated = _reason_l3_infer(
-            conn, query, l1_memories, l2_expanded, agent_id=agent_id, min_confidence=min_confidence
+            conn, query, l1_memories, l2_expanded,
+            agent_id=agent_id, min_confidence=min_confidence,
+            l1_events=l1_events,
         )
 
         latency_ms = round((time.monotonic() - t0) * 1000)

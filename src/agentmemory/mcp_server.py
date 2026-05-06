@@ -225,6 +225,61 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+_FTS_REBUILD_CHECKED = False
+
+
+def _ensure_fts_index_consistent(conn) -> bool:
+    """Detect and repair a corrupt ``memories_fts`` index.
+
+    Issue #97 (issue 2): on some platforms the startup-script FTS rebuild
+    silently fails or never runs, leaving a populated ``memories`` table
+    with a broken inverted index. ``memory_search`` then returns zero
+    hits with no error, masking the problem. The user-reported
+    workaround was a manual rebuild via
+    ``INSERT INTO memories_fts(memories_fts) VALUES('rebuild')``.
+
+    External-content FTS5 (the shape ``memories_fts`` uses,
+    ``content=memories, content_rowid=id``) cannot be verified by row
+    counts: ``COUNT(*)`` on the FTS table reads through to the source
+    table whether or not the inverted index is built. Instead we use the
+    FTS5 ``'integrity-check'`` command, which raises
+    ``sqlite3.DatabaseError`` when the index is inconsistent — that's
+    the canonical way SQLite tells us the index is broken.
+
+    Returns ``True`` if a rebuild was actually performed, ``False`` if
+    the index was already healthy, the schema isn't initialized, or
+    there are no memories to back an index against.
+    """
+    try:
+        active = conn.execute(
+            "SELECT count(*) FROM memories "
+            "WHERE retired_at IS NULL AND indexed = 1"
+        ).fetchone()[0]
+    except sqlite3.Error:
+        return False
+
+    if not active:
+        return False
+
+    try:
+        conn.execute(
+            "INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')"
+        )
+    except sqlite3.DatabaseError:
+        try:
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+    except sqlite3.Error:
+        return False
+
+    return False
+
+
 def ensure_agent(conn, agent_id: str) -> None:
     if not agent_id:
         return
@@ -843,6 +898,15 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     if not fts_q:
         return {"ok": False, "error": "Empty query"}
 
+    # Cold-start FTS health check (issue #97-2). The platform startup script
+    # is supposed to rebuild the FTS index, but a silent failure leaves
+    # search returning zero hits despite a populated memories table.
+    # Rebuild once per process if the index looks short.
+    global _FTS_REBUILD_CHECKED
+    if not _FTS_REBUILD_CHECKED:
+        _ensure_fts_index_consistent(db)
+        _FTS_REBUILD_CHECKED = True
+
     # Theta-gamma slot cap — enforce 7*tier max slots per retrieval cycle.
     # Tier 1 (default) → 7 slots, tier 2 → 14, tier 3 → 21.
     # Mirrors the theta-nested gamma coupling constraint (Lisman & Jensen 2013).
@@ -950,17 +1014,51 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             pass
 
     # Multi-pass SDM-style convergence retrieval (issue #36).
+    #
+    # Issue #97-7 tightened this pass: the original implementation dumped
+    # every >4-char word from the top-3 pass-1 results into a combined
+    # OR query, then accepted any pass-2 hit. That dragged in memories
+    # connected only by surface-level word overlap (e.g. a brainctl-FTS
+    # query pulling in a Pigendom book analysis). The fixed version:
+    #   - Drops pass-2 hits that don't share *any* original-query token,
+    #     keeping the enrichment semantically anchored to what the user
+    #     actually asked for.
+    #   - Uses a longer min-token-length (5) and a richer stoplist for
+    #     enrichment-term extraction.
+    #   - Caps enrichment terms at 5 (down from 10) — fewer drift vectors.
     if multi_pass and results:
         try:
             seen_ids = {r["id"] for r in results}
+            _stop = {
+                "the", "a", "an", "is", "are", "was", "were", "in", "into",
+                "of", "to", "and", "or", "for", "with", "on", "at", "from",
+                "this", "that", "these", "those", "it", "its", "their",
+                "they", "there", "have", "has", "had", "been", "being",
+                "about", "after", "before", "while", "when", "where",
+                "what", "which", "would", "could", "should",
+            }
+            _query_tokens = {
+                t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
+                if len(t) > 2 and t not in _stop
+            }
+
             extra_terms: list[str] = []
             for r in results[:3]:
-                words = r.get("content", "").lower().split()
-                _stop = {"the", "a", "an", "is", "are", "was", "were", "in",
-                         "of", "to", "and", "or", "for", "with", "on", "at"}
-                extra_terms.extend(w for w in words if len(w) > 4 and w not in _stop)
+                words = re.findall(r"[a-z0-9]+", (r.get("content") or "").lower())
+                for w in words:
+                    if (
+                        len(w) >= 5
+                        and w not in _stop
+                        and w not in _query_tokens
+                        and not w.isdigit()
+                    ):
+                        extra_terms.append(w)
+            # Dedupe while preserving order, then cap.
+            seen = set()
+            extra_terms = [t for t in extra_terms if not (t in seen or seen.add(t))][:5]
+
             if extra_terms:
-                combined_query = query + " " + " ".join(extra_terms[:10])
+                combined_query = query + " " + " ".join(extra_terms)
                 fts_q2 = _safe_fts(combined_query)
                 if fts_q2:
                     params2 = [fts_q2] + [p for p in params[1:] if p != limit]
@@ -971,11 +1069,26 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
                     ).fetchall()
                     pass2 = rows_to_list(rows2)
                     pass1_ids = {r["id"] for r in results}
+
+                    # Continuity gate: a pass-2 hit must contain at least
+                    # one original-query token. Without this filter, pure
+                    # word-overlap with enrichment terms is enough to
+                    # surface unrelated memories — the breadth bug from
+                    # the #97 beta report.
+                    def _shares_query_token(content: str) -> bool:
+                        if not _query_tokens:
+                            return True
+                        cw = set(re.findall(r"[a-z0-9]+", (content or "").lower()))
+                        return bool(cw & _query_tokens)
+
                     for r in pass2:
-                        if r["id"] not in seen_ids:
-                            results.append(r)
-                            seen_ids.add(r["id"])
-                    pass2_ids = {r["id"] for r in pass2}
+                        if r["id"] in seen_ids:
+                            continue
+                        if not _shares_query_token(r.get("content") or ""):
+                            continue
+                        results.append(r)
+                        seen_ids.add(r["id"])
+                    pass2_ids = {r["id"] for r in pass2 if r["id"] in seen_ids}
                     both = pass1_ids & pass2_ids
                     results.sort(key=lambda r: (0 if r["id"] in both else 1))
         except Exception:
@@ -1543,38 +1656,69 @@ def tool_handoff_add(agent_id: str, goal: str, current_state: str, open_loops: s
     return {"ok": True, "handoff_id": handoff_id, "status": validated["status"]}
 
 
-def tool_handoff_latest(agent_id: str, status: str = "pending", project: str = None,
+def tool_handoff_latest(agent_id: str, status: str | None = None, project: str = None,
                         chat_id: str = None, thread_id: str = None, user_id: str = None,
                         **kw) -> dict:
+    """Fetch the latest matching handoff packet.
+
+    When ``status`` is omitted, both ``pending`` and ``pinned`` packets
+    are considered (the two "active" states an agent would care about
+    at session start), with pinned packets winning ties since they were
+    explicitly retained. Issue #97-3: the prior default of
+    ``status="pending"`` silently skipped pinned handoffs, undermining
+    the whole point of pinning at the most critical moment — session
+    startup orientation.
+
+    Pass ``status`` explicitly (``"pending"``, ``"pinned"``, ``"consumed"``,
+    or ``"expired"``) to retain the old single-status behavior.
+    """
+    # Bypass the legacy "default to pending" coercion in _validate_handoff_fields
+    # by validating status separately when caller didn't pass one.
+    multi_status = status is None
     validated = _validate_handoff_fields(
         agent_id=agent_id, project=project, chat_id=chat_id,
-        thread_id=thread_id, user_id=user_id, status=status,
+        thread_id=thread_id, user_id=user_id,
+        status=status if status is not None else "pending",
     )
+
+    if multi_status:
+        statuses = ("pinned", "pending")
+        # Order so pinned wins ties (newest pinned first, then newest pending).
+        status_clause = "status IN (?, ?)"
+        status_order = (
+            "CASE status WHEN 'pinned' THEN 0 ELSE 1 END, created_at DESC"
+        )
+        status_params = list(statuses)
+    else:
+        status_clause = "status = ?"
+        status_order = "created_at DESC"
+        status_params = [validated["status"]]
+
     db = get_db()
     candidates = []
     if validated["chat_id"] and validated["thread_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["chat_id"], validated["thread_id"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE chat_id = ? AND thread_id = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["chat_id"], validated["thread_id"], *status_params, validated["agent_id"]],
         ))
     if validated["chat_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE chat_id = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["chat_id"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE chat_id = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["chat_id"], *status_params, validated["agent_id"]],
         ))
     if validated["project"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE project = ? AND status = ? AND agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["project"], validated["status"], validated["agent_id"]),
+            f"SELECT * FROM handoff_packets WHERE project = ? AND {status_clause} AND agent_id = ? ORDER BY {status_order} LIMIT 1",
+            [validated["project"], *status_params, validated["agent_id"]],
         ))
     if validated["user_id"]:
         candidates.append((
-            "SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-            (validated["user_id"], validated["agent_id"], validated["status"]),
+            f"SELECT * FROM handoff_packets WHERE user_id = ? AND agent_id = ? AND {status_clause} ORDER BY {status_order} LIMIT 1",
+            [validated["user_id"], validated["agent_id"], *status_params],
         ))
     candidates.append((
-        "SELECT * FROM handoff_packets WHERE agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
-        (validated["agent_id"], validated["status"]),
+        f"SELECT * FROM handoff_packets WHERE agent_id = ? AND {status_clause} ORDER BY {status_order} LIMIT 1",
+        [validated["agent_id"], *status_params],
     ))
     row = None
     for sql, params in candidates:
@@ -2417,11 +2561,24 @@ TOOLS = [
     ),
     Tool(
         name="handoff_latest",
-        description="Fetch the latest matching handoff packet, preferring thread, then chat, then project, then user scope.",
+        description=(
+            "Fetch the latest matching handoff packet, preferring thread, "
+            "then chat, then project, then user scope. When `status` is "
+            "omitted, both `pending` and `pinned` packets are considered "
+            "(pinned wins ties) — pass status explicitly to filter to a "
+            "single state."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["pending", "consumed", "expired", "pinned"], "default": "pending"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "consumed", "expired", "pinned"],
+                    "description": (
+                        "Optional. If omitted, returns the latest pending "
+                        "or pinned packet (pinned preferred)."
+                    ),
+                },
                 "project": {"type": "string"},
                 "chat_id": {"type": "string"},
                 "thread_id": {"type": "string"},

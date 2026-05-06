@@ -173,17 +173,34 @@ def think_from_query(
     if not query or not query.strip():
         return {"ok": False, "error": "empty query"}
 
+    # Issue #97-5: think used to pass `query` raw to FTS5 MATCH, which
+    # treats multiple bare tokens as implicit-AND — a query like
+    # "Kelly village infrastructure" demanded all three tokens in the
+    # same row, returning zero seeds even when memory_search resolved
+    # the same query (memory_search OR-rewrites tokens).  Reuse the
+    # same sanitize+OR-expression helpers so seed selection behaves
+    # consistently with the rest of the search surface.
+    from agentmemory._impl import _sanitize_fts_query, _build_fts_match_expression
+
+    fts_match = _build_fts_match_expression(_sanitize_fts_query(query))
+
     seeds: List[Tuple[str, int]] = []
     seed_meta: List[Dict[str, Any]] = []
-    try:
-        rows = db.execute(
-            "SELECT m.id, m.content, m.category, m.confidence "
-            "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
-            "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
-            "ORDER BY fts.rank LIMIT ?",
-            (query, seed_limit),
-        ).fetchall()
-    except sqlite3.OperationalError:
+    rows = []
+    if fts_match:
+        try:
+            rows = db.execute(
+                "SELECT m.id, m.content, m.category, m.confidence "
+                "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
+                "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+                "ORDER BY fts.rank LIMIT ?",
+                (fts_match, seed_limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    if not rows:
+        # LIKE fallback: useful when FTS is unavailable OR the OR-rewrite
+        # produced no matches (rare — e.g. all tokens were stopwords).
         rows = db.execute(
             "SELECT id, content, category, confidence FROM memories "
             "WHERE content LIKE ? AND retired_at IS NULL "
