@@ -225,6 +225,61 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+_FTS_REBUILD_CHECKED = False
+
+
+def _ensure_fts_index_consistent(conn) -> bool:
+    """Detect and repair a corrupt ``memories_fts`` index.
+
+    Issue #97 (issue 2): on some platforms the startup-script FTS rebuild
+    silently fails or never runs, leaving a populated ``memories`` table
+    with a broken inverted index. ``memory_search`` then returns zero
+    hits with no error, masking the problem. The user-reported
+    workaround was a manual rebuild via
+    ``INSERT INTO memories_fts(memories_fts) VALUES('rebuild')``.
+
+    External-content FTS5 (the shape ``memories_fts`` uses,
+    ``content=memories, content_rowid=id``) cannot be verified by row
+    counts: ``COUNT(*)`` on the FTS table reads through to the source
+    table whether or not the inverted index is built. Instead we use the
+    FTS5 ``'integrity-check'`` command, which raises
+    ``sqlite3.DatabaseError`` when the index is inconsistent — that's
+    the canonical way SQLite tells us the index is broken.
+
+    Returns ``True`` if a rebuild was actually performed, ``False`` if
+    the index was already healthy, the schema isn't initialized, or
+    there are no memories to back an index against.
+    """
+    try:
+        active = conn.execute(
+            "SELECT count(*) FROM memories "
+            "WHERE retired_at IS NULL AND indexed = 1"
+        ).fetchone()[0]
+    except sqlite3.Error:
+        return False
+
+    if not active:
+        return False
+
+    try:
+        conn.execute(
+            "INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')"
+        )
+    except sqlite3.DatabaseError:
+        try:
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+    except sqlite3.Error:
+        return False
+
+    return False
+
+
 def ensure_agent(conn, agent_id: str) -> None:
     if not agent_id:
         return
@@ -842,6 +897,15 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     fts_q = _safe_fts(query)
     if not fts_q:
         return {"ok": False, "error": "Empty query"}
+
+    # Cold-start FTS health check (issue #97-2). The platform startup script
+    # is supposed to rebuild the FTS index, but a silent failure leaves
+    # search returning zero hits despite a populated memories table.
+    # Rebuild once per process if the index looks short.
+    global _FTS_REBUILD_CHECKED
+    if not _FTS_REBUILD_CHECKED:
+        _ensure_fts_index_consistent(db)
+        _FTS_REBUILD_CHECKED = True
 
     # Theta-gamma slot cap — enforce 7*tier max slots per retrieval cycle.
     # Tier 1 (default) → 7 slots, tier 2 → 14, tier 3 → 21.
