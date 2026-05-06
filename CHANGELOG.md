@@ -5,6 +5,95 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-05-06 — *Beta-audit follow-up: MCP dispatcher + retrieval correctness*
+
+Closes the full beta-tester audit filed as issue #97 plus the Hermes
+service-env documentation ask filed as #89. No new features — every
+change here is a correctness fix for an MCP tool that was returning
+wrong results or no results at all on the 2.5.0 surface.
+
+### Fixed
+
+- **MCP dispatcher** (#103, closes part of #97). Several extension
+  tools (`health`, `lint`, `validate`, `backup`, `budget_status`,
+  `decay_report`, `lifecycle_summary`, `write_gate_stats`,
+  `consolidation_events`, `retirement_analysis`) crashed with
+  `_call_X() got an unexpected keyword argument 'agent_id'` because
+  the dispatch site unconditionally passed `agent_id=` to dispatchers
+  whose signature was `_call_X(args: dict)`. New `_invoke_dispatch_fn`
+  introspects each callable's signature and adapts the call shape.
+- **`memory_search` cold-start FTS rebuild** (#105, #97-2). Some
+  platforms left the `memories_fts` inverted index out of sync with a
+  populated `memories` table. Search returned zero hits with no error.
+  New `_ensure_fts_index_consistent` runs FTS5's `'integrity-check'`
+  command on the first `memory_search` call per process and rebuilds
+  in place if the index is inconsistent.
+- **`handoff_latest` no longer skips pinned packets** (#105, #97-3).
+  The default `status="pending"` filtered out pinned handoffs at the
+  exact moment they were most needed — session-start orientation.
+  When `status` is omitted, both `pending` and `pinned` are eligible
+  and pinned wins ties via
+  `ORDER BY CASE status WHEN 'pinned' THEN 0 ELSE 1 END, created_at DESC`.
+  Explicit-status callers keep their old behavior.
+- **`infer` includes events in evidence** (#105, #97-4).
+  `_reason_l3_infer` was iterating only `l1_memories` when assembling
+  `all_evidence`, but `provenance.l1_results` counted
+  `l1_memories + l1_events`. Event-only matches produced the
+  self-contradicting `"No evidence found"` conclusion alongside
+  `l1_results > 0`. Events are now folded in as premises with
+  `importance` standing in as the confidence analogue (0.5 floor so
+  zero-importance events still contribute signal).
+- **`think` uses OR-rewrite for seed selection** (#105, #97-5).
+  `think_from_query` passed the raw query to FTS5 MATCH, which uses
+  implicit-AND across bare tokens. Multi-word natural-language
+  queries returned zero seeds even when `memory_search` resolved them
+  fine. Seed selection now uses the same `_sanitize_fts_query` +
+  `_build_fts_match_expression` helpers as the rest of the search
+  surface; the `LIKE` fallback is preserved for the edge case where
+  the OR rewrite is empty.
+- **`gaps_scan` coverage check asks the right question** (#105,
+  #97-6). The hole detector compared `agent:<id>` formatted strings
+  against `knowledge_coverage.scope`, which is sourced from
+  `memories.scope` (`global`, `project:foo`) and never holds
+  `agent:<id>` rows — so every active agent was always flagged at
+  severity 1.0 even with dozens of memories. Replaced with a direct
+  `EXISTS` query: an agent is a coverage hole iff it has no active
+  memories.
+- **`multi_pass` enrichment continuity gate** (#105, #97-7). The
+  pass-2 enrichment dumped every `>4`-char word from the top-3 pass-1
+  results into a combined OR query and accepted any pass-2 hit. A
+  brainctl-FTS query pulled in an unrelated book-analysis memory.
+  Pass-2 hits now must share at least one original-query token; token
+  quality tightened (min length 5, richer stoplist, drop digits and
+  in-query repeats); enrichment-term cap lowered to 5.
+- **`migrate --backup` / `--backup-retain`** (#102). The CLI exposed
+  the flags and `_impl.py` forwarded them, but `migrate.run()` didn't
+  accept the kwargs and crashed with
+  `TypeError: run() got an unexpected keyword argument 'backup'`.
+
+### Documentation
+
+- **Service-launched env propagation** (#104, closes #89). New
+  Environment Variables section in `docs/AGENT_ONBOARDING.md` covers
+  `BRAINCTL_HOME`, `BRAIN_DB`, `BRAIN_DB_FEDERATION`, and the
+  systemd / launchd / agent-runtime gotcha where service definitions
+  silently boot against the default DB unless the unit explicitly
+  declares the vars. Includes a runtime check
+  (`/proc/<pid>/environ`) and a link to the upstream Hermes fix
+  (NousResearch/hermes-agent#13246).
+
+### Dependencies
+
+- `openai` 2.32.0 → 2.34.0 (dev), `cognee` 1.0.1 → 1.0.5 (dev),
+  `mem0ai` 2.0.0 → 2.0.1 (dev). Dependabot bumps for the benchmark
+  comparison harness; runtime users unaffected.
+
+### Testing
+
+22 new unit tests across 7 files covering every fix above. Local
+sweep on the new + integration suites: 59 passed, 1 skipped, 1
+xfailed. CI matrix (3.11 / 3.12 / 3.13) green on the merge commits.
+
 ## [2.5.0] — 2026-04-21 — *Streamable HTTP transport (brainctl-mcp-http)*
 
 **Remote MCP shipped.** brainctl now speaks HTTP in addition to stdio —
