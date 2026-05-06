@@ -62,6 +62,7 @@ WHEN ADDING A NEW MIGRATION:
 import sqlite3
 import re
 import sys
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from datetime import datetime, timezone
@@ -105,6 +106,12 @@ _PER_KIND_TOLERATED_FRAGMENTS = {
     "CREATE TRIGGER": ("no such column", "already exists"),
     "CREATE VIEW":    ("already exists",),
 }
+
+_DESTRUCTIVE_MIGRATION_RE = re.compile(
+    r"\bDROP\s+(?:TABLE|INDEX|VIEW|TRIGGER|COLUMN)\b"
+    r"|\bALTER\s+TABLE\b[^;]*\bDROP\s+COLUMN\b",
+    re.IGNORECASE,
+)
 
 
 def _utc_now_iso() -> str:
@@ -331,6 +338,55 @@ def _apply_sql(conn: sqlite3.Connection, sql: str, file_label: str) -> tuple[int
     return run_count, skipped
 
 
+def _pending_batch_needs_backup(pending: list[tuple[int, str, Path]]) -> bool:
+    """Return true when the pending migration batch contains destructive DDL."""
+    for _version, _name, path in pending:
+        if _DESTRUCTIVE_MIGRATION_RE.search(path.read_text()):
+            return True
+    return False
+
+
+def _next_pre_migrate_backup_path(db_path: Path, version: int) -> Path:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stem = f"{db_path.name}.pre-migrate-{version:03d}-{ts}"
+    candidate = db_path.with_name(stem)
+    suffix = 1
+    while candidate.exists():
+        candidate = db_path.with_name(f"{stem}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def _prune_pre_migrate_backups(db_path: Path, retain: int) -> None:
+    retain = max(0, int(retain))
+    if retain == 0:
+        return
+    backups = sorted(
+        db_path.parent.glob(f"{db_path.name}.pre-migrate-*"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old in backups[retain:]:
+        try:
+            old.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _create_pre_migrate_backup(
+    db_path: Path,
+    pending: list[tuple[int, str, Path]],
+    retain: int,
+) -> str:
+    """Checkpoint WAL state and copy brain.db before destructive migrations."""
+    with sqlite3.connect(str(db_path), timeout=10) as checkpoint_conn:
+        checkpoint_conn.execute("PRAGMA wal_checkpoint(FULL)")
+    backup_path = _next_pre_migrate_backup_path(db_path, max(v for v, _n, _p in pending))
+    shutil.copy2(db_path, backup_path)
+    _prune_pre_migrate_backups(db_path, retain)
+    return str(backup_path)
+
+
 def status(db_path: str) -> dict:
     """Return migration status report."""
     conn = sqlite3.connect(db_path, timeout=10)
@@ -356,7 +412,12 @@ def status(db_path: str) -> dict:
     }
 
 
-def run(db_path: str, dry_run: bool = False) -> dict:
+def run(
+    db_path: str,
+    dry_run: bool = False,
+    backup: bool = True,
+    backup_retain: int = 5,
+) -> dict:
     """Apply all pending migrations. Returns result dict."""
     conn = sqlite3.connect(db_path, timeout=10)
     conn.execute("PRAGMA journal_mode = WAL")
@@ -368,11 +429,36 @@ def run(db_path: str, dry_run: bool = False) -> dict:
 
     if not pending:
         conn.close()
-        return {"ok": True, "applied": 0, "dry_run": dry_run, "message": "Already up to date."}
+        return {
+            "ok": True,
+            "applied": 0,
+            "dry_run": dry_run,
+            "backup": None,
+            "message": "Already up to date.",
+        }
 
     applied = []
     errors = []
     idempotent_notes: list[str] = []
+    backup_path = None
+    if backup and not dry_run and _pending_batch_needs_backup(pending):
+        try:
+            conn.close()
+            backup_path = _create_pre_migrate_backup(Path(db_path), pending, backup_retain)
+            conn = sqlite3.connect(db_path, timeout=10)
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA foreign_keys = ON")
+            _ensure_schema_versions(conn)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "applied": 0,
+                "dry_run": dry_run,
+                "backup": None,
+                "migrations": [],
+                "errors": [{"version": pending[0][0], "name": "pre-migrate backup", "error": str(exc)}],
+                "idempotent_notes": [],
+            }
     for version, name, path in pending:
         sql = path.read_text()
         if dry_run:
@@ -402,6 +488,7 @@ def run(db_path: str, dry_run: bool = False) -> dict:
         "ok": len(errors) == 0,
         "applied": len(applied),
         "dry_run": dry_run,
+        "backup": backup_path,
         "migrations": applied,
         "errors": errors,
         "idempotent_notes": idempotent_notes,
