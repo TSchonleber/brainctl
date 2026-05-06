@@ -1014,17 +1014,51 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
             pass
 
     # Multi-pass SDM-style convergence retrieval (issue #36).
+    #
+    # Issue #97-7 tightened this pass: the original implementation dumped
+    # every >4-char word from the top-3 pass-1 results into a combined
+    # OR query, then accepted any pass-2 hit. That dragged in memories
+    # connected only by surface-level word overlap (e.g. a brainctl-FTS
+    # query pulling in a Pigendom book analysis). The fixed version:
+    #   - Drops pass-2 hits that don't share *any* original-query token,
+    #     keeping the enrichment semantically anchored to what the user
+    #     actually asked for.
+    #   - Uses a longer min-token-length (5) and a richer stoplist for
+    #     enrichment-term extraction.
+    #   - Caps enrichment terms at 5 (down from 10) — fewer drift vectors.
     if multi_pass and results:
         try:
             seen_ids = {r["id"] for r in results}
+            _stop = {
+                "the", "a", "an", "is", "are", "was", "were", "in", "into",
+                "of", "to", "and", "or", "for", "with", "on", "at", "from",
+                "this", "that", "these", "those", "it", "its", "their",
+                "they", "there", "have", "has", "had", "been", "being",
+                "about", "after", "before", "while", "when", "where",
+                "what", "which", "would", "could", "should",
+            }
+            _query_tokens = {
+                t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
+                if len(t) > 2 and t not in _stop
+            }
+
             extra_terms: list[str] = []
             for r in results[:3]:
-                words = r.get("content", "").lower().split()
-                _stop = {"the", "a", "an", "is", "are", "was", "were", "in",
-                         "of", "to", "and", "or", "for", "with", "on", "at"}
-                extra_terms.extend(w for w in words if len(w) > 4 and w not in _stop)
+                words = re.findall(r"[a-z0-9]+", (r.get("content") or "").lower())
+                for w in words:
+                    if (
+                        len(w) >= 5
+                        and w not in _stop
+                        and w not in _query_tokens
+                        and not w.isdigit()
+                    ):
+                        extra_terms.append(w)
+            # Dedupe while preserving order, then cap.
+            seen = set()
+            extra_terms = [t for t in extra_terms if not (t in seen or seen.add(t))][:5]
+
             if extra_terms:
-                combined_query = query + " " + " ".join(extra_terms[:10])
+                combined_query = query + " " + " ".join(extra_terms)
                 fts_q2 = _safe_fts(combined_query)
                 if fts_q2:
                     params2 = [fts_q2] + [p for p in params[1:] if p != limit]
@@ -1035,11 +1069,26 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
                     ).fetchall()
                     pass2 = rows_to_list(rows2)
                     pass1_ids = {r["id"] for r in results}
+
+                    # Continuity gate: a pass-2 hit must contain at least
+                    # one original-query token. Without this filter, pure
+                    # word-overlap with enrichment terms is enough to
+                    # surface unrelated memories — the breadth bug from
+                    # the #97 beta report.
+                    def _shares_query_token(content: str) -> bool:
+                        if not _query_tokens:
+                            return True
+                        cw = set(re.findall(r"[a-z0-9]+", (content or "").lower()))
+                        return bool(cw & _query_tokens)
+
                     for r in pass2:
-                        if r["id"] not in seen_ids:
-                            results.append(r)
-                            seen_ids.add(r["id"])
-                    pass2_ids = {r["id"] for r in pass2}
+                        if r["id"] in seen_ids:
+                            continue
+                        if not _shares_query_token(r.get("content") or ""):
+                            continue
+                        results.append(r)
+                        seen_ids.add(r["id"])
+                    pass2_ids = {r["id"] for r in pass2 if r["id"] in seen_ids}
                     both = pass1_ids & pass2_ids
                     results.sort(key=lambda r: (0 if r["id"] in both else 1))
         except Exception:
