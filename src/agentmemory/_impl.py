@@ -15637,8 +15637,16 @@ def _reason_l2_expand(db, l1_memories, l1_events, hops: int = 2, top_k: int = 15
     return expanded, provenance
 
 
-def _reason_l3_infer(db, query: str, l1_memories, l2_expanded, agent_id: str = "unknown", min_confidence: float = 0.0):
-    """L3 inferential — policy rule evaluation + confidence chaining over L1+L2 evidence."""
+def _reason_l3_infer(db, query: str, l1_memories, l2_expanded, agent_id: str = "unknown", min_confidence: float = 0.0, l1_events=None):
+    """L3 inferential — policy rule evaluation + confidence chaining over L1+L2 evidence.
+
+    Issue #97-4: ``l1_events`` previously had no path into ``all_evidence``,
+    so a query whose hits were entirely event-shaped reported
+    ``l1_results: N`` in provenance but ``"No evidence found"`` as the
+    conclusion (tier ``L1-gap``). The argument is keyword-only and
+    defaults to ``None`` for backwards compatibility — older callers
+    that didn't pass events keep their behaviour.
+    """
     _ensure_policy_tables(db)
 
     all_evidence = []
@@ -15650,6 +15658,20 @@ def _reason_l3_infer(db, query: str, l1_memories, l2_expanded, agent_id: str = "
             "content": (r.get("content") or r.get("summary") or "")[:200],
             "confidence": conf, "score": score, "role": "premise",
             "recalled_via": r.get("source", "search"),
+        })
+    for r in (l1_events or []):
+        # Events don't carry confidence; importance is the closest analogue.
+        # Default to 0.5 so an event with importance=0.0 still contributes
+        # *some* signal rather than collapsing the chain product to zero.
+        conf = r.get("importance") if r.get("importance") is not None else 0.5
+        if conf <= 0:
+            conf = 0.5
+        score = r.get("final_score") or r.get("rrf_score") or 0.01
+        all_evidence.append({
+            "id": r["id"], "type": r.get("type", "event"),
+            "content": (r.get("summary") or r.get("content") or "")[:200],
+            "confidence": conf, "score": score, "role": "premise",
+            "recalled_via": r.get("source", "events_fts"),
         })
     for r in l2_expanded:
         conf = r.get("confidence") or 0.5
@@ -15801,7 +15823,9 @@ def cmd_infer(args):
     l1_memories, l1_events = _reason_l1_search(db, query, limit=limit)
     l2_expanded, _ = _reason_l2_expand(db, l1_memories, l1_events, hops=hops, top_k=15)
     inference, all_evidence, matched_policies, rules_evaluated = _reason_l3_infer(
-        db, query, l1_memories, l2_expanded, agent_id=agent_id, min_confidence=min_confidence
+        db, query, l1_memories, l2_expanded,
+        agent_id=agent_id, min_confidence=min_confidence,
+        l1_events=l1_events,
     )
 
     latency_ms = round((time.monotonic() - t0) * 1000)
