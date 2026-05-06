@@ -28,9 +28,10 @@ import agentmemory.mcp_tools_reasoning as reasoning
 def brain_with_events(tmp_path, monkeypatch):
     db = tmp_path / "brain.db"
     brain = Brain(db_path=str(db), agent_id="infer-agent")
+    # Tool modules cache DB_PATH at import time via get_db_path().
+    # Patch the symbols they actually read instead of relying on env vars.
     monkeypatch.setattr(mcp_server, "DB_PATH", db)
-    # Patch the reasoning module's DB resolver to also point at this DB
-    monkeypatch.setenv("BRAIN_DB", str(db))
+    monkeypatch.setattr(reasoning, "DB_PATH", db)
     return brain, db
 
 
