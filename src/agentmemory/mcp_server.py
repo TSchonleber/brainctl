@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from agentmemory.lib.mcp_helpers import now_iso, safe_fts
+from agentmemory.lib import lifecycle as _lifecycle
 from agentmemory.paths import get_db_path
 # Import the canonical surprise scorer from _impl.py — see bug-fix note
 # below at the former _surprise_score_mcp callsite.
@@ -222,6 +223,15 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    # Defense in depth alongside connect-level timeout=10 — when many
+    # concurrent brainctl-mcp processes contend on writes, SQLite's
+    # internal busy handler retries up to busy_timeout before raising
+    # SQLITE_BUSY. Override via env if needed (e.g. for hot-fix).
+    try:
+        bt = int(os.environ.get("BRAINCTL_DB_BUSY_TIMEOUT_MS", "10000"))
+    except ValueError:
+        bt = 10000
+    conn.execute(f"PRAGMA busy_timeout = {bt}")
     return conn
 
 
@@ -3064,11 +3074,13 @@ def _invoke_dispatch_fn(fn, agent_id: str, arguments: dict):
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
+    _lifecycle.touch_activity()
     return TOOLS
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    _lifecycle.touch_activity()
     # Inject agent_id from arguments or default
     agent_id = arguments.pop("agent_id", "mcp-client")
 
@@ -3258,6 +3270,13 @@ async def main():
     if "--doctor" in sys.argv:
         _run_doctor()
         return
+
+    # Lifecycle hardening — only in real stdio mode, never for the
+    # short-lived --list-tools / --doctor / --help flags above. Prevents
+    # zombie brainctl-mcp processes from accumulating when MCP clients
+    # crash or hold idle pipes (see lib/lifecycle.py for full rationale).
+    _lifecycle.install_signal_handlers()
+    _lifecycle.install_watchdog()
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())

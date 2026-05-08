@@ -136,6 +136,7 @@ all = [
 [project.scripts]
 brainctl = "agentmemory.cli:main"
 brainctl-mcp = "agentmemory.mcp_server:run"
+brainctl-mcp-cleanup = "agentmemory.mcp_cleanup:main"
 # Streamable HTTP transport — sibling of brainctl-mcp. Stdio path is
 # unchanged; this exposes the same tool surface over HTTP with bearer
 # token + allowlist for remote clients like xAI Grok and Strand.
