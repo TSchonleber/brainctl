@@ -44,6 +44,7 @@ def gate_write(
     arousal_gain: float = 1.0,
     db_stats=None,
     agent_id: str | None = None,
+    profile: dict | None = None,
 ) -> tuple[float, str, dict]:
     """
     Evaluate write worthiness of a candidate memory.
@@ -51,15 +52,29 @@ def gate_write(
     Args:
         db_stats: optional sqlite3 connection to the main brain DB (for memory_stats lookup)
         agent_id: agent writing the memory (for memory_stats lookup)
+        profile: optional cognitive-profile tunables dict (see
+            agentmemory.cognitive_profile). When None, defaults match the
+            pre-052 hardcoded constants exactly. Recognized keys:
+            wm_novelty_weight, wm_utility_weight, wm_importance_weight,
+            wm_scope_weight, wm_skip_threshold.
 
     Returns:
         (score, reason, components)
         - score: 0.0-1.0 worthiness score
-        - reason: empty string if approved, rejection reason if rejected (score < 0.3)
+        - reason: empty string if approved, rejection reason if rejected
+            (score < skip threshold)
         - components: breakdown dict for diagnostics
     """
     if force:
         return (1.0, "", {"forced": True})
+
+    # Resolve tunables. Defaults match pre-052 behavior exactly.
+    p = profile or {}
+    w_novelty    = float(p.get("wm_novelty_weight", 0.45))
+    w_utility    = float(p.get("wm_utility_weight", 0.25))
+    w_importance = float(p.get("wm_importance_weight", 0.20))
+    w_scope      = float(p.get("wm_scope_weight", 0.10))
+    skip_thr     = float(p.get("wm_skip_threshold", 0.30))
 
     n_dims = len(candidate_blob) // 4
     cand_vec = list(struct.unpack(f"{n_dims}f", candidate_blob[:n_dims * 4]))
@@ -152,8 +167,15 @@ def gate_write(
     long_term_utility = math.pow(cat_weight * scope_weight * recall_rate, 1.0 / 3.0)
 
     # D-MEM RPE = semantic_surprise × long_term_utility
-    # Blend: novelty (surprise) 45% + long_term_utility 25% + importance 20% + scope_weight 10%
-    base_score = (novelty * 0.45) + (long_term_utility * 0.25) + (importance * 0.20) + (scope_weight * 0.10)
+    # Blend weights are profile-tunable; defaults preserve pre-052 behavior
+    # (novelty 45 / utility 25 / importance 20 / scope 10). Autistic profile
+    # shifts toward novelty (HIPPEA: high prediction-error precision).
+    base_score = (
+        (novelty * w_novelty)
+        + (long_term_utility * w_utility)
+        + (importance * w_importance)
+        + (scope_weight * w_scope)
+    )
     gain = max(0.5, min(2.0, arousal_gain))  # clamp to [0.5, 2.0]
     score = min(1.0, base_score * gain)
 
@@ -169,10 +191,17 @@ def gate_write(
         "arousal_gain": round(gain, 4),
         "base_score": round(base_score, 4),
         "score": round(score, 4),
+        "profile": (p.get("name") if p else "neurotypical"),
     }
 
-    # SKIP threshold (D-MEM: RPE < 0.3 → discard)
-    if score < 0.3:
-        return (round(score, 4), f"Low worthiness ({score:.3f}): near-duplicate or low-utility content", components)
+    # SKIP threshold — profile-tunable (autistic lowers to 0.20 to retain
+    # more verbatim detail).
+    if score < skip_thr:
+        return (
+            round(score, 4),
+            f"Low worthiness ({score:.3f} < {skip_thr:.2f}): "
+            f"near-duplicate or low-utility content",
+            components,
+        )
 
     return (round(score, 4), "", components)
