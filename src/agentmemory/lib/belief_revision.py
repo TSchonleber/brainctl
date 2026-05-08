@@ -29,23 +29,39 @@ def _get_db(db_path: str | None = None) -> sqlite3.Connection:
 # Credibility score
 # ---------------------------------------------------------------------------
 
-def compute_credibility(memory: dict, agent_expertise: dict) -> float:
+def compute_credibility(
+    memory: dict,
+    agent_expertise: dict,
+    profile: dict | None = None,
+) -> float:
     """
     C(m) = bayesian_mean(alpha, beta)
-           * (1 + log1p(recalled_count) / 10)
-           * max(0, 1 - days_since_write / 365)
+           * (1 + log1p(recalled_count) / recall_log_divisor)
+           * max(0, 1 - days_since_write / recency_half_life_days)
            * trust_score
            * agent_expertise_score
 
     memory keys: alpha, beta, recalled_count, created_at, trust_score
-    agent_expertise: mapping of domain -> strength (0-1), used as mean expertise weight
+    agent_expertise: mapping of domain -> strength (0-1), used as mean
+        expertise weight.
+    profile: optional cognitive-profile tunables. Recognized keys:
+        bayesian_alpha_prior, bayesian_beta_prior,
+        credibility_recall_log_divisor, credibility_recency_half_life_days.
+        When None, defaults match the pre-052 hardcoded constants
+        (1.0 / 1.0 / 10.0 / 365.0) exactly.
     """
-    alpha = float(memory.get("alpha") or 1.0)
-    beta  = float(memory.get("beta")  or 1.0)
+    p = profile or {}
+    alpha_prior = float(p.get("bayesian_alpha_prior", 1.0))
+    beta_prior  = float(p.get("bayesian_beta_prior",  1.0))
+    recall_div  = float(p.get("credibility_recall_log_divisor", 10.0))
+    half_life   = float(p.get("credibility_recency_half_life_days", 365.0))
+
+    alpha = float(memory.get("alpha") or alpha_prior)
+    beta  = float(memory.get("beta")  or beta_prior)
     bayesian_mean = alpha / (alpha + beta)
 
     recalled = int(memory.get("recalled_count") or 0)
-    recall_boost = 1.0 + math.log1p(recalled) / 10.0
+    recall_boost = 1.0 + math.log1p(recalled) / max(recall_div, 1e-6)
 
     created_at = memory.get("created_at") or memory.get("updated_at") or ""
     try:
@@ -56,7 +72,7 @@ def compute_credibility(memory: dict, agent_expertise: dict) -> float:
         days_since = max(0.0, (now - created_dt).total_seconds() / 86400.0)
     except (ValueError, AttributeError):
         days_since = 0.0
-    recency = max(0.0, 1.0 - days_since / 365.0)
+    recency = max(0.0, 1.0 - days_since / max(half_life, 1.0))
 
     trust = float(memory.get("trust_score") or 1.0)
 
@@ -113,14 +129,27 @@ def resolve_conflict(
     dry_run: bool = False,
     force_winner_id: str | None = None,
     threshold: float = 0.05,
+    profile: dict | None = None,
 ) -> dict:
     """
     Apply AGM credibility-weighted resolution to a single open conflict.
+
+    When `profile` is supplied (cognitive-profile tunables), `threshold`
+    defaults to profile["agm_threshold"] if the caller did not override it,
+    and credibility is computed with profile-aware Bayesian priors and
+    decay constants.
 
     Returns a dict with keys:
       winner_id, loser_id, score_a, score_b, score_delta, action,
       escalated, escalation_reason, dry_run
     """
+    # Profile-driven threshold default. The explicit `threshold=0.05` in the
+    # signature is the legacy default; if the caller didn't override it AND
+    # a profile is supplied, honor the profile's value (autistic = 0.15,
+    # which preserves both sides longer per WCC).
+    if profile and threshold == 0.05:
+        threshold = float(profile.get("agm_threshold", threshold))
+
     conn = _get_db(db_path)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -181,13 +210,13 @@ def resolve_conflict(
 
     # 3. Compute credibility scores
     if mem_a:
-        score_a = compute_credibility(mem_a, exp_a)
+        score_a = compute_credibility(mem_a, exp_a, profile=profile)
     else:
         # No memory found — use raw confidence placeholder
         score_a = 0.5
 
     if mem_b:
-        score_b = compute_credibility(mem_b, exp_b)
+        score_b = compute_credibility(mem_b, exp_b, profile=profile)
     else:
         score_b = 0.5 if conflict["agent_b_id"] else 0.3  # ground-truth conflicts default lower
 
@@ -357,6 +386,7 @@ def auto_resolve(
     db_path: str | None = None,
     threshold: float = 0.05,
     dry_run: bool = False,
+    profile: dict | None = None,
 ) -> list[dict]:
     """Batch resolve all auto-resolvable open conflicts. Returns list of resolution results."""
     conn = _get_db(db_path)
@@ -372,6 +402,7 @@ def auto_resolve(
             db_path=db_path,
             dry_run=dry_run,
             threshold=threshold,
+            profile=profile,
         )
         results.append(r)
     return results

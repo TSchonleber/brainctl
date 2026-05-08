@@ -67,6 +67,7 @@ try:
         mcp_tools_usage,
         mcp_tools_workspace,
         mcp_tools_world,
+        mcp_tools_cognitive,
     )
     _EXT_MODULES = [
         mcp_tools_agents,
@@ -98,6 +99,7 @@ try:
         mcp_tools_usage,
         mcp_tools_workspace,
         mcp_tools_world,
+        mcp_tools_cognitive,
     ]
 except ImportError as _e:
     logger.warning("Some extension tool modules failed to import: %s", _e)
@@ -618,6 +620,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             vdb_gate = _get_vec_db()
             if vdb_gate:
                 try:
+                    from agentmemory.cognitive_profile import get_agent_profile as _get_profile
+                    _cog_profile = _get_profile(db, agent_id)
                     worthiness_score, worthiness_reason, worthiness_components = _wd.gate_write(
                         candidate_blob=blob,
                         confidence=confidence,
@@ -629,6 +633,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
                         arousal_gain=_arousal_gain,
                         db_stats=db,
                         agent_id=agent_id,
+                        profile=_cog_profile,
                     )
                 finally:
                     vdb_gate.close()

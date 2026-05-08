@@ -30,7 +30,18 @@ def load_write_decision_module():
     return None
 
 
-def run_write_gate(blob, confidence, category, scope, get_vec_db_fn, force=False):
+def run_write_gate(
+    blob,
+    confidence,
+    category,
+    scope,
+    get_vec_db_fn,
+    force=False,
+    profile=None,
+    agent_id=None,
+    db_stats=None,
+    arousal_gain=1.0,
+):
     """Run the W(m) write worthiness gate.
 
     Args:
@@ -40,6 +51,14 @@ def run_write_gate(blob, confidence, category, scope, get_vec_db_fn, force=False
         scope: Memory scope string
         get_vec_db_fn: Callable that returns a vec DB connection (or None)
         force: If True, skip the gate
+        profile: Optional cognitive-profile tunables dict (see
+            agentmemory.cognitive_profile). When None, gate_write uses
+            the pre-052 hardcoded defaults.
+        agent_id: Optional agent id (for memory_stats lookup).
+        db_stats: Optional sqlite3 connection to the main brain DB
+            (for memory_stats lookup).
+        arousal_gain: Optional affect-driven score multiplier (clamped
+            to [0.5, 2.0] inside gate_write).
 
     Returns:
         (worthiness_score, worthiness_reason, worthiness_components)
@@ -68,6 +87,10 @@ def run_write_gate(blob, confidence, category, scope, get_vec_db_fn, force=False
             scope=scope,
             db_vec=vdb,
             force=False,
+            arousal_gain=arousal_gain,
+            db_stats=db_stats,
+            agent_id=agent_id,
+            profile=profile,
         )
     except Exception as exc:
         logger.debug("Write gate execution failed: %s", exc)
