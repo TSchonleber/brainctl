@@ -59,29 +59,29 @@ class _BuiltinIntentResult:
 def _builtin_classify_intent(query):
     """Rule-based intent classifier — inline fallback for."""
     q = query.lower()
-    if any(w in q for w in ['who ', 'person', 'agent', 'team', 'assigned']):
+    if any(w in q for w in ['who ', 'person', 'agent', 'team', 'assigned', 'owner', 'maintainer', 'reviewer', 'prefer', 'preference']):
         return _BuiltinIntentResult('entity_lookup', 0.8, 'keyword:entity',
                                      'Show entity details with relations',
-                                     ['memories', 'events', 'context'])
+                                     ['memories', 'entities', 'events', 'context'])
     if any(w in q for w in ['what happened', 'when did', 'history', 'timeline', 'log']):
         return _BuiltinIntentResult('event_lookup', 0.8, 'keyword:event',
                                      'Show events in chronological order',
                                      ['events', 'memories', 'context'])
-    if any(w in q for w in ['how to', 'how do', 'procedure', 'steps', 'guide']):
+    if any(w in q for w in ['how to', 'how do', 'procedure', 'steps', 'guide', 'rollback', 'runbook', 'playbook', 'troubleshoot']):
         return _BuiltinIntentResult('procedural', 0.7, 'keyword:procedural',
                                      'Show step-by-step instructions',
-                                     ['memories', 'context', 'events'])
+                                     ['memories', 'decisions', 'events', 'context'])
     if any(w in q for w in ['why ', 'decision', 'rationale', 'reason']):
         return _BuiltinIntentResult('decision_lookup', 0.8, 'keyword:decision',
                                      'Show decisions with rationale',
-                                     ['memories', 'events', 'context'])
+                                     ['decisions', 'memories', 'events', 'context'])
     if any(w in q for w in ['related', 'connected', 'depends', 'link']):
         return _BuiltinIntentResult('graph_traversal', 0.7, 'keyword:graph',
                                      'Show connected nodes and edges',
                                      ['memories', 'events', 'context'])
     return _BuiltinIntentResult('general', 0.5, 'default',
                                  'Standard search results',
-                                 ['memories', 'events', 'context'])
+                                 ['memories', 'entities', 'events', 'context'])
 
 # Quantum amplitude scorer
 try:
@@ -157,21 +157,18 @@ _CE_LATENCY_SAMPLES_MS = deque(maxlen=max(8, _CE_LATENCY_WINDOW))
 # via `_CE_WARMUP_SEEN[0] = 0`.
 _CE_WARMUP_SEEN = [0]
 
-# FTS5 special characters that cause sqlite3.OperationalError when unescaped.
-# Strip them before passing any user query to a MATCH clause.
-#
-# Includes `?` and `!` — natural-language queries from agents and humans
-# contain these constantly ("What does X prefer?") and used to crash
-# cmd_search with "fts5: syntax error near ?". Also includes common ASCII
-# punctuation (`,;:`) that has no operator meaning in FTS5 but still breaks
-# tokenisation when glued to a word.
-_FTS5_SPECIAL = re.compile(r'[.&|*"\'`()\-@^?!,;:]')
+# FTS5 MATCH is brittle around punctuation and symbolic tokens. Strip any
+# non-word, non-space character, plus `_`, before building the MATCH
+# expression. This covers common natural-language queries like "$5 coupon",
+# "LGBTQ+", "7/22", "#PlankChallenge", "SIAC_GEE", and smart quotes.
+_FTS5_SPECIAL = re.compile(r"[^\w\s]|_")
 
 
 def _sanitize_fts_query(query: str) -> str:
     """Remove FTS5 special characters to prevent syntax errors.
 
-    Strips: . & | * \" ' ` ( ) - @ ^ ? ! , ; :
+    Strips punctuation and symbolic tokens, plus `_`, before collapsing
+    whitespace.
     Then collapses extra whitespace.  Returns an empty string if nothing
     remains so callers can skip the MATCH clause gracefully.
     """
@@ -186,7 +183,30 @@ _FTS_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for",
     "from", "has", "have", "how", "i", "in", "is", "it", "its", "of",
     "on", "or", "that", "the", "to", "was", "we", "what", "when", "where",
-    "which", "who", "why", "will", "with", "you",
+    "which", "who", "why", "will", "with", "you", "use", "uses", "used", "using",
+}
+
+_FTS_QUERY_EXPANSIONS = {
+    "choose": ("chose", "chosen"),
+    "chose": ("choose", "chosen"),
+    "chosen": ("choose", "chose"),
+    "store": ("stores", "stored"),
+    "stores": ("store", "stored"),
+    "stored": ("store", "stores"),
+    "storage": ("store", "stored", "path"),
+    "prefer": ("prefers", "preferred"),
+    "prefers": ("prefer",),
+    "embedding": ("embeddings", "embed"),
+    "embeddings": ("embedding", "embed"),
+    "model": ("models", "provider"),
+    "version": ("versions", "release"),
+    "path": ("paths", "location"),
+    "stored": ("store", "stores", "path", "location"),
+    "indentation": ("tabs", "spaces"),
+    "test": ("tests", "pytest"),
+    "tests": ("test", "pytest"),
+    "use": ("uses", "using", "used"),
+    "uses": ("use", "using"),
 }
 
 
@@ -208,7 +228,300 @@ def _build_fts_match_expression(sanitized: str) -> str:
     meaningful = [t for t in tokens if t.lower() not in _FTS_STOPWORDS and len(t) > 1]
     if not meaningful:
         meaningful = tokens
-    return " OR ".join(meaningful)
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for token in meaningful:
+        variants = (token, *_FTS_QUERY_EXPANSIONS.get(token.lower(), ()))
+        for variant in variants:
+            key = variant.lower()
+            if key in _FTS_STOPWORDS or key in seen:
+                continue
+            seen.add(key)
+            expanded.append(variant)
+    return " OR ".join(expanded or meaningful)
+
+
+_SEARCH_STOPWORDS = _FTS_STOPWORDS | {
+    "show", "tell", "about", "into", "over", "after", "before", "should",
+    "could", "would", "please", "summary", "details", "detail",
+}
+_LOW_SIGNAL_QUERY_TOKENS = {
+    "summary", "history", "timeline", "recent", "today", "yesterday", "tomorrow",
+    "game", "issue", "problem", "thing", "stuff", "brief", "update",
+}
+
+
+def _normalize_search_token(token: str) -> str:
+    tok = re.sub(r"[^a-z0-9]+", "", (token or "").lower())
+    if len(tok) <= 2 or tok in _SEARCH_STOPWORDS:
+        return ""
+    if tok.endswith("ies") and len(tok) > 4:
+        tok = tok[:-3] + "y"
+    elif tok.endswith("ed") and len(tok) > 4:
+        tok = tok[:-2]
+    elif tok.endswith("es") and len(tok) > 4:
+        tok = tok[:-2]
+    elif tok.endswith("s") and len(tok) > 3:
+        tok = tok[:-1]
+    return tok
+
+
+def _search_tokens(text: str) -> set[str]:
+    return {
+        norm
+        for part in re.split(r"\s+", text or "")
+        if (norm := _normalize_search_token(part))
+    }
+
+
+def _search_anchor_tokens(text: str) -> set[str]:
+    return {token for token in _search_tokens(text) if token not in _LOW_SIGNAL_QUERY_TOKENS}
+
+
+def _row_search_text(row: dict) -> str:
+    parts = []
+    for key in (
+        "content", "summary", "title", "goal", "description", "name",
+        "search_text", "compiled_truth", "entity_type",
+    ):
+        value = row.get(key)
+        if value:
+            parts.append(str(value))
+    for key in ("observations", "properties", "aliases"):
+        value = row.get(key)
+        if not value:
+            continue
+        if isinstance(value, str):
+            parts.append(value)
+        else:
+            try:
+                parts.append(json.dumps(value, ensure_ascii=True))
+            except Exception:
+                parts.append(str(value))
+    return " ".join(parts)
+
+
+def _fetch_linked_entities(db, query: str, plan=None, limit: int = 6) -> list[dict]:
+    query_tokens = _search_anchor_tokens(query) or _search_tokens(query)
+    fts_query = _build_fts_match_expression(_sanitize_fts_query(query))
+    target_entities = list(getattr(plan, "target_entities", []) or [])
+    wants_entity_card = _query_wants_entity_card(query)
+    rows = []
+    if fts_query:
+        try:
+            rows.extend(db.execute(
+                """
+                SELECT e.id, e.name, e.entity_type, e.properties, e.observations,
+                       e.compiled_truth, e.aliases, e.confidence, e.scope,
+                       e.created_at, e.agent_id,
+                       bm25(entities_fts, 4.0, 1.0, 0.8, 1.2) AS fts_rank
+                  FROM entities_fts
+                  JOIN entities e ON e.id = entities_fts.rowid
+                 WHERE entities_fts MATCH ? AND e.retired_at IS NULL
+                 ORDER BY bm25(entities_fts, 4.0, 1.0, 0.8, 1.2)
+                 LIMIT ?
+                """,
+                (fts_query, max(limit * 2, 8)),
+            ).fetchall())
+        except Exception:
+            pass
+    for target in target_entities[:4]:
+        try:
+            rows.extend(db.execute(
+                """
+                SELECT id, name, entity_type, properties, observations,
+                       compiled_truth, aliases, confidence, scope,
+                       created_at, agent_id, NULL AS fts_rank
+                  FROM entities
+                 WHERE retired_at IS NULL
+                   AND (
+                       lower(name) = lower(?)
+                       OR lower(COALESCE(aliases, '[]')) LIKE ?
+                   )
+                 LIMIT ?
+                """,
+                (target, f"%{target.lower()}%", limit),
+            ).fetchall())
+        except Exception:
+            pass
+
+    deduped: list[dict] = []
+    seen_ids: set[int] = set()
+    q_lower = (query or "").lower()
+    for row in rows:
+        entity = dict(row)
+        entity["aliases"] = _load_aliases(entity)
+        ent_text = _row_search_text(entity)
+        ent_tokens = _search_tokens(ent_text)
+        name_lower = str(entity.get("name") or "").lower()
+        direct_name = bool(name_lower and name_lower in q_lower)
+        alias_match = any(
+            alias and alias.lower() in q_lower
+            for alias in entity.get("aliases", [])
+        )
+        coverage = len(query_tokens & ent_tokens) / max(len(query_tokens), 1)
+        score = coverage + (0.9 if direct_name else 0.0) + (0.75 if alias_match else 0.0)
+        if score <= 0.0 and not query_tokens:
+            continue
+        strong_descriptor = coverage >= 0.6 or (wants_entity_card and coverage >= 0.34)
+        if not (direct_name or alias_match or strong_descriptor):
+            continue
+        eid = int(entity["id"])
+        if eid in seen_ids:
+            continue
+        seen_ids.add(eid)
+        entity["entity_link_score"] = round(score, 4)
+        deduped.append(entity)
+
+    deduped.sort(
+        key=lambda item: (
+            -(float(item.get("entity_link_score") or 0.0)),
+            -(float(item.get("confidence") or 0.0)),
+            int(item.get("id") or 0),
+        )
+    )
+    return deduped[:limit]
+
+
+def _expand_query_with_linked_entities(query: str, linked_entities: list[dict]) -> str:
+    additions: list[str] = []
+    query_lower = (query or "").lower()
+    for entity in linked_entities[:2]:
+        name = str(entity.get("name") or "").strip()
+        if name and name.lower() not in query_lower:
+            additions.append(name)
+    if not additions:
+        return query
+    return f"{query} {' '.join(additions)}".strip()
+
+
+def _query_wants_entity_card(query: str) -> bool:
+    q = (query or "").lower()
+    return any(
+        phrase in q
+        for phrase in (
+            "who is", "who owns", "owner", "maintainer", "reviewer",
+            "assignee", "whose", "responsible for",
+        )
+    )
+
+
+def _apply_query_alignment(
+    rows: list[dict],
+    query: str,
+    bucket: str,
+    *,
+    plan=None,
+    linked_entities: Optional[list[dict]] = None,
+    limit: int = 5,
+) -> list[dict]:
+    if not rows:
+        return rows
+    query_tokens = _search_tokens(query)
+    anchor_tokens = _search_anchor_tokens(query) or query_tokens
+    linked_names = {
+        str(entity.get("name") or "").lower()
+        for entity in (linked_entities or [])
+        if entity.get("name")
+    }
+    linked_names |= {
+        str(alias).lower()
+        for entity in (linked_entities or [])
+        for alias in (entity.get("aliases") or [])
+        if alias
+    }
+    normalized_intent = getattr(plan, "normalized_intent", "factual")
+    wants_entity_card = _query_wants_entity_card(query)
+    adjusted: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        text = _row_search_text(item)
+        text_lower = text.lower()
+        row_tokens = _search_tokens(text)
+        query_overlap = len(query_tokens & row_tokens) / max(len(query_tokens), 1) if query_tokens else 0.0
+        anchor_overlap = len(anchor_tokens & row_tokens) / max(len(anchor_tokens), 1) if anchor_tokens else query_overlap
+        exact_phrase = bool(query and len(query.strip()) >= 4 and query.lower().strip() in text_lower)
+        entity_hit = bool(linked_names and any(name in text_lower for name in linked_names if len(name) > 2))
+
+        base_score = float(
+            item.get("final_score")
+            or item.get("rrf_score")
+            or item.get("retrieval_score")
+            or item.get("confidence")
+            or 0.0
+        )
+        multiplier = 1.0
+        if exact_phrase:
+            multiplier *= 1.18
+        if entity_hit:
+            multiplier *= 1.18
+        if item.get("source") == "semantic" and anchor_overlap < 0.2 and not exact_phrase and not entity_hit:
+            multiplier *= 0.55
+        elif item.get("source") == "both" and anchor_overlap < 0.2 and not exact_phrase and not entity_hit:
+            multiplier *= 0.78
+        if len(anchor_tokens) >= 3 and anchor_overlap == 0.0 and not exact_phrase and not entity_hit:
+            multiplier *= 0.4
+        if normalized_intent == "factual":
+            if bucket in ("procedures", "events", "context") and anchor_overlap < 0.34 and not entity_hit:
+                multiplier *= 0.5
+            elif bucket == "memories" and item.get("source") == "semantic" and anchor_overlap < 0.25 and not entity_hit:
+                multiplier *= 0.72
+        elif normalized_intent in ("procedural", "troubleshooting"):
+            if bucket == "procedures":
+                breakdown = item.get("score_breakdown") or {}
+                directness = float(breakdown.get("directness") or 0.0)
+                step_overlap = float(breakdown.get("step_overlap") or 0.0)
+                title_goal = float(breakdown.get("goal_match") or 0.0) + float(breakdown.get("title_match") or 0.0)
+                if directness < 0.7 and step_overlap > title_goal:
+                    multiplier *= 0.72
+                if directness < 0.45 and anchor_overlap < 0.25 and not exact_phrase:
+                    multiplier *= 0.55
+            elif bucket in ("events", "context") and anchor_overlap < 0.25:
+                multiplier *= 0.65
+        elif normalized_intent == "temporal" and bucket == "procedures" and anchor_overlap < 0.25:
+            multiplier *= 0.55
+        if bucket == "entities":
+            aliases = item.get("aliases")
+            if isinstance(aliases, str):
+                try:
+                    aliases = json.loads(aliases)
+                except Exception:
+                    aliases = []
+            aliases = aliases or []
+            if wants_entity_card:
+                if str(item.get("name") or "").lower() in (query or "").lower():
+                    multiplier *= 1.25
+                elif any(str(alias).lower() in (query or "").lower() for alias in aliases):
+                    multiplier *= 1.25
+            else:
+                multiplier *= 0.35
+                if anchor_overlap < 0.34 and not entity_hit and not exact_phrase:
+                    multiplier *= 0.6
+
+        item["query_token_overlap"] = round(query_overlap, 4)
+        item["query_anchor_overlap"] = round(anchor_overlap, 4)
+        item["entity_link_match"] = entity_hit
+        item["exact_query_phrase"] = exact_phrase
+        item["final_score"] = round(base_score * multiplier, 8)
+        adjusted.append(item)
+
+    adjusted.sort(key=lambda row: row.get("final_score", 0.0), reverse=True)
+    if not adjusted:
+        return adjusted
+    best_score = float(adjusted[0].get("final_score") or 0.0)
+    kept: list[dict] = []
+    max_keep = max(limit * 2, limit)
+    for idx, row in enumerate(adjusted):
+        strong_match = (
+            row.get("exact_query_phrase")
+            or row.get("entity_link_match")
+            or float(row.get("query_anchor_overlap") or 0.0) >= 0.34
+        )
+        if idx < limit or strong_match or float(row.get("final_score") or 0.0) >= best_score * 0.55:
+            kept.append(row)
+        if len(kept) >= max_keep:
+            break
+    return kept
 
 # Temporal recency decay constants (lambda) — configurable per scope
 # half-life: global ~70d, project ~23d, agent ~14d
@@ -3186,6 +3499,16 @@ def cmd_memory_add(args):
     memory_id = cursor.lastrowid
     db.commit()  # ensure the INSERT (and FTS trigger) is committed before subprocess exit
 
+    indexed_row = db.execute(
+        "SELECT content, category, tags FROM memories WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    indexed_content = indexed_row["content"] if indexed_row else args.content
+    indexed_category = indexed_row["category"] if indexed_row else args.category
+    indexed_tags = indexed_row["tags"] if indexed_row else (tags_json or "")
+    if indexed_content != args.content:
+        blob = None
+
     # Workaround: FTS5 content-external tables may not build the inverted index
     # from trigger INSERTs on some SQLite versions. Force a re-index for this memory.
     if do_index:
@@ -3193,11 +3516,11 @@ def cmd_memory_add(args):
             db.execute(
                 "INSERT INTO memories_fts(memories_fts, rowid, content, category, tags) "
                 "VALUES('delete', ?, ?, ?, ?)",
-                (memory_id, args.content, args.category, tags_json or ''))
+                (memory_id, indexed_content, indexed_category, indexed_tags or ''))
             db.execute(
                 "INSERT INTO memories_fts(rowid, content, category, tags) "
                 "VALUES (?, ?, ?, ?)",
-                (memory_id, args.content, args.category, tags_json or ''))
+                (memory_id, indexed_content, indexed_category, indexed_tags or ''))
             db.commit()
         except Exception:
             pass  # non-fatal: FTS trigger may have already handled it
@@ -3320,7 +3643,7 @@ def cmd_memory_add(args):
     if do_index:
         try:
             if not blob:
-                blob = _embed_query_safe(args.content)
+                blob = _embed_query_safe(indexed_content)
             if blob:
                 db_vec = _try_get_db_with_vec()
                 if db_vec:
@@ -6149,27 +6472,35 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     use_mmr = getattr(args, "mmr", False)                # --mmr: MMR diversity reranking
     mmr_lambda = getattr(args, "mmr_lambda", 0.7)        # --mmr-lambda: relevance/diversity trade-off
     use_explore = getattr(args, "explore", False)        # --explore: curiosity mode
-    # --benchmark (2.3.1): bypass the recency/salience/Q-value reranker chain
-    # and return raw FTS+vec RRF-fused ranking. Trust reranker is *retained*
-    # because trust is provenance, not stale-data leakage. The flag exists as
-    # an escape hatch for synthetic-conversational benchmarks (LOCOMO,
-    # LongMemEval) where uniform timestamps and zero recall history make the
-    # rerankers worse than no-op. See memory id 1690 and tests/test_reranker_robustness.
     benchmark_mode = getattr(args, "benchmark", False)
+    benchmark_ranking_mode = str(
+        getattr(args, "benchmark_ranking_mode", None)
+        or os.environ.get("BRAINCTL_BENCHMARK_RANKING_MODE", "raw")
+        or "raw"
+    ).strip().lower()
+    if benchmark_ranking_mode not in {"full", "raw"}:
+        benchmark_ranking_mode = "raw"
+    benchmark_raw_ranking = bool(benchmark_mode and benchmark_ranking_mode == "raw")
     if benchmark_mode:
-        # One-line stderr note so the user can see the reranker chain went
-        # silent. Avoids log spam on the hot path while still being visible.
-        print(
-            "[brainctl] --benchmark: reranker chain disabled, returning raw FTS+vec ranking",
-            file=sys.stderr,
-        )
-    results = {"memories": [], "events": [], "context": [], "decisions": []}
+        if benchmark_raw_ranking:
+            print(
+                "[brainctl] --benchmark: raw ranking ablation mode, returning raw FTS+vec ranking",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[brainctl] --benchmark: stable-eval mode with full shared ranking",
+                file=sys.stderr,
+            )
+    results = {"memories": [], "events": [], "context": [], "entities": [], "decisions": [], "procedures": []}
     # Accumulator for which signal-informativeness gates tripped this call.
     # Each value is a string reason like "uniform_timestamps_stdev_3.2s" or a
     # boolean True for benchmark-mode hard skips. Surfaced under the top-level
     # "_debug" key so auditors can see WHY a particular ranking happened.
     _debug_skips: Dict[str, Any] = {}
     _debug_mode = bool(getattr(args, "debug", False))
+    if benchmark_mode:
+        _debug_skips["benchmark.ranking_mode"] = benchmark_ranking_mode
 
     # I6 staged rollout controls for top-heavy retrieval features.
     _rollout_agent = getattr(args, "agent", None) or "unknown"
@@ -6207,7 +6538,7 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         os.environ.get("BRAINCTL_DISABLE_INTENT_ROUTER")
     )
     if args.tables:
-        tables = args.tables.split(",")
+        tables = [t.strip() for t in args.tables.split(",") if t.strip()]
     elif _intent_router_disabled:
         tables = ["memories", "events", "context", "entities", "decisions"]
     elif _INTENT_AVAILABLE:
@@ -6231,8 +6562,45 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         and "decisions" not in tables
     ):
         tables = list(set(tables) | {"memories", "events", "context", "decisions"})
+    _query_plan = None
+    _query_plan_dict = None
+    try:
+        from agentmemory.retrieval.query_planner import plan_query as _plan_query
+
+        _query_plan = _plan_query(query, requested_tables=tables if args.tables else None)
+        _query_plan_dict = _query_plan.as_dict()
+        if not args.tables:
+            tables = list(dict.fromkeys((_query_plan.candidate_tables or []) + list(tables)))
+    except Exception as exc:
+        _debug_skips["query_plan.skipped"] = f"{type(exc).__name__}: {exc}"
+    linked_entities = []
+    retrieval_query = query
+    try:
+        linked_entities = _fetch_linked_entities(db, query, plan=_query_plan, limit=max(limit, 4))
+        retrieval_query = _expand_query_with_linked_entities(query, linked_entities)
+        if linked_entities:
+            _debug_skips["entity_linking.expanded_query"] = retrieval_query
+            _debug_skips["entity_linking.matches"] = [
+                {"id": int(entity["id"]), "name": entity["name"], "score": entity.get("entity_link_score")}
+                for entity in linked_entities[:4]
+            ]
+    except Exception as exc:
+        _debug_skips["entity_linking.skipped"] = f"{type(exc).__name__}: {exc}"
+
+    _hard_query_expansion = bool(
+        _query_plan
+        and (
+            getattr(_query_plan, "requires_temporal_reasoning", False)
+            or getattr(_query_plan, "requires_multi_hop", False)
+            or getattr(_query_plan, "needs_comparison", False)
+            or getattr(_query_plan, "needs_ordering", False)
+            or getattr(_query_plan, "needs_update_resolution", False)
+            or getattr(_query_plan, "needs_set_coverage", False)
+        )
+    )
     base_fetch = limit * 5 if not no_recency else limit * 3
     fetch_limit = max(limit, round(base_fetch * _nm_breadth))
+    expanded_fetch_limit = max(fetch_limit, round(fetch_limit * (1.8 if _hard_query_expansion else 1.0)))
     # Build an OR-expanded FTS5 MATCH expression so natural-language queries
     # (e.g. "What does Alice prefer?") retrieve memories that match any token,
     # not only memories that contain every word. The simple Brain.search path
@@ -6240,13 +6608,13 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # space-separated sanitized form directly to FTS5, which FTS5 treated as
     # implicit AND and silently starved natural-language queries. The bench
     # harness surfaced the gap.
-    fts_query = _build_fts_match_expression(_sanitize_fts_query(query))
+    fts_query = _build_fts_match_expression(_sanitize_fts_query(retrieval_query))
 
     # Try to load vec extension for hybrid mode (non-fatal).
     # Propagate an explicit db_path when the caller provided one (Brain.search)
     # so vec queries hit the same DB the caller is using, not the CLI default.
     db_vec = _try_get_db_with_vec(db_path=db_path)
-    q_blob = _embed_query_safe(query) if db_vec else None
+    q_blob = _embed_query_safe(retrieval_query) if db_vec else None
     hybrid = db_vec is not None and q_blob is not None
 
     # Factual-lookup / general-fallback intent: skip vec fusion entirely and
@@ -6276,9 +6644,10 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             _adaptive_weights = None
     _max_recalls_cache = [None]  # lazy-compute once per cmd_search
 
-    def _fts_memories():
+    def _fts_memories(limit_override=None):
         if not fts_query:
             return []
+        _fetch = int(limit_override or fetch_limit)
         # Content-weighted BM25. memories_fts indexes (content, category, tags).
         # Default FTS5 `rank` uses weight 1.0 for every column, which treats a
         # 200-char content column equally with a one-word `category` label
@@ -6298,18 +6667,20 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             "m.trust_score, m.replay_priority "
             "FROM memories m JOIN memories_fts f ON m.id = f.rowid "
             "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+            "AND COALESCE(m.memory_type, 'episodic') != 'procedural' "
             "ORDER BY bm25(memories_fts, 3.0, 1.0, 1.0) LIMIT ?",
-            (fts_query, fetch_limit)
+            (fts_query, _fetch)
         ).fetchall()
         return rows_to_list(rows)
 
-    def _vec_memories():
+    def _vec_memories(limit_override=None):
         if not hybrid:
             return []
+        _fetch = int(limit_override or fetch_limit)
         try:
             vec_rows = db_vec.execute(
                 "SELECT rowid, distance FROM vec_memories WHERE embedding MATCH ? AND k=?",
-                (q_blob, fetch_limit)
+                (q_blob, _fetch)
             ).fetchall()
         except Exception:
             return []
@@ -6323,7 +6694,8 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             f"created_at, recalled_count, temporal_class, last_recalled_at, retrieval_prediction_error, alpha, beta, agent_id, "
             f"encoding_task_context, encoding_context_hash, q_value, confidence_phase, "
             f"trust_score, replay_priority "
-            f"FROM memories WHERE id IN ({ph}) AND retired_at IS NULL",
+            f"FROM memories WHERE id IN ({ph}) AND retired_at IS NULL "
+            f"AND COALESCE(memory_type, 'episodic') != 'procedural'",
             rowids
         ).fetchall()
         out = [dict(r) | {"distance": round(dist_map.get(r["id"], 1.0), 4)} for r in src_rows]
@@ -6397,6 +6769,61 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             rowids
         ).fetchall()
         out = [dict(r) | {"distance": round(dist_map.get(r["id"], 1.0), 4)} for r in src_rows]
+        out.sort(key=lambda r: r["distance"])
+        return out
+
+    def _fts_entities():
+        if not fts_query:
+            return []
+        rows = db.execute(
+            """
+            SELECT e.id, 'entity' as type, e.name, e.entity_type, e.properties,
+                   e.observations, e.compiled_truth, e.aliases, e.confidence,
+                   e.scope, e.created_at, e.agent_id,
+                   bm25(entities_fts, 4.0, 1.0, 0.8, 1.2) as fts_rank
+              FROM entities e
+              JOIN entities_fts f ON e.id = f.rowid
+             WHERE entities_fts MATCH ? AND e.retired_at IS NULL
+             ORDER BY bm25(entities_fts, 4.0, 1.0, 0.8, 1.2)
+             LIMIT ?
+            """,
+            (fts_query, fetch_limit),
+        ).fetchall()
+        out = rows_to_list(rows)
+        for row in out:
+            row["aliases"] = _load_aliases(row)
+        return out
+
+    def _vec_entities():
+        if not hybrid:
+            return []
+        try:
+            vec_rows = db_vec.execute(
+                "SELECT rowid, distance FROM vec_entities WHERE embedding MATCH ? AND k=?",
+                (q_blob, fetch_limit)
+            ).fetchall()
+        except Exception:
+            return []
+        if not vec_rows:
+            return []
+        rowids = [r["rowid"] for r in vec_rows]
+        dist_map = {r["rowid"]: r["distance"] for r in vec_rows}
+        ph = ",".join("?" * len(rowids))
+        src_rows = db_vec.execute(
+            f"""
+            SELECT id, 'entity' as type, name, entity_type, properties, observations,
+                   compiled_truth, aliases, confidence, scope, created_at, agent_id
+              FROM entities
+             WHERE id IN ({ph}) AND retired_at IS NULL
+            """,
+            rowids
+        ).fetchall()
+        out = []
+        for row in src_rows:
+            item = dict(row)
+            item["distance"] = round(dist_map.get(row["id"], 1.0), 4)
+            item["aliases"] = _load_aliases(item)
+            out.append(item)
         out.sort(key=lambda r: r["distance"])
         return out
 
@@ -6796,7 +7223,9 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             explore_rows = db.execute(
                 "SELECT id, 'memory' as type, category, content, confidence, scope, "
                 "created_at, recalled_count, temporal_class, last_recalled_at "
-                "FROM memories WHERE retired_at IS NULL ORDER BY recalled_count ASC, RANDOM() LIMIT ?",
+                "FROM memories WHERE retired_at IS NULL "
+                "AND COALESCE(memory_type, 'episodic') != 'procedural' "
+                "ORDER BY recalled_count ASC, RANDOM() LIMIT ?",
                 (limit * 10,)
             ).fetchall()
             explore_list = rows_to_list(explore_rows)
@@ -6881,6 +7310,35 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
                 merged = _rrf_fuse(fts_list, vec_list)
             else:
                 merged = [r | {"rrf_score": 0.0, "source": "keyword"} for r in fts_list]
+            if (
+                _hard_query_expansion
+                and not benchmark_mode
+                and expanded_fetch_limit > fetch_limit
+                and len(merged) >= 2
+            ):
+                try:
+                    _rank_key = "rrf_score" if hybrid else "fts_rank"
+                    _sorted_merged = sorted(
+                        merged,
+                        key=lambda r: float(r.get(_rank_key) or 0.0),
+                        reverse=bool(hybrid),
+                    )
+                    if hybrid:
+                        _top_gap = abs(float(_sorted_merged[0].get("rrf_score") or 0.0) - float(_sorted_merged[1].get("rrf_score") or 0.0))
+                    else:
+                        _top_gap = abs(float(_sorted_merged[0].get("fts_rank") or 0.0) - float(_sorted_merged[1].get("fts_rank") or 0.0))
+                    if _top_gap <= (0.03 if hybrid else 0.4):
+                        _fts_expanded = _fts_memories(limit_override=expanded_fetch_limit)
+                        _vec_expanded = _vec_memories(limit_override=expanded_fetch_limit)
+                        if hybrid:
+                            merged = _rrf_fuse(_fts_expanded, _vec_expanded)
+                        else:
+                            merged = [r | {"rrf_score": 0.0, "source": "keyword"} for r in _fts_expanded]
+                        _debug_skips["memories.candidate_expansion"] = (
+                            f"hard_query_margin_{round(_top_gap, 4)}_fetch_{fetch_limit}_to_{expanded_fetch_limit}"
+                        )
+                except Exception as exc:
+                    _debug_skips["memories.candidate_expansion_skipped"] = f"{type(exc).__name__}: {exc}"
             trimmed = _apply_recency_and_trim(merged, lambda r: r.get("scope"), use_adaptive_salience=True, bucket="memories")
             # MMR diversity reranking — applied after salience scoring, before graph expand
             if use_mmr and trimmed:
@@ -6921,7 +7379,14 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         if _prof_cats:
             trimmed = [r for r in trimmed if r.get("category") in _prof_cats]
 
-        results["memories"] = trimmed
+        results["memories"] = _apply_query_alignment(
+            trimmed,
+            query,
+            "memories",
+            plan=_query_plan,
+            linked_entities=linked_entities,
+            limit=limit,
+        )
 
     if "events" in tables:
         fts_list = _fts_events()
@@ -6944,7 +7409,14 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             already = {r["id"] for r in trimmed}
             graph = _graph_expand(db, trimmed, "events", already)
             trimmed.extend(graph)
-        results["events"] = trimmed
+        results["events"] = _apply_query_alignment(
+            trimmed,
+            query,
+            "events",
+            plan=_query_plan,
+            linked_entities=linked_entities,
+            limit=limit,
+        )
 
     if "context" in tables:
         fts_list = _fts_context()
@@ -6964,7 +7436,95 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
             already = {r["id"] for r in trimmed}
             graph = _graph_expand(db, trimmed, "context", already)
             trimmed.extend(graph)
-        results["context"] = trimmed
+        results["context"] = _apply_query_alignment(
+            trimmed,
+            query,
+            "context",
+            plan=_query_plan,
+            linked_entities=linked_entities,
+            limit=limit,
+        )
+
+    if "entities" in tables:
+        fts_list = _fts_entities()
+        vec_list = _vec_entities()
+        if hybrid:
+            merged = _rrf_fuse(fts_list, vec_list)
+        else:
+            merged = [r | {"rrf_score": 0.0, "source": "keyword"} for r in fts_list]
+            _debug_skips.setdefault("entities.vec_skipped", "fts_strong_anchor_cascade_from_memories")
+        for row in merged:
+            if "aliases" not in row:
+                row["aliases"] = _load_aliases(row)
+        trimmed = _apply_recency_and_trim(
+            merged,
+            lambda r: r.get("scope") or "global",
+            bucket="entities",
+        )
+        results["entities"] = _apply_query_alignment(
+            trimmed,
+            query,
+            "entities",
+            plan=_query_plan,
+            linked_entities=linked_entities,
+            limit=limit,
+        )
+
+    _procedure_debug = None
+    _pre_answerability_candidates = []
+    if "procedures" in tables:
+        try:
+            from agentmemory.retrieval.candidate_generation import generate_procedure_candidates as _generate_procedure_candidates
+            from agentmemory.retrieval.evidence_graph import expand_procedure_evidence as _expand_procedure_evidence
+            from agentmemory.retrieval.late_reranker import rerank_procedure_candidates as _rerank_procedure_candidates
+            from agentmemory.retrieval.query_planner import plan_query as _plan_query
+
+            if _query_plan is None:
+                _query_plan = _plan_query(query, requested_tables=tables)
+                _query_plan_dict = _query_plan.as_dict()
+            proc_scope = None
+            if getattr(args, "project", None):
+                proc_scope = f"project:{args.project}"
+            generated = _generate_procedure_candidates(
+                db,
+                query,
+                _query_plan,
+                limit=fetch_limit,
+                scope=proc_scope,
+            )
+            evidence = _expand_procedure_evidence(
+                db,
+                generated.get("candidates", []),
+                max_sources_per_candidate=4,
+            )
+            reranked = _rerank_procedure_candidates(
+                generated.get("candidates", []),
+                evidence,
+                benchmark_mode=benchmark_raw_ranking,
+            )
+            results["procedures"] = _apply_query_alignment(
+                reranked[:limit],
+                query,
+                "procedures",
+                plan=_query_plan,
+                linked_entities=linked_entities,
+                limit=limit,
+            )
+            _pre_answerability_candidates = list(results["procedures"])
+            _procedure_debug = {
+                "candidate_generation": generated.get("debug") or {},
+                "evidence_clusters": {
+                    str(proc_id): {
+                        "support_bonus": info.get("support_bonus"),
+                        "source_count": len(info.get("sources") or []),
+                        "edge_count": len(info.get("edges") or []),
+                    }
+                    for proc_id, info in evidence.items()
+                },
+            }
+        except Exception as exc:
+            results["procedures"] = []
+            _debug_skips["procedures.skipped"] = f"{type(exc).__name__}: {exc}"
 
     # Intent-based result weighting and decision search.
     #
@@ -7010,30 +7570,30 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
         _intent = _INTENT_ALIAS.get(_intent_raw, _intent_raw)
         # entity_lookup → boost entities/entity results 2x via final_score
         if _intent == "entity_lookup":
-            for r in results.get("events", []):
-                if r.get("type") == "entity":
-                    r["final_score"] = round(r.get("final_score", 0.0) * 2.0, 8)
-            # Also search entities directly if not in tables
-            if fts_query:
-                try:
-                    ent_rows = db.execute(
-                        "SELECT e.id, 'entity' as type, e.name, e.entity_type, e.confidence, e.created_at "
-                        "FROM entities_fts fts JOIN entities e ON e.id = fts.rowid "
-                        "WHERE entities_fts MATCH ? AND e.retired_at IS NULL ORDER BY rank LIMIT ?",
-                        (fts_query, limit)
-                    ).fetchall()
-                    for r in rows_to_list(ent_rows):
-                        r["final_score"] = round(float(r.get("confidence", 0.5)) * 2.0, 8)
-                        r["source"] = "intent_entity"
-                    results.setdefault("entities", []).extend(rows_to_list(ent_rows))
-                except Exception:
-                    pass
+            _entity_card = _query_wants_entity_card(query)
+            for r in results.get("entities", []):
+                multiplier = 1.25 if _entity_card else 0.92
+                r["final_score"] = round(r.get("final_score", 0.0) * multiplier, 8)
+                r["source"] = r.get("source") or "intent_entity"
+            results["entities"] = sorted(
+                results.get("entities", []),
+                key=lambda r: r.get("final_score", 0.0),
+                reverse=True,
+            )
         # event_lookup → boost events results 2x
         elif _intent == "event_lookup":
             for r in results.get("events", []):
                 r["final_score"] = round(r.get("final_score", 0.0) * 2.0, 8)
             results["events"] = sorted(results.get("events", []),
                                         key=lambda r: r.get("final_score", 0), reverse=True)
+        elif _intent == "procedural":
+            for r in results.get("procedures", []):
+                r["final_score"] = round(r.get("final_score", 0.0) * 1.2, 8)
+            results["procedures"] = sorted(
+                results.get("procedures", []),
+                key=lambda r: r.get("final_score", 0.0),
+                reverse=True,
+            )
         # decision_lookup → also search decisions table
         elif _intent == "decision_lookup":
             if fts_query:
@@ -7068,6 +7628,92 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
                     extra = _graph_expand(db, top_items, tbl_key, already)
                     results.get(tbl_key, []).extend(extra)
 
+    def _seed_bucket_score(item, position):
+        try:
+            final_score = float(item.get("final_score") or 0.0)
+        except (TypeError, ValueError):
+            final_score = 0.0
+        if final_score > 0:
+            return final_score
+        try:
+            rrf_score = float(item.get("rrf_score") or 0.0)
+        except (TypeError, ValueError):
+            rrf_score = 0.0
+        if rrf_score > 0:
+            return rrf_score
+        try:
+            fts_rank = float(item.get("fts_rank") or 0.0)
+        except (TypeError, ValueError):
+            fts_rank = 0.0
+        if fts_rank != 0.0:
+            return max(-fts_rank, 0.0)
+        try:
+            confidence = float(item.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence > 0:
+            return confidence
+        return max(1.0 / (position + 1), 0.01)
+
+    def _normalize_bucket_scores(bucket_name):
+        rows = results.get(bucket_name, []) or []
+        if not rows:
+            return
+        seeds = [_seed_bucket_score(row, idx) for idx, row in enumerate(rows)]
+        max_seed = max(seeds) or 1.0
+        for row, seed in zip(rows, seeds):
+            row["retrieval_score"] = round(seed, 8)
+            row["final_score"] = round(seed / max_seed, 8)
+        rows.sort(key=lambda r: r.get("final_score", 0.0), reverse=True)
+        results[bucket_name] = rows
+
+    for _bucket_name in ("procedures", "memories", "events", "context", "entities", "decisions"):
+        _normalize_bucket_scores(_bucket_name)
+
+    _intent_bucket_multipliers = {
+        "procedural": {"procedures": 1.18, "memories": 0.98, "entities": 0.95, "events": 0.72, "decisions": 0.78, "context": 0.7},
+        "troubleshooting": {"procedures": 1.08, "events": 0.95, "memories": 0.98, "entities": 0.9, "decisions": 0.8, "context": 0.72},
+        "decision": {"decisions": 1.15, "memories": 1.05, "entities": 0.95, "procedures": 0.55, "events": 0.8, "context": 0.72},
+        "temporal": {"events": 1.18, "memories": 0.88, "entities": 0.82, "procedures": 0.4, "decisions": 0.78, "context": 0.72},
+        "factual": {"memories": 1.12, "entities": 1.15, "decisions": 0.82, "procedures": 0.35, "events": 0.55, "context": 0.6},
+        "orientation": {"memories": 1.0, "events": 0.95, "procedures": 0.75, "context": 0.8, "decisions": 0.8},
+        "graph": {"memories": 1.0, "events": 0.95, "decisions": 0.95, "procedures": 0.8, "context": 0.8},
+    }
+    _normalized_intent = (_query_plan.normalized_intent if _query_plan else "factual")
+    for _bucket_name, _multiplier in _intent_bucket_multipliers.get(_normalized_intent, {}).items():
+        _rows = results.get(_bucket_name, []) or []
+        for _row in _rows:
+            _row["final_score"] = round(float(_row.get("final_score") or 0.0) * _multiplier, 8)
+        _rows.sort(key=lambda r: r.get("final_score", 0.0), reverse=True)
+        results[_bucket_name] = _rows
+
+    for _bucket_name in ("procedures", "memories", "events", "context", "entities", "decisions"):
+        results[_bucket_name] = _apply_query_alignment(
+            results.get(_bucket_name, []) or [],
+            query,
+            _bucket_name,
+            plan=_query_plan,
+            linked_entities=linked_entities,
+            limit=limit,
+        )
+
+    _second_stage_debug = None
+    try:
+        from agentmemory.retrieval.second_stage import (
+            SecondStageConfig as _SecondStageConfig,
+            rerank_bucketed_results as _rerank_bucketed_results,
+        )
+
+        _second_stage_config = _SecondStageConfig.from_args(args)
+        results, _second_stage_debug = _rerank_bucketed_results(
+            query,
+            _query_plan,
+            results,
+            config=_second_stage_config,
+        )
+    except Exception as exc:
+        _debug_skips["second_stage.skipped"] = f"{type(exc).__name__}: {exc}"
+
     if db_vec:
         db_vec.close()
 
@@ -7082,13 +7728,44 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # --budget: trim results from lowest-ranked first until output fits within token cap
     if budget_tokens is not None:
         # Estimate current size; trim tail entries until we fit
-        for key in ("memories", "events", "context", "decisions"):
+        for key in ("memories", "events", "context", "decisions", "procedures"):
             lst = results.get(key, [])
             if not lst:
                 continue
             while lst and _estimate_tokens(results) > budget_tokens:
                 lst.pop()  # remove lowest-ranked (already sorted desc)
             results[key] = lst
+
+    _top_candidates = sorted(
+        [
+            item
+            for bucket in ("procedures", "memories", "events", "context", "entities", "decisions")
+            for item in (results.get(bucket, []) or [])
+        ],
+        key=lambda item: item.get("final_score", 0.0),
+        reverse=True,
+    )
+    _answerability = None
+    if _query_plan is not None:
+        try:
+            from agentmemory.retrieval.answerability import assess_answerability as _assess_answerability
+
+            _answerability = _assess_answerability(
+                query,
+                _query_plan,
+                {k: results.get(k, []) for k in ("procedures", "memories", "events", "context", "entities", "decisions")},
+            )
+            if _answerability.get("abstain") and _query_plan.abstain_allowed:
+                for key in ("memories", "events", "context", "entities", "decisions", "procedures"):
+                    results[key] = []
+        except Exception as exc:
+            _debug_skips["answerability.skipped"] = f"{type(exc).__name__}: {exc}"
+
+    if (_second_stage_debug or {}).get("enabled"):
+        for key in ("procedures", "memories", "events", "context", "entities", "decisions"):
+            rows = list(results.get(key) or [])
+            rows.sort(key=lambda item: item.get("final_score", 0.0), reverse=True)
+            results[key] = rows[:limit]
 
     total = sum(len(v) for v in results.values())
     tokens_out = _estimate_tokens(results)
@@ -7097,37 +7774,41 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # Update recalled_count for direct (non-graph) memory hits only.
     # Uses retrieval-practice strengthening: hard retrievals (high prediction error)
     # boost confidence more than easy ones (Roediger & Karpicke 2006, Bjork 1994).
-    for r in results.get("memories", []):
-        if r.get("source") != "graph":
-            _retrieval_practice_boost(
-                db,
-                r["id"],
-                retrieval_prediction_error=r.get("retrieval_prediction_error") or 0.0,
-            )
+    #
+    # Benchmark mode deliberately skips these online-learning writes so the
+    # retrieval corpus stays stable across repeated synthetic queries.
+    if not benchmark_mode:
+        for r in results.get("memories", []):
+            if r.get("source") != "graph":
+                _retrieval_practice_boost(
+                    db,
+                    r["id"],
+                    retrieval_prediction_error=r.get("retrieval_prediction_error") or 0.0,
+                )
 
-    # Online phase learning: nudge confidence_phase toward constructive (0) after recall
-    # Uses existing db connection to avoid lock contention with uncommitted recall_count updates.
-    try:
-        _has_phase_col = any(
-            col[1] == "confidence_phase"
-            for col in db.execute("PRAGMA table_info(memories)").fetchall()
-        )
-        if _has_phase_col:
-            _delta = 0.05
-            for r in results.get("memories", []):
-                if r.get("source") != "graph":
-                    _pm_id = r["id"]
-                    _pm_row = db.execute(
-                        "SELECT confidence_phase FROM memories WHERE id=? AND retired_at IS NULL",
-                        (_pm_id,)
-                    ).fetchone()
-                    if _pm_row and _pm_row[0] is not None:
-                        import math as _pmath
-                        _ph = float(_pm_row[0])
-                        _ph = (_ph + _delta if _ph > _pmath.pi else max(0.0, _ph - _delta)) % (2 * _pmath.pi)
-                        db.execute("UPDATE memories SET confidence_phase=? WHERE id=?", (_ph, _pm_id))
-    except Exception:
-        pass  # phase learning is optional; never break search
+        # Online phase learning: nudge confidence_phase toward constructive (0) after recall
+        # Uses existing db connection to avoid lock contention with uncommitted recall_count updates.
+        try:
+            _has_phase_col = any(
+                col[1] == "confidence_phase"
+                for col in db.execute("PRAGMA table_info(memories)").fetchall()
+            )
+            if _has_phase_col:
+                _delta = 0.05
+                for r in results.get("memories", []):
+                    if r.get("source") != "graph":
+                        _pm_id = r["id"]
+                        _pm_row = db.execute(
+                            "SELECT confidence_phase FROM memories WHERE id=? AND retired_at IS NULL",
+                            (_pm_id,)
+                        ).fetchone()
+                        if _pm_row and _pm_row[0] is not None:
+                            import math as _pmath
+                            _ph = float(_pm_row[0])
+                            _ph = (_ph + _delta if _ph > _pmath.pi else max(0.0, _ph - _delta)) % (2 * _pmath.pi)
+                            db.execute("UPDATE memories SET confidence_phase=? WHERE id=?", (_ph, _pm_id))
+        except Exception:
+            pass  # phase learning is optional; never break search
 
     # Post-retrieval metacognitive tier annotation
     # Tier 1: high-confidence fresh results  (≥3 direct results, avg_conf ≥ 0.7)
@@ -7136,14 +7817,20 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # Tier 4: coverage gap                   (0 direct results)
     # Exclude graph-expanded neighbours (source="graph") — they don't reflect query coverage
     memory_results = [r for r in results.get("memories", []) if r.get("source") != "graph"]
+    procedure_results = [r for r in results.get("procedures", []) if r.get("source") != "graph"]
+    entity_results = [r for r in results.get("entities", []) if r.get("source") != "graph"]
+    direct_results = memory_results + procedure_results + entity_results
     # Keyword/both hits: FTS5 textual matches — strongest evidence of genuine coverage
-    keyword_hits = [r for r in memory_results if r.get("source") in ("keyword", "both")]
+    keyword_hits = [
+        r for r in direct_results
+        if r.get("source") in ("keyword", "both", "procedure_fts")
+    ]
     k_count = len(keyword_hits)
 
-    if not memory_results:
+    if not direct_results:
         tier = 4
         tier_label = "gap-detected"
-        tier_note = "COVERAGE GAP — no memories match this query"
+        tier_note = "COVERAGE GAP — no grounded memories or procedures match this query"
         try:
             _log_gap(db, "coverage_hole", f"query:{_sanitize_fts_query(query)[:80]}", 1.0, triggered_by=query[:200])
         except Exception:
@@ -7171,19 +7858,19 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     elif k_count > 0:
         tier = 2
         tier_label = "moderate"
-        tier_note = f"Only {k_count} keyword match(es); {len(memory_results)} total (includes semantic)"
+        tier_note = f"Only {k_count} direct lexical match(es); {len(direct_results)} total direct result(s)"
     else:
         tier = 3
         tier_label = "weak-coverage"
-        tier_note = f"No keyword matches; {len(memory_results)} semantic-only result(s) — potential gap"
+        tier_note = f"No lexical direct matches; {len(direct_results)} semantic/procedural result(s) — potential gap"
 
     # Passive search instrumentation — append row to agent_uncertainty_log
     try:
         _unc_agent = getattr(args, "agent", None) or "unknown"
         _unc_domain = getattr(args, "scope", None) or (tables[0] if tables else "memories")
         _unc_avg_conf = None
-        if memory_results:
-            _conf_vals = [r.get("confidence") for r in memory_results if r.get("confidence") is not None]
+        if direct_results:
+            _conf_vals = [r.get("confidence") for r in direct_results if r.get("confidence") is not None]
             if _conf_vals:
                 _unc_avg_conf = round(sum(_conf_vals) / len(_conf_vals), 4)
         db.execute(
@@ -7231,12 +7918,30 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     except Exception:
         pass  # trigger check is optional; never break search
 
+    _debug_payload = {}
+    try:
+        if _query_plan_dict is not None or _procedure_debug is not None or _answerability is not None:
+            from agentmemory.retrieval.diagnostics import build_debug_payload as _build_debug_payload
+
+            _debug_payload = _build_debug_payload(
+                query_plan=_query_plan_dict or {},
+                procedure_debug=_procedure_debug,
+                answerability=_answerability,
+                second_stage=_second_stage_debug,
+                top_candidates=_top_candidates,
+            )
+    except Exception as exc:
+        _debug_skips["diagnostics.skipped"] = f"{type(exc).__name__}: {exc}"
+
     _out = {
         "mode": mode,
         "metacognition": {
             "tier": tier,
             "label": tier_label,
             "note": tier_note,
+            "answerability_score": (_answerability or {}).get("score"),
+            "answerability_reason": (_answerability or {}).get("reason"),
+            "abstained": (_answerability or {}).get("abstain", False),
             **_intent_meta,
             **_rollout_meta,
         },
@@ -7254,8 +7959,10 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     # "all_signals_informative" marker so downstream tooling can rely on
     # the key always being present in debug mode. Without `--debug` and
     # no skips, stay silent to keep the default response compact.
-    if _debug_skips:
-        _out["_debug"] = dict(_debug_skips)
+    if _debug_skips or _debug_payload:
+        _debug_out = dict(_debug_skips)
+        _debug_out.update(_debug_payload)
+        _out["_debug"] = _debug_out
     elif _debug_mode:
         _out["_debug"] = {"all_signals_informative": True}
     _ofmt = getattr(args, "output", "json")
@@ -16100,7 +16807,7 @@ def build_parser():
     mem_add.add_argument("--tags", "-t", help="Comma-separated tags")
     mem_add.add_argument("--source-event", type=int)
     mem_add.add_argument("--type", choices=["episodic", "semantic"], default="episodic",
-                         help="Memory type: episodic (time-bound, faster decay) or semantic (durable facts, slower decay)")
+                         help="Memory type: episodic (time-bound, faster decay) or semantic (durable facts)")
     mem_add.add_argument("--reflexion", action="store_true",
                          help="Shorthand for failure lessons: sets category=lesson, auto-tags with 'reflexion'")
     mem_add.add_argument("--attribute", action="store_true",
@@ -16587,7 +17294,7 @@ def build_parser():
     # --- search ---
     srch = sub.add_parser("search", help="Universal cross-table search")
     srch.add_argument("query")
-    srch.add_argument("--tables", help="Comma-separated: memories,events,context")
+    srch.add_argument("--tables", help="Comma-separated: memories,events,context,decisions,procedures")
     srch.add_argument("--limit", "-l", type=int, default=10)
     srch.add_argument("--no-recency", action="store_true", dest="no_recency",
                        help="Disable temporal recency weighting; return raw FTS rank order")
@@ -16609,6 +17316,8 @@ def build_parser():
                        help="Apply phase-aware quantum amplitude re-ranking to memory results")
     srch.add_argument("--benchmark", action="store_true",
                        help="Disable the recency/salience/Q-value/source/context/PageRank/quantum/temporal-contiguity reranker chain and return the raw FTS+vec RRF-fused ranking. Trust reranker is preserved (different signal class). Use this for synthetic-conversational evals (LOCOMO, LongMemEval) where uniform timestamps make rerankers worse than no-op.")
+    srch.add_argument("--benchmark-ranking-mode", choices=["raw", "full"], default=None,
+                       help="Internal eval mode for --benchmark. Defaults to raw, matching the legacy benchmark profile.")
     # 2.4.0: optional cross-encoder reranker stage (off by default).
     # Uses nargs="?" + const so `--rerank` alone takes the default
     # model and `--rerank MODEL` lets the user pin a specific one.
@@ -16626,6 +17335,24 @@ def build_parser():
     srch.add_argument("--rerank-budget-ms", type=float, default=None, metavar="MS",
                        help="Strict latency budget for cross-encoder rerank (per-call and rolling p95). "
                             "Defaults to env BRAINCTL_CE_P95_BUDGET_MS or 350.")
+    srch.add_argument("--no-second-stage", action="store_true", default=False,
+                       help="Disable the shared deterministic second-stage reranker.")
+    srch.add_argument("--second-stage", action="store_true", default=False,
+                       help="Enable the opt-in shared deterministic second-stage reranker.")
+    srch.add_argument("--no-second-stage-model", action="store_true", default=False,
+                       help="Run the second-stage reranker without the tiny MLP residual model.")
+    srch.add_argument("--second-stage-top-n", type=int, default=None, metavar="N",
+                       help="Combined top-N candidate window for the shared second-stage reranker. "
+                            "Defaults to env BRAINCTL_SECOND_STAGE_TOP_N or 10.")
+    srch.add_argument("--second-stage-model-path", default=None, metavar="PATH",
+                       help="Override the tiny MLP JSON artifact used by the shared second-stage reranker.")
+    srch.add_argument("--judge-rerank", nargs="?", const="ollama", default=None, metavar="PROVIDER",
+                       help="Enable the optional top-5 judge reranker with the given provider "
+                            "(default when passed without value: ollama).")
+    srch.add_argument("--judge-model", default="llama3.2:3b", metavar="MODEL",
+                       help="Model name for the optional judge reranker (provider-specific).")
+    srch.add_argument("--judge-top-k", type=int, default=5, metavar="N",
+                       help="Top-K candidates sent to the optional judge reranker (max recommended: 5).")
     srch.add_argument("--rollout-mode", choices=["on", "off", "canary"], default=None,
                        help="Top-heavy retrieval rollout mode override. "
                             "Defaults to env BRAINCTL_TOPHEAVY_ROLLOUT_MODE or on.")
