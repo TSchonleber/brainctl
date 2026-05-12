@@ -104,6 +104,72 @@ shot. `--pin-onchain` with 0 SOL skips cleanly with `exit 0` and
 `pin_skipped_reason="zero_balance"` — the offline signature is still
 valid; pinning is opportunistic.
 
+## Mint — Light Protocol compressed tokens (v1, branch `feat/cnft-mint`, optional `[mint]` extra)
+
+`brainctl export --sign --mint` ships the next layer on top of signed
+exports: every bundle becomes a Light Protocol **compressed token**
+owned by the user's brainctl wallet, with the bundle's encrypted
+content on Arweave and metadata pointing back at it. The chain mediates
+ownership; it never sees plaintext. This is the v1 primitive that the
+$BRNDB memory-marketplace narrative is built on.
+
+Architecture: Python orchestrator
+(`src/agentmemory/minting.py`) + Node.js helper
+(`tools/zk_mint.js`) shelled out via subprocess. Light Protocol's SDK is
+TypeScript-only as of v0.23, so brainctl Python does the encryption +
+CLI plumbing and shells to Node for the actual mint via
+`@lightprotocol/stateless.js` + `@lightprotocol/compressed-token`,
+plus `@irys/sdk` for Arweave.
+
+### Agent flow for users without a setup
+
+When a user wants to mint a memory bundle, walk them through this
+exactly. The flow is designed so you can drive it with `Bash` calls
+without ever seeing the user's key.
+
+1. **Confirm Node 20+.** `node --version`. If missing, ask the user
+   to install from https://nodejs.org/ (or `brew install node`).
+2. **One-time helper deps.** `cd $(python3 -c "import agentmemory,os;print(os.path.dirname(os.path.dirname(os.path.dirname(agentmemory.__file__))))")/tools && npm install`. ~80 MB. The directory varies by install style — for `pip install -e .` it's the repo root; for a wheel install it's next to the package.
+3. **Wallet.** `brainctl wallet new --yes` if `~/.brainctl/wallet.json` doesn't already exist. Surface the printed `SAFETY:` warning verbatim.
+4. **Devnet SOL.** `solana airdrop 1 $(brainctl wallet address) --url devnet`. Required for tx fees; rent is sponsored by Light Protocol.
+5. **Helius API key.** If `$HELIUS_API_KEY` isn't set and `~/.brainctl/helius.env` doesn't have a valid key (≥8 chars), tell the user: "Sign up free at https://helius.dev/ and paste the key into `~/.brainctl/helius.env` as a single line: `HELIUS_API_KEY=<value>`. I'll chmod it 0600." Then `chmod 600 ~/.brainctl/helius.env` after they confirm. **Never** ask them to paste the key into the chat — your transcript may be logged.
+6. **Mint.** `brainctl export --sign --mint --cluster devnet --json`. Capture the JSON output. The `mint_address`, `arweave_metadata_uri`, and `bundle_key_path` are the artifacts the user keeps.
+
+For mainnet-beta, swap `--cluster mainnet-beta` and ensure the wallet
+has a small amount of real SOL (~0.001 SOL covers many mints). The
+mint pipeline prints a 3-second stderr warning before the mainnet
+mint so a misclick can be aborted.
+
+### Key resolution precedence (`minting.resolve_helius_api_key`)
+
+1. `--helius-api-key <key>` CLI arg
+2. `$HELIUS_API_KEY` env var
+3. `~/.brainctl/helius.env` file (or `$BRAINCTL_HELIUS_ENV_FILE` override) — dotenv shape, one `HELIUS_API_KEY=<value>` line
+4. Returns `None` (treated as not-set if any of the above is shorter than 8 chars, so the Vercel `""` quirk doesn't accidentally satisfy the check)
+
+### Design invariants (these are load-bearing, do NOT regress)
+
+- **Memory content is always AES-256-GCM encrypted client-side before any pointer touches a public storage layer.** Each bundle gets a fresh 32-byte symmetric key, written to `~/.brainctl/keys/<mint>.key` at mode 0600. Marketplace key-wrapping (sale-time threshold encryption via Lit Protocol) is v1.5 — not this build.
+- **Devnet by default.** Mainnet-beta requires explicit `--cluster mainnet-beta` and a Helius key.
+- **80 KB ciphertext cap.** Stays inside Irys free tier; refuses upload above that with an actionable error suggesting `--ids` / `--category` / `--created-after` filtering.
+- **The chain mediates ownership; never sees plaintext.** Arweave stores ciphertext. The chain stores the compressed-token mint, ownership transfers, and metadata URI.
+
+### Output payload fields
+
+The JSON output of `brainctl export --sign --mint --json` adds these on
+top of the standard signed-export fields:
+
+- `minted`: bool — whether the mint succeeded.
+- `mint_address`: base58 compressed-token mint address.
+- `mint_tx_signature`: Solana tx signature for the mint creation.
+- `mint_cluster`: `"devnet"` or `"mainnet-beta"`.
+- `arweave_ciphertext_uri`: `ar://<id>` for the encrypted bundle blob.
+- `arweave_metadata_uri`: `ar://<id>` for the token metadata JSON.
+- `bundle_key_path`: filesystem path to the per-bundle AES key.
+
+A failed mint after a successful Arweave upload still surfaces the
+`arweave_*` URIs so the user can retry the mint without re-uploading.
+
 ## Code-aware ingestion (2.4.5+, optional `[code]` extra)
 
 `brainctl ingest code <path>` walks a source tree and writes file /

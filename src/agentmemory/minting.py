@@ -75,6 +75,12 @@ DEFAULT_KEYS_DIR = "~/.brainctl/keys"
 # tests and dev-from-source.
 _HELPER_RELATIVE = Path("tools") / "zk_mint.js"
 
+# Where a user-or-agent-managed Helius API key lives on disk when the
+# ``HELIUS_API_KEY`` env var isn't set. One key per line in dotenv
+# shape: ``HELIUS_API_KEY=<value>``. Created by the user or by an agent
+# walking the user through the mint flow.
+DEFAULT_HELIUS_ENV_FILE = "~/.brainctl/helius.env"
+
 # Token symbol baked into mint metadata. Matches the launch ticker so
 # downstream wallets / explorers surface the affiliation.
 DEFAULT_TOKEN_SYMBOL = "BRNDB"
@@ -88,6 +94,61 @@ DEFAULT_NAME_PREFIX = "BRNDB"
 # mint pipeline refuses upload and returns a structured error rather
 # than spending real money.
 MAX_CIPHERTEXT_BYTES = 80 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Helius API key resolution
+# ---------------------------------------------------------------------------
+
+def resolve_helius_api_key(
+    explicit: Optional[str] = None,
+    *,
+    env_file: Optional[str] = None,
+) -> Optional[str]:
+    """Find a Helius API key from CLI arg, env var, or on-disk dotenv file.
+
+    Precedence (highest first):
+      1. ``explicit`` — argument passed in from CLI ``--helius-api-key``
+      2. ``$HELIUS_API_KEY`` env var
+      3. ``~/.brainctl/helius.env`` (or ``env_file`` override) — single
+         ``HELIUS_API_KEY=<value>`` line in dotenv shape.
+
+    Returns the key string or ``None``. Empty / placeholder values
+    (length < 8) are treated as not-set so the brainctl-launch
+    Vercel ``""`` quirk doesn't accidentally satisfy a missing-key
+    check.
+    """
+    candidates: list[str] = []
+    if explicit:
+        candidates.append(explicit)
+    env_val = os.environ.get("HELIUS_API_KEY")
+    if env_val:
+        candidates.append(env_val)
+    target = Path(env_file or DEFAULT_HELIUS_ENV_FILE).expanduser()
+    if target.exists():
+        try:
+            for line in target.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "HELIUS_API_KEY":
+                    # Strip whitespace + surrounding quotes that dotenv
+                    # files sometimes pick up from Vercel pulls.
+                    v = v.strip().strip('"').strip("'")
+                    if v:
+                        candidates.append(v)
+                    break
+        except OSError:
+            pass
+
+    for cand in candidates:
+        cand = cand.strip().strip('"').strip("'")
+        if len(cand) >= 8:
+            return cand
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -496,12 +557,25 @@ def mint_bundle(
     arweave_metadata_uri = upload["metadata_uri"]
 
     # --- 4. Mint via Node helper ------------------------------------------
+    resolved_key = resolve_helius_api_key(helius_api_key)
+    if cluster == "mainnet-beta" and not resolved_key:
+        return {
+            "ok": False, "mint": None, "tx_signature": None,
+            "arweave_ciphertext_uri": arweave_ciphertext_uri,
+            "arweave_metadata_uri": arweave_metadata_uri,
+            "error": (
+                "mainnet-beta mint requires a Helius API key. Set "
+                "HELIUS_API_KEY in your shell, pass --helius-api-key, "
+                "or drop the key into ~/.brainctl/helius.env as "
+                "HELIUS_API_KEY=<value> (chmod 0600)."
+            ),
+        }
     request = {
         "action": "mint",
         "cluster": cluster,
         "owner_pubkey": owner_pubkey_b58,
         "keystore_path": keystore_path,
-        "helius_api_key": helius_api_key or os.environ.get("HELIUS_API_KEY"),
+        "helius_api_key": resolved_key,
         "metadata_uri": arweave_metadata_uri,
         "name": f"{DEFAULT_NAME_PREFIX} #{bundle_hash_hex[:8]}",
         "symbol": DEFAULT_TOKEN_SYMBOL,
@@ -613,9 +687,11 @@ __all__ = [
     "DEFAULT_CLUSTER",
     "SUPPORTED_CLUSTERS",
     "DEFAULT_KEYS_DIR",
+    "DEFAULT_HELIUS_ENV_FILE",
     "DEFAULT_TOKEN_SYMBOL",
     "DEFAULT_NAME_PREFIX",
     "MAX_CIPHERTEXT_BYTES",
+    "resolve_helius_api_key",
     "encrypt_bundle",
     "decrypt_bundle",
     "pack_encrypted_blob",

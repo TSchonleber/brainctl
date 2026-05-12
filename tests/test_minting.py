@@ -286,3 +286,57 @@ class TestMintPipeline:
         assert result["arweave_ciphertext_uri"] == "ar://C"
         assert result["arweave_metadata_uri"] == "ar://M"
         assert "rpc 429" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Helius API key resolution
+# ---------------------------------------------------------------------------
+
+class TestHeliusKeyResolution:
+    def test_explicit_arg_wins(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HELIUS_API_KEY", "from-env-9999999")
+        ef = tmp_path / "h.env"
+        ef.write_text('HELIUS_API_KEY="from-file-9999999"\n')
+        got = minting.resolve_helius_api_key(
+            "from-arg-9999999", env_file=str(ef)
+        )
+        assert got == "from-arg-9999999"
+
+    def test_env_var_used_when_no_explicit(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HELIUS_API_KEY", "from-env-9999999")
+        ef = tmp_path / "h.env"
+        ef.write_text('HELIUS_API_KEY="from-file-9999999"\n')
+        got = minting.resolve_helius_api_key(env_file=str(ef))
+        assert got == "from-env-9999999"
+
+    def test_file_fallback(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+        ef = tmp_path / "h.env"
+        ef.write_text('HELIUS_API_KEY="from-file-9999999"\n')
+        got = minting.resolve_helius_api_key(env_file=str(ef))
+        assert got == "from-file-9999999"
+
+    def test_strips_quotes_and_whitespace(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+        ef = tmp_path / "h.env"
+        ef.write_text('  HELIUS_API_KEY =  "  whitespace-key-9999999  "  \n')
+        got = minting.resolve_helius_api_key(env_file=str(ef))
+        # Inner whitespace is preserved; outer + quotes stripped.
+        assert "whitespace-key" in (got or "")
+
+    def test_short_value_treated_as_unset(self, tmp_path: Path, monkeypatch):
+        # The Vercel pull quirk surfaces empty `""` here — we must
+        # treat that as not-set so callers fall through to better
+        # candidates.
+        monkeypatch.setenv("HELIUS_API_KEY", '""')
+        ef = tmp_path / "h.env"
+        ef.write_text('HELIUS_API_KEY=""\n')
+        got = minting.resolve_helius_api_key(env_file=str(ef))
+        assert got is None
+
+    def test_returns_none_when_nothing_set(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+        ef = tmp_path / "h.env"
+        # Don't write the file at all.
+        got = minting.resolve_helius_api_key(env_file=str(ef))
+        assert got is None

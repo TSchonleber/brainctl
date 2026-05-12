@@ -84,6 +84,14 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - Managed wallet: `brainctl wallet new` creates a local keypair at `~/.brainctl/wallet.json` for users without an existing Solana setup
 - Memories never leave the machine; only the hash goes on-chain (opt-in)
 
+**Mint (v1, optional `[mint]` extra)**
+- `brainctl export --sign --mint` mints one Light Protocol compressed token per signed bundle, owned by your brainctl wallet
+- Bundle content is AES-256-GCM encrypted **before** anything touches a public storage layer (Arweave) — the chain stores ownership, never plaintext
+- Each mint creates a Memory NFT-style token: scannable in any Solana wallet, transferable via Tensor / Magic Eden out of the box, ~$0.0001 per mint (Light Protocol's compressed-token program)
+- Devnet by default; mainnet-beta requires `--cluster mainnet-beta` and a Helius API key
+- Setup: `pip install 'brainctl[mint]'` then `cd tools && npm install` (the actual mint runs in a Node helper because Light Protocol's SDK is TypeScript-only as of v0.23)
+- Foundation for the agent-to-agent memory marketplace; see `CLAUDE.md` § "Mint" for the full agent flow
+
 **Plugins (16 first-party)**
 
 Agent frameworks:
