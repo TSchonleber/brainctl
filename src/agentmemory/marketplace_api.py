@@ -606,6 +606,123 @@ def api_base_from_env(default: str = DEFAULT_API_BASE) -> str:
     return os.environ.get("BRNCTL_MARKETPLACE_API", default).rstrip("/")
 
 
+# ---------------------------------------------------------------------------
+# Node helper orchestration — Arweave upload + Solana memo posting
+# ---------------------------------------------------------------------------
+
+def _run_node_helper(request: Dict[str, Any], *, timeout: int = 90) -> Dict[str, Any]:
+    """Shell to tools/zk_mint.js with the request — same plumbing as
+    minting.py's helper runner, but inlined here so marketplace_api
+    doesn't depend on minting.py.
+    """
+    import subprocess
+    import shutil as _shutil
+    import tempfile
+
+    node = _shutil.which("node")
+    if not node:
+        return {
+            "ok": False,
+            "error": "node_not_found",
+            "detail": "install Node ≥20 from https://nodejs.org/",
+        }
+
+    # Resolve the helper path (mirrors minting.py logic).
+    here = Path(__file__).resolve()
+    helper = None
+    for candidate in (
+        here.parent.parent.parent / "tools" / "zk_mint.js",
+        here.parent.parent / "tools" / "zk_mint.js",
+        here.parent / "tools" / "zk_mint.js",
+    ):
+        if candidate.exists():
+            helper = candidate
+            break
+    if helper is None:
+        env = os.environ.get("BRAINCTL_ZK_MINT_HELPER")
+        if env and Path(env).exists():
+            helper = Path(env)
+    if helper is None:
+        return {"ok": False, "error": "helper_not_found"}
+
+    with tempfile.NamedTemporaryFile(
+        prefix="brnctl-mkt-",
+        suffix=".json",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(request, f)
+        request_path = f.name
+
+    try:
+        proc = subprocess.run(
+            [node, str(helper), "--request", request_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    finally:
+        try:
+            os.unlink(request_path)
+        except FileNotFoundError:
+            pass
+
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": "helper_exit_nonzero",
+            "detail": (proc.stderr or proc.stdout or "").strip()[:500],
+        }
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        return {"ok": False, "error": "non_json_output", "detail": str(e)}
+
+
+def upload_manifest_to_arweave(
+    *,
+    manifest: Dict[str, Any],
+    schema: str,
+    cluster: str,
+    helius_api_key: Optional[str] = None,
+    keystore_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Shell to the Node helper to upload a manifest to Arweave via Irys."""
+    req: Dict[str, Any] = {
+        "action": "marketplace_upload_manifest",
+        "cluster": cluster,
+        "manifest": manifest,
+        "schema": schema,
+    }
+    if helius_api_key:
+        req["helius_api_key"] = helius_api_key
+    if keystore_path:
+        req["keystore_path"] = keystore_path
+    return _run_node_helper(req)
+
+
+def post_marketplace_memo(
+    *,
+    memo: str,
+    cluster: str,
+    helius_api_key: Optional[str] = None,
+    keystore_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Shell to the Node helper to post a brndb-marketplace memo to Solana."""
+    req: Dict[str, Any] = {
+        "action": "marketplace_post_memo",
+        "cluster": cluster,
+        "memo": memo,
+    }
+    if helius_api_key:
+        req["helius_api_key"] = helius_api_key
+    if keystore_path:
+        req["keystore_path"] = keystore_path
+    return _run_node_helper(req)
+
+
 __all__ = [
     "DEFAULT_API_BASE",
     "MarketplaceApiError",

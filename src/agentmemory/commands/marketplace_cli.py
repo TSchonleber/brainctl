@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 from agentmemory import marketplace_api as api
@@ -188,6 +189,135 @@ def cmd_status(args: Any) -> None:
 # settle (build the tx — caller signs + submits)
 # ---------------------------------------------------------------------------
 
+def cmd_list(args: Any) -> None:
+    """Publish a signed memory bundle as a marketplace listing.
+
+    Orchestration:
+      1. Load the signed bundle from --bundle (output of brainctl export
+         --sign).
+      2. Build a listing manifest (USD-pegged price, visibility, expires_at)
+         using agentmemory.marketplace.build_listing_manifest.
+      3. Sign the manifest's canonical-JSON hash with the user's wallet.
+      4. Upload the signed manifest to Arweave via the Node helper.
+      5. Post the list memo to Solana via the Node helper.
+      6. Register the listing with brainctl.org/api/marketplace/listings.
+    """
+    as_json = bool(getattr(args, "json", False))
+    api_base = api.api_base_from_env()
+    pubkey = _resolve_wallet_pubkey()
+
+    # Auth first — saves us from doing all the on-chain work only to
+    # discover the API rejects us.
+    try:
+        token = api.ensure_session(api_base, pubkey)
+    except Exception as e:
+        _emit({"ok": False, "error": f"auth_failed: {e}"}, as_json=as_json, exit_code=1)
+        return
+
+    # Load signed bundle.
+    bundle_path = Path(args.bundle).expanduser()
+    if not bundle_path.exists():
+        _emit({"ok": False, "error": "bundle_not_found", "detail": str(bundle_path)},
+              as_json=as_json, exit_code=1)
+        return
+    try:
+        signed = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        _emit({"ok": False, "error": f"bad_bundle_json: {e}"}, as_json=as_json, exit_code=1)
+        return
+
+    bundle_hash_hex = signed.get("bundle_hash_hex")
+    signer_pubkey = signed.get("signer_pubkey_b58")
+    if not bundle_hash_hex or not signer_pubkey:
+        _emit({"ok": False, "error": "bundle_missing_fields",
+               "detail": "needs bundle_hash_hex + signer_pubkey_b58"},
+              as_json=as_json, exit_code=1)
+        return
+    if signer_pubkey != pubkey:
+        _emit({"ok": False, "error": "bundle_signer_mismatch",
+               "detail": f"bundle was signed by {signer_pubkey[:8]}…, "
+                         f"your wallet is {pubkey[:8]}…"},
+              as_json=as_json, exit_code=1)
+        return
+
+    # Build preview from bundle memories.
+    from agentmemory import marketplace as mp
+    from agentmemory import signing
+    preview = mp.build_preview_from_bundle(
+        signed["bundle"], description=args.description
+    )
+
+    # Build listing manifest (currency=USD, capped at $10k).
+    manifest = mp.build_listing_manifest(
+        bundle_hash=bundle_hash_hex,
+        seller_pubkey_b58=pubkey,
+        price_usd=float(args.price_usd),
+        duration_hours=float(args.duration_hours),
+        encrypted_bundle_uri=args.encrypted_bundle_uri,
+        metadata_uri=args.metadata_uri,
+        preview=preview,
+        visibility=args.visibility,
+        treasury_pubkey=args.treasury_pubkey if hasattr(args, "treasury_pubkey") else None,
+    )
+
+    # Sign the manifest hash.
+    from agentmemory.commands import wallet as _wallet
+    keystore = str(_wallet.resolve_wallet_path(None))
+    keypair = signing.load_keystore(keystore)
+    h = mp.listing_hash(manifest)
+    sig = keypair.sign_message(h)
+    manifest["signature_b58"] = str(sig)
+
+    # Upload to Arweave via the Node helper.
+    upload = api.upload_manifest_to_arweave(
+        manifest=manifest,
+        schema="brndb-marketplace/v1/listing",
+        cluster=args.cluster,
+    )
+    if not upload.get("ok"):
+        _emit({"ok": False, **upload}, as_json=as_json, exit_code=1)
+        return
+    listing_arweave_id = upload["arweave_id"]
+
+    # Post the list memo.
+    list_memo = mp.format_list_memo(listing_arweave_id, bundle_hash_hex)
+    post = api.post_marketplace_memo(memo=list_memo, cluster=args.cluster)
+    if not post.get("ok"):
+        _emit({"ok": False, **post,
+               "arweave_id": listing_arweave_id,
+               "hint": "manifest is on Arweave but the list memo didn't post — "
+                       "retry with the same listing_arweave_id"},
+              as_json=as_json, exit_code=1)
+        return
+    list_tx = post["tx_signature"]
+
+    # Register with the API.
+    try:
+        result = api.create_listing(
+            api_base,
+            manifest=manifest,
+            listing_arweave_id=listing_arweave_id,
+            list_tx_signature=list_tx,
+            cluster=args.cluster,
+            session_token=token,
+        )
+    except api.MarketplaceApiError as e:
+        _emit({"ok": False, "error": str(e), **e.payload,
+               "arweave_id": listing_arweave_id, "list_tx": list_tx,
+               "hint": "memo + manifest are on chain — API rejected registration. "
+                       "Check the error detail."},
+              as_json=as_json, exit_code=1)
+        return
+
+    _emit({
+        **result,
+        "arweave_id": listing_arweave_id,
+        "list_tx_signature": list_tx,
+        "price_usd": float(args.price_usd),
+        "visibility": args.visibility,
+    }, as_json=as_json)
+
+
 def cmd_settle(args: Any) -> None:
     as_json = bool(getattr(args, "json", False))
     api_base = api.api_base_from_env()
@@ -298,6 +428,40 @@ def register_parser(sub: Any) -> None:
                           help="Max seconds to wait when --wait is set (default 120)")
     p_status.add_argument("--json", action="store_true")
     p_status.set_defaults(func=cmd_status)
+
+    # ----- list (seller publishes a signed bundle) -----
+    p_list = api_op.add_parser(
+        "list",
+        help=(
+            "Publish a signed memory bundle as a marketplace listing. "
+            "Reads bundle from --bundle (output of `brainctl export --sign`), "
+            "builds + signs the listing manifest, uploads to Arweave, posts "
+            "the list memo on Solana, and registers with brainctl.org."
+        ),
+    )
+    p_list.add_argument("--bundle", required=True,
+                        help="Path to a signed bundle JSON (from `brainctl export --sign -o ...`)")
+    p_list.add_argument("--price-usd", dest="price_usd", required=True, type=float,
+                        help="Listing price in USD (capped at $10,000)")
+    p_list.add_argument("--duration-hours", dest="duration_hours", type=float, default=24,
+                        help="Listing TTL in hours (default 24, max 720)")
+    p_list.add_argument("--visibility", default="auction",
+                        choices=["auction", "private"],
+                        help="auction = offers public; private = offers visible only to seller + offerer")
+    p_list.add_argument("--description", default=None,
+                        help="Optional 1-line pitch surfaced in browse")
+    p_list.add_argument("--encrypted-bundle-uri", dest="encrypted_bundle_uri",
+                        required=True,
+                        help="ar://... — the encrypted bundle ciphertext URI (typically the output of `brainctl export --sign --mint`)")
+    p_list.add_argument("--metadata-uri", dest="metadata_uri",
+                        required=True,
+                        help="ar://... — the metadata URI the JIT-minted cNFT will reference at settlement")
+    p_list.add_argument("--treasury-pubkey", dest="treasury_pubkey", default=None,
+                        help="Override the protocol treasury (advanced)")
+    p_list.add_argument("--cluster", default="mainnet-beta",
+                        choices=["mainnet-beta", "devnet"])
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=cmd_list)
 
     # ----- settle -----
     p_settle = api_op.add_parser(

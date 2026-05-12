@@ -330,9 +330,151 @@ async function main() {
     case "mint":
       await doMint(req);
       break;
+    case "marketplace_upload_manifest":
+      await doMarketplaceUploadManifest(req);
+      break;
+    case "marketplace_post_memo":
+      await doMarketplacePostMemo(req);
+      break;
     default:
       fail(`unknown action: ${req.action}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Action: marketplace_upload_manifest
+//   Upload a JSON manifest (listing / offer / counter / SealedBox envelope)
+//   to Arweave via Irys. Tagged with App-Name=brainctl + Schema=brndb-
+//   marketplace/v1 so the marketplace indexer can filter to relevant
+//   artifacts.
+//
+// Request:
+//   { action: "marketplace_upload_manifest", cluster, manifest, schema, helius_api_key?, keystore_path? }
+// Response:
+//   { ok, arweave_id }
+// ---------------------------------------------------------------------------
+
+async function doMarketplaceUploadManifest(req) {
+  if (!req.manifest || typeof req.manifest !== "object") {
+    fail("manifest is required");
+  }
+  const schema = req.schema || "brndb-marketplace/v1/unknown";
+
+  const irys = requireOrInstallHint("@irys/sdk");
+  const Irys = irys.default || irys;
+  const keypair = loadKeypair(
+    req.keystore_path || `${os.homedir()}/.brainctl/wallet.json`
+  );
+
+  let client;
+  try {
+    client = new Irys({
+      network: req.cluster === "mainnet-beta" ? "mainnet" : "devnet",
+      token: "solana",
+      key: Buffer.from(keypair.secretKey).toString("hex"),
+      config: { providerUrl: resolveRpcUrl(req.cluster, req.helius_api_key) },
+    });
+  } catch (e) {
+    fail(`failed to init Irys client: ${e && e.message ? e.message : String(e)}`);
+  }
+
+  let receipt;
+  try {
+    receipt = await client.upload(
+      Buffer.from(JSON.stringify(req.manifest), "utf8"),
+      {
+        tags: [
+          { name: "Content-Type", value: "application/json" },
+          { name: "App-Name", value: "brainctl" },
+          { name: "Schema", value: schema },
+        ],
+      }
+    );
+  } catch (e) {
+    fail(
+      `manifest upload failed: ${e && e.message ? e.message : String(e)}`
+    );
+  }
+
+  ok({ arweave_id: receipt.id });
+}
+
+// ---------------------------------------------------------------------------
+// Action: marketplace_post_memo
+//   Post a marketplace memo to Solana via the SPL Memo program. Signed by
+//   the brainctl wallet so the on-chain signer matches the manifest's
+//   seller/buyer/counterer pubkey.
+//
+// Request:
+//   { action: "marketplace_post_memo", cluster, memo, helius_api_key?, keystore_path? }
+// Response:
+//   { ok, tx_signature, slot }
+// ---------------------------------------------------------------------------
+
+const MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+async function doMarketplacePostMemo(req) {
+  if (typeof req.memo !== "string" || !req.memo) {
+    fail("memo string is required");
+  }
+  if (!req.memo.startsWith("brndb-marketplace/v1:")) {
+    fail("memo must start with brndb-marketplace/v1: prefix");
+  }
+
+  const {
+    Connection,
+    Transaction,
+    TransactionInstruction,
+    PublicKey,
+  } = requireOrInstallHint("@solana/web3.js");
+
+  const keypair = loadKeypair(
+    req.keystore_path || `${os.homedir()}/.brainctl/wallet.json`
+  );
+  const rpcUrl = resolveRpcUrl(req.cluster, req.helius_api_key);
+  const conn = new Connection(rpcUrl, "confirmed");
+
+  let blockhashInfo;
+  try {
+    blockhashInfo = await conn.getLatestBlockhash("confirmed");
+  } catch (e) {
+    fail(`getLatestBlockhash failed: ${e && e.message ? e.message : String(e)}`);
+  }
+
+  const ix = new TransactionInstruction({
+    keys: [{ pubkey: keypair.publicKey, isSigner: true, isWritable: false }],
+    programId: new PublicKey(MEMO_PROGRAM_ID),
+    data: Buffer.from(req.memo, "utf-8"),
+  });
+  const tx = new Transaction({
+    feePayer: keypair.publicKey,
+    blockhash: blockhashInfo.blockhash,
+    lastValidBlockHeight: blockhashInfo.lastValidBlockHeight,
+  });
+  tx.add(ix);
+  tx.sign(keypair);
+
+  let signature;
+  try {
+    signature = await conn.sendRawTransaction(tx.serialize(), {
+      preflightCommitment: "confirmed",
+    });
+  } catch (e) {
+    fail(
+      `sendRawTransaction failed: ${e && e.message ? e.message : String(e)}`
+    );
+  }
+
+  // Best-effort slot lookup; not fatal if it doesn't resolve in time.
+  let slot = null;
+  try {
+    const status = await conn.getSignatureStatus(signature);
+    slot = status && status.value && status.value.slot ? status.value.slot : null;
+  } catch {
+    // ignore
+  }
+
+  ok({ tx_signature: signature, slot });
 }
 
 main().catch((err) => {
