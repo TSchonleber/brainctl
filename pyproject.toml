@@ -63,6 +63,16 @@ crewai = ["crewai>=0.80.0"]
 # needed. brainctl imports cleanly without solders; signing CLI
 # commands print an install hint if the extra is missing.
 signing = ["solders>=0.21"]
+# Light Protocol compressed-token mint (`brainctl export --mint`). Adds
+# `cryptography` for AES-256-GCM bundle encryption. The actual minting
+# happens in a Node.js helper at `tools/zk_mint.js` because Light
+# Protocol's SDK is TypeScript-only as of v0.23 — run
+# `cd tools && npm install` once to pull the JS deps. The Python side
+# only needs the encryption library; everything else shells out.
+mint = [
+    "solders>=0.21",
+    "cryptography>=42",
+]
 # Cross-encoder reranker stage (2.4.0+, opt-in via `brainctl search
 # --rerank`). sentence-transformers loads the supported cross-encoder
 # models (BAAI/bge-reranker-v2-m3, jinaai/jina-reranker-v2-base-
