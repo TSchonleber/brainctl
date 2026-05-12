@@ -165,7 +165,9 @@ def cmd_show(args: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(args: Any) -> None:
-    """Poll settlement status for a listing+buyer."""
+    """Poll settlement status for a listing+buyer. With --auto-decrypt,
+    also fetches + decrypts the bundle once released.
+    """
     as_json = bool(getattr(args, "json", False))
     api_base = api.api_base_from_env()
     pubkey = _resolve_wallet_pubkey()
@@ -182,6 +184,64 @@ def cmd_status(args: Any) -> None:
             )
     except api.MarketplaceApiError as e:
         _emit({"ok": False, "error": str(e), **e.payload}, as_json=as_json, exit_code=1)
+        return
+
+    # If released + --auto-decrypt, run the buyer-side pipeline.
+    if getattr(args, "auto_decrypt", False) and result.get("status") == "released":
+        from agentmemory import marketplace_buy as buy_helpers
+        from agentmemory.commands import wallet as _wallet
+
+        envelope_id = result.get("envelope_arweave_id")
+        if not envelope_id:
+            _emit({**result, "decrypt_error": "no envelope_arweave_id in status response"},
+                  as_json=as_json, exit_code=1)
+            return
+
+        # Fetch the listing to get the encrypted_bundle_uri.
+        try:
+            detail = api.get_listing(api_base, args.listing_id, cluster=args.cluster)
+            encrypted_uri = detail["listing"]["manifest"]["encrypted_bundle_uri"]
+        except Exception as e:
+            _emit({**result, "decrypt_error": f"could not resolve encrypted_bundle_uri: {e}"},
+                  as_json=as_json, exit_code=1)
+            return
+
+        managed = _wallet.resolve_wallet_path(None)
+        try:
+            decoded = buy_helpers.post_release_pipeline(
+                envelope_arweave_id=envelope_id,
+                encrypted_bundle_uri=encrypted_uri,
+                keystore_path=str(managed),
+            )
+        except Exception as e:
+            _emit({**result, "decrypt_error": str(e)}, as_json=as_json, exit_code=1)
+            return
+
+        bundle = decoded["bundle"]
+        out_path = getattr(args, "output", None)
+        if out_path:
+            Path(out_path).expanduser().write_text(
+                json.dumps(bundle, indent=2, default=str), encoding="utf-8"
+            )
+        ingest_summary = None
+        if getattr(args, "ingest", False):
+            ingest_summary = buy_helpers.ingest_into_quarantine(
+                bundle, listing_id=args.listing_id
+            )
+
+        _emit(
+            {
+                **result,
+                "decrypted": True,
+                "memories_count": len(bundle.get("memories", [])),
+                "bundle_signer_pubkey": bundle.get("memories", [{}])[0].get("agent_id") if bundle.get("memories") else None,
+                "output_path": out_path,
+                "ingest_summary": ingest_summary,
+            },
+            as_json=as_json,
+        )
+        return
+
     _emit(result, as_json=as_json)
 
 
@@ -444,6 +504,16 @@ def register_parser(sub: Any) -> None:
                           help="Poll until status=released or --timeout elapses")
     p_status.add_argument("--timeout", type=int, default=120,
                           help="Max seconds to wait when --wait is set (default 120)")
+    p_status.add_argument("--auto-decrypt", dest="auto_decrypt", action="store_true",
+                          help="When the seller has released, fetch the SealedBox envelope, "
+                               "decrypt to recover the bundle key, fetch + AES-decrypt the bundle, "
+                               "return the bundle inline. Implies --wait if --wait isn't set.")
+    p_status.add_argument("--ingest", action="store_true",
+                          help="Combine with --auto-decrypt: insert the decrypted memories into "
+                               "your brain.db under scope=imported:<listing_id> (quarantined). "
+                               "Promotion to your primary scope is a separate explicit step.")
+    p_status.add_argument("--output", default=None,
+                          help="Combine with --auto-decrypt: write the decrypted bundle JSON to this path.")
     p_status.add_argument("--json", action="store_true")
     p_status.set_defaults(func=cmd_status)
 
