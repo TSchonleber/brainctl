@@ -31,8 +31,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Default API base URL. Override via env for staging / local testing.
-DEFAULT_API_BASE = "https://brainctl.org/api/marketplace"
+# Default API base URL. Override via $BRNCTL_MARKETPLACE_API for staging
+# or local testing. Hardcoded to www.brainctl.org to skip the 308
+# redirect from the apex domain — Python's urllib follows GET redirects
+# but can silently drop request bodies on POST redirects, which breaks
+# every authenticated write. Always start at the canonical URL.
+DEFAULT_API_BASE = "https://www.brainctl.org/api/marketplace"
 
 # Persisted session location. Per-cluster so devnet + mainnet don't
 # collide.
