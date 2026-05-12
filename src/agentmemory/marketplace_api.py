@@ -494,6 +494,82 @@ def settlement_status(
     )
 
 
+def sign_and_submit_settle_tx(
+    *,
+    tx_base64: str,
+    keystore_path: str,
+    cluster: str,
+) -> Dict[str, Any]:
+    """Sign the base64-encoded settlement tx with the user's wallet
+    and submit it to a Solana RPC.
+
+    Returns ``{ok, tx_signature, slot?}`` on success.
+
+    Uses solders for signing + a public Solana RPC (devnet) or the
+    Helius RPC (mainnet) for submission. This is intentionally
+    minimal: it does NOT confirm the tx beyond the initial submission.
+    Callers should poll ``settlement_status`` afterwards.
+    """
+    import base64
+
+    # Late imports to keep this module solders-free at import time.
+    from agentmemory import signing
+    from solders.transaction import Transaction  # type: ignore
+
+    keypair = signing.load_keystore(keystore_path)
+
+    tx_bytes = base64.b64decode(tx_base64)
+    tx = Transaction.from_bytes(tx_bytes)
+
+    # The settlement tx's fee payer is the buyer; the buyer is the
+    # only required signer for all instructions in the tx (SPL/SystemProgram
+    # transfers from the buyer's accounts + the buyer-signed memo). We
+    # sign with the buyer's keypair.
+    blockhash = tx.message.recent_blockhash
+    tx.sign([keypair], blockhash)
+    signed_bytes = bytes(tx)
+    signed_b64 = base64.b64encode(signed_bytes).decode("ascii")
+
+    # Submit via sendTransaction RPC.
+    if cluster == "mainnet-beta":
+        rpc_url = "https://api.mainnet-beta.solana.com"
+    else:
+        rpc_url = "https://api.devnet.solana.com"
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sendTransaction",
+        "params": [
+            signed_b64,
+            {"encoding": "base64", "preflightCommitment": "confirmed"},
+        ],
+    }
+    req = urllib.request.Request(
+        rpc_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT_SEC) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"rpc_http_error_{e.code}", "detail": str(e)}
+    except urllib.error.URLError as e:
+        return {"ok": False, "error": "rpc_network_error", "detail": str(e)}
+
+    if "error" in body:
+        return {
+            "ok": False,
+            "error": "rpc_error",
+            "detail": body["error"],
+        }
+    sig = body.get("result")
+    if not isinstance(sig, str):
+        return {"ok": False, "error": "no_signature_in_response", "detail": str(body)}
+    return {"ok": True, "tx_signature": sig}
+
+
 def poll_settlement_until_released(
     api_base: str,
     listing_id: str,

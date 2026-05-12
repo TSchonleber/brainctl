@@ -196,6 +196,7 @@ def cmd_settle(args: Any) -> None:
         token = api.ensure_session(api_base, pubkey)
     except Exception as e:
         _emit({"ok": False, "error": f"auth_failed: {e}"}, as_json=as_json, exit_code=1)
+        return  # unreachable — _emit calls sys.exit
     try:
         result = api.build_settle_tx(
             api_base,
@@ -208,7 +209,26 @@ def cmd_settle(args: Any) -> None:
         )
     except api.MarketplaceApiError as e:
         _emit({"ok": False, "error": str(e), **e.payload}, as_json=as_json, exit_code=1)
-    _emit(result, as_json=as_json)
+        return
+
+    if not getattr(args, "submit", False):
+        # Build-only path. Caller signs + submits themselves.
+        _emit(result, as_json=as_json)
+        return
+
+    # --submit: sign with the user's wallet + submit to RPC.
+    from agentmemory.commands import wallet as _wallet
+    managed = _wallet.resolve_wallet_path(None)
+    submit_result = api.sign_and_submit_settle_tx(
+        tx_base64=result["tx_base64"],
+        keystore_path=str(managed),
+        cluster=args.cluster,
+    )
+    merged = {**result, **submit_result}
+    if not submit_result.get("ok"):
+        _emit(merged, as_json=as_json, exit_code=1)
+        return
+    _emit(merged, as_json=as_json)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +319,9 @@ def register_parser(sub: Any) -> None:
     p_settle.add_argument("--currency", default=None,
                           choices=["SOL", "BRNDB"],
                           help="Override payment currency (default: server picks SOL until BRNDB launches)")
+    p_settle.add_argument("--submit", action="store_true",
+                          help="Sign + submit the tx in one shot (uses ~/.brainctl/wallet.json). "
+                               "Without --submit, the base64 tx is returned for manual signing.")
     p_settle.add_argument("--json", action="store_true")
     p_settle.set_defaults(func=cmd_settle)
 
