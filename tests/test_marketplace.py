@@ -128,7 +128,7 @@ class TestListingManifest:
 
     def test_happy_path(self):
         m = mp.build_listing_manifest(
-            mint_address="MintAbc",
+            bundle_hash="11" * 32,
             seller_pubkey_b58="SellerXyz",
             price_usd=25.00,
             duration_hours=24,
@@ -138,7 +138,8 @@ class TestListingManifest:
             treasury_pubkey="TreasuryQwe",
         )
         assert m["schema"] == f"{mp.MARKETPLACE_SCHEMA}/listing"
-        assert m["mint_address"] == "MintAbc"
+        assert m["bundle_hash"] == "11" * 32
+        assert m["visibility"] == "auction"  # default
         assert m["seller_pubkey"] == "SellerXyz"
         assert m["payment_address"] == "SellerXyz"  # defaults
         assert m["treasury_pubkey"] == "TreasuryQwe"
@@ -155,7 +156,7 @@ class TestListingManifest:
 
     def test_expires_at_in_future(self):
         m = mp.build_listing_manifest(
-            mint_address="M", seller_pubkey_b58="S",
+            bundle_hash="aa" * 32, seller_pubkey_b58="S",
             price_usd=10, duration_hours=24,
             encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
             preview=self._preview(),
@@ -168,7 +169,7 @@ class TestListingManifest:
     def test_rejects_negative_price(self):
         with pytest.raises(ValueError):
             mp.build_listing_manifest(
-                mint_address="M", seller_pubkey_b58="S",
+                bundle_hash="aa" * 32, seller_pubkey_b58="S",
                 price_usd=-1, duration_hours=24,
                 encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
                 preview=self._preview(),
@@ -177,7 +178,7 @@ class TestListingManifest:
     def test_rejects_over_cap(self):
         with pytest.raises(ValueError):
             mp.build_listing_manifest(
-                mint_address="M", seller_pubkey_b58="S",
+                bundle_hash="aa" * 32, seller_pubkey_b58="S",
                 price_usd=mp.MAX_LISTING_PRICE_USD + 1,
                 duration_hours=24,
                 encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
@@ -187,14 +188,14 @@ class TestListingManifest:
     def test_rejects_bad_duration(self):
         with pytest.raises(ValueError):
             mp.build_listing_manifest(
-                mint_address="M", seller_pubkey_b58="S",
+                bundle_hash="aa" * 32, seller_pubkey_b58="S",
                 price_usd=10, duration_hours=0,
                 encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
                 preview=self._preview(),
             )
         with pytest.raises(ValueError):
             mp.build_listing_manifest(
-                mint_address="M", seller_pubkey_b58="S",
+                bundle_hash="aa" * 32, seller_pubkey_b58="S",
                 price_usd=10, duration_hours=24 * 31,
                 encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
                 preview=self._preview(),
@@ -204,7 +205,7 @@ class TestListingManifest:
         # Same inputs (with explicit listing_id + created_at) →
         # same canonical bytes → same hash.
         kw = dict(
-            mint_address="M", seller_pubkey_b58="S",
+            bundle_hash="aa" * 32, seller_pubkey_b58="S",
             price_usd=10, duration_hours=24,
             encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
             preview=self._preview(),
@@ -226,7 +227,7 @@ class TestListingManifest:
 
     def test_hash_excludes_signature_field(self):
         m = mp.build_listing_manifest(
-            mint_address="M", seller_pubkey_b58="S",
+            bundle_hash="aa" * 32, seller_pubkey_b58="S",
             price_usd=10, duration_hours=24,
             encrypted_bundle_uri="ar://C", metadata_uri="ar://M",
             preview=self._preview(),
@@ -346,12 +347,12 @@ class TestSealedBox:
 
 class TestMemos:
     def test_list_roundtrip(self):
-        memo = mp.format_list_memo("arweave-tx-abc", "MintXyz")
+        memo = mp.format_list_memo("arweave-tx-abc", "11" * 32)
         parsed = mp.parse_memo(memo)
         assert parsed == {
             "action": "list",
             "listing_arweave_id": "arweave-tx-abc",
-            "mint_address": "MintXyz",
+            "bundle_hash": "11" * 32,
         }
 
     def test_buy_roundtrip(self):
@@ -364,12 +365,15 @@ class TestMemos:
         }
 
     def test_release_roundtrip(self):
-        memo = mp.format_release_memo("20260512-abc123", "envelope-tx")
+        memo = mp.format_release_memo(
+            "20260512-abc123", "envelope-tx", "MintAbc123"
+        )
         parsed = mp.parse_memo(memo)
         assert parsed == {
             "action": "release",
             "listing_id": "20260512-abc123",
             "envelope_arweave_id": "envelope-tx",
+            "minted_cnft_address": "MintAbc123",
         }
 
     def test_cancel_roundtrip(self):

@@ -219,13 +219,14 @@ def atoms_to_usd(
 
 def build_listing_manifest(
     *,
-    mint_address: str,
+    bundle_hash: str,
     seller_pubkey_b58: str,
     price_usd: float,
     duration_hours: float,
     encrypted_bundle_uri: str,
     metadata_uri: str,
     preview: Dict[str, Any],
+    visibility: str = "auction",
     payment_address: Optional[str] = None,
     listing_id: Optional[str] = None,
     treasury_pubkey: Optional[str] = None,
@@ -234,10 +235,17 @@ def build_listing_manifest(
 ) -> Dict[str, Any]:
     """Build the unsigned listing manifest as a dict.
 
-    The signature is added by the caller via ``sign_listing`` after the
-    manifest is finalised. Manifests are canonical-JSON-hashed for
-    integrity (same canonicalisation rules as the signing module:
-    sort_keys, separators (",", ":"), ensure_ascii).
+    Proof-first architecture: ``bundle_hash`` is the SHA-256 hex of the
+    signed bundle's canonical JSON (the same value ``signing.sign_bundle``
+    publishes as ``bundle_hash_hex``). NO cNFT is minted at list time;
+    the cNFT mint happens just-in-time at settlement, one fresh mint
+    per buyer. See ~/brainctl-launch/04_marketplace_design.md §
+    "Trade proofs, mint on settlement".
+
+    The signature is added by the caller after the manifest is
+    finalised. Manifests are canonical-JSON-hashed for integrity (same
+    canonicalisation rules as the signing module: sort_keys,
+    separators (",", ":"), ensure_ascii).
     """
     if price_usd < 0 or price_usd > MAX_LISTING_PRICE_USD:
         raise ValueError(
@@ -256,10 +264,15 @@ def build_listing_manifest(
         .isoformat()
     )
 
+    if visibility not in ("auction", "private"):
+        raise ValueError(
+            f"visibility must be 'auction' or 'private', got {visibility!r}"
+        )
+
     return {
         "schema": f"{MARKETPLACE_SCHEMA}/listing",
         "listing_id": listing_id or _new_listing_id(),
-        "mint_address": mint_address,
+        "bundle_hash": bundle_hash,
         "seller_pubkey": seller_pubkey_b58,
         "payment_address": payment_address or seller_pubkey_b58,
         "treasury_pubkey": treasury_pubkey,
@@ -269,6 +282,7 @@ def build_listing_manifest(
             "max_price_usd": MAX_LISTING_PRICE_USD,
             "currency": "USD",
         },
+        "visibility": visibility,
         "expires_at": expires_iso,
         "encrypted_bundle_uri": encrypted_bundle_uri,
         "metadata_uri": metadata_uri,
@@ -460,9 +474,13 @@ def sealedbox_decrypt(
 # Memo formatting (Solana on-chain discovery layer)
 # ---------------------------------------------------------------------------
 
-def format_list_memo(listing_arweave_id: str, mint_address: str) -> str:
-    """Discovery memo posted at list time."""
-    return f"{MEMO_LIST_PREFIX}:{listing_arweave_id}:{mint_address}"
+def format_list_memo(listing_arweave_id: str, bundle_hash: str) -> str:
+    """Discovery memo posted at list time.
+
+    Proof-first: the memo references the bundle_hash, not a pre-minted
+    cNFT. The cNFT is minted JIT at settlement.
+    """
+    return f"{MEMO_LIST_PREFIX}:{listing_arweave_id}:{bundle_hash}"
 
 
 def format_buy_memo(listing_id: str, buyer_x25519_pubkey_b58: str) -> str:
@@ -470,9 +488,21 @@ def format_buy_memo(listing_id: str, buyer_x25519_pubkey_b58: str) -> str:
     return f"{MEMO_BUY_PREFIX}:{listing_id}:{buyer_x25519_pubkey_b58}"
 
 
-def format_release_memo(listing_id: str, envelope_arweave_id: str) -> str:
-    """Key-release memo posted by the seller after detecting payment."""
-    return f"{MEMO_RELEASE_PREFIX}:{listing_id}:{envelope_arweave_id}"
+def format_release_memo(
+    listing_id: str,
+    envelope_arweave_id: str,
+    minted_cnft_address: str,
+) -> str:
+    """Key-release memo posted by the seller after detecting payment.
+
+    Third field is the just-minted cNFT — the buyer's permanent
+    on-chain receipt of purchase. Seller's daemon mints + uploads
+    envelope + posts this memo in sequence on payment detection.
+    """
+    return (
+        f"{MEMO_RELEASE_PREFIX}:{listing_id}:"
+        f"{envelope_arweave_id}:{minted_cnft_address}"
+    )
 
 
 def format_cancel_memo(listing_id: str) -> str:
@@ -495,15 +525,16 @@ def parse_memo(body: str) -> Optional[Dict[str, str]]:
     if action == "list" and len(parts) >= 4:
         return {"action": "list",
                 "listing_arweave_id": parts[2],
-                "mint_address": parts[3]}
+                "bundle_hash": parts[3]}
     if action == "buy" and len(parts) >= 4:
         return {"action": "buy",
                 "listing_id": parts[2],
                 "buyer_x25519": parts[3]}
-    if action == "release" and len(parts) >= 4:
+    if action == "release" and len(parts) >= 5:
         return {"action": "release",
                 "listing_id": parts[2],
-                "envelope_arweave_id": parts[3]}
+                "envelope_arweave_id": parts[3],
+                "minted_cnft_address": parts[4]}
     if action == "cancel":
         return {"action": "cancel", "listing_id": parts[2]}
     return None

@@ -147,6 +147,25 @@ mint so a misclick can be aborted.
 3. `~/.brainctl/helius.env` file (or `$BRAINCTL_HELIUS_ENV_FILE` override) — dotenv shape, one `HELIUS_API_KEY=<value>` line
 4. Returns `None` (treated as not-set if any of the above is shorter than 8 chars, so the Vercel `""` quirk doesn't accidentally satisfy the check)
 
+### Marketplace context: personal mint vs. JIT mint
+
+There are two scenarios where a Light Protocol compressed-token mint
+happens, and they're explicitly different:
+
+1. **Personal mint** — `brainctl export --sign --mint`. The user mints
+   a cNFT to their own wallet. Useful for personal collections,
+   gifting, or proving early ownership. The current 2.5.1 behaviour.
+2. **Marketplace JIT mint** — happens during a `brainctl marketplace`
+   settlement when a buyer's payment lands. The *seller's* daemon
+   mints a fresh cNFT to the *buyer's* wallet as part of the release
+   memo path. The seller can sell the same bundle to many buyers; each
+   gets their own freshly-minted cNFT.
+
+Don't conflate these. The marketplace listing flow does NOT require
+`--mint` first — sellers list signed bundles (proofs), and the mint
+happens at settlement. `--mint` is purely a personal-collection
+convenience and is unrelated to listing.
+
 ### Design invariants (these are load-bearing, do NOT regress)
 
 - **Memory content is always AES-256-GCM encrypted client-side before any pointer touches a public storage layer.** Each bundle gets a fresh 32-byte symmetric key, written to `~/.brainctl/keys/<mint>.key` at mode 0600. Marketplace key-wrapping (sale-time threshold encryption via Lit Protocol) is v1.5 — not this build.
