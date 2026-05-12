@@ -145,13 +145,17 @@ def install_signal_handlers() -> bool:
         os._exit(0)
 
     installed_any = False
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    candidates = [signal.SIGTERM]
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None:
+        candidates.append(sighup)
+    for sig in candidates:
         try:
             signal.signal(sig, _handler)
             installed_any = True
         except Exception:
             # Some signals are not settable from non-main threads or
-            # on some platforms (e.g. SIGHUP on Windows). Soft-fail.
+            # on some platforms. Soft-fail.
             pass
     _SIGNALS_INSTALLED = installed_any
     return installed_any

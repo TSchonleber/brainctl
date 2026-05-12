@@ -279,3 +279,20 @@ def test_signal_handler_calls_os_exit(monkeypatch):
 
     handlers[signal.SIGTERM](signal.SIGTERM, None)
     assert exit_calls == [0]
+
+
+def test_install_signal_handlers_skips_missing_sighup(monkeypatch):
+    """On Windows ``signal.SIGHUP`` is absent. Looking it up inside the
+    iterable raised ``AttributeError`` before the try/except could run,
+    so the call crashed at import-time of the MCP server."""
+    handlers = {}
+
+    def fake_signal(sig, handler):
+        handlers[sig] = handler
+        return None
+
+    monkeypatch.setattr(lifecycle.signal, "signal", fake_signal)
+    monkeypatch.delattr(lifecycle.signal, "SIGHUP", raising=False)
+
+    assert lifecycle.install_signal_handlers() is True
+    assert signal.SIGTERM in handlers
