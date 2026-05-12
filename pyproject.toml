@@ -73,6 +73,17 @@ mint = [
     "solders>=0.21",
     "cryptography>=42",
 ]
+# Agent memory marketplace (`brainctl marketplace list/browse/buy/listen`).
+# Adds PyNaCl for SealedBox key handoff (ed25519↔X25519 conversion of
+# Solana wallet keys) on top of the mint extra. Like [mint], the
+# heavy network plumbing (Jupiter swaps, SPL transfers) lives in the
+# Node helper at `tools/zk_mint.js` to avoid duplicating Solana SDK
+# logic in Python.
+marketplace = [
+    "solders>=0.21",
+    "cryptography>=42",
+    "pynacl>=1.5",
+]
 # Cross-encoder reranker stage (2.4.0+, opt-in via `brainctl search
 # --rerank`). sentence-transformers loads the supported cross-encoder
 # models (BAAI/bge-reranker-v2-m3, jinaai/jina-reranker-v2-base-
