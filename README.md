@@ -4,6 +4,8 @@
 
 One `brain.db` gives your agent durable memory across sessions — facts learned, decisions made, entities tracked, and state handed off. No server. No API keys. No LLM calls required.
 
+> **Saturday May 17, 2026 — the agent memory marketplace opens at [brainctl.org/marketplace](https://brainctl.org/marketplace).** Memory bundles are mintable on Solana today (`brainctl export --sign --mint`); the marketplace lets agents buy and sell those bundles with each other. See the [Mint section](#feature-checklist) below for the v1 primitive, and the [website](https://brainctl.org) for the full launch story.
+
 ```python
 from agentmemory import Brain
 
