@@ -318,6 +318,24 @@ def cmd_list(args: Any) -> None:
     }, as_json=as_json)
 
 
+def cmd_listen(args: Any) -> None:
+    """Seller daemon: watch for buy memos + release bundle keys."""
+    from agentmemory.marketplace_listen import listen_loop
+    try:
+        listen_loop(
+            cluster=args.cluster,
+            poll_interval_seconds=float(args.poll_interval),
+            max_iterations=args.max_iterations if args.max_iterations > 0 else None,
+            verbose=not bool(args.quiet),
+        )
+    except KeyboardInterrupt:
+        print("\n[listen] stopped by user", flush=True)
+    except Exception as e:
+        print(f"[listen] fatal: {e}", flush=True)
+        import sys as _sys
+        _sys.exit(1)
+
+
 def cmd_settle(args: Any) -> None:
     as_json = bool(getattr(args, "json", False))
     api_base = api.api_base_from_env()
@@ -462,6 +480,27 @@ def register_parser(sub: Any) -> None:
                         choices=["mainnet-beta", "devnet"])
     p_list.add_argument("--json", action="store_true")
     p_list.set_defaults(func=cmd_list)
+
+    # ----- listen (seller daemon) -----
+    p_listen = api_op.add_parser(
+        "listen",
+        help=(
+            "Seller-side daemon: watch the seller's wallet for buy "
+            "memos, JIT-mint a cNFT to the buyer, SealedBox-encrypt "
+            "the bundle key, upload the envelope to Arweave, post "
+            "the release memo. Foreground process; run under tmux / "
+            "screen / systemd."
+        ),
+    )
+    p_listen.add_argument("--cluster", default="mainnet-beta",
+                          choices=["mainnet-beta", "devnet"])
+    p_listen.add_argument("--poll-interval", dest="poll_interval", type=float, default=10.0,
+                          help="Seconds between Solana scans (default 10)")
+    p_listen.add_argument("--max-iterations", dest="max_iterations", type=int, default=0,
+                          help="Stop after N iterations (0 = run forever; useful for tests)")
+    p_listen.add_argument("--quiet", action="store_true",
+                          help="Suppress per-event log lines")
+    p_listen.set_defaults(func=cmd_listen)
 
     # ----- settle -----
     p_settle = api_op.add_parser(
