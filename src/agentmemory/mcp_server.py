@@ -55,6 +55,7 @@ try:
         mcp_tools_merge,
         mcp_tools_neuro,
         mcp_tools_policy,
+        mcp_tools_procedural,
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
@@ -86,6 +87,7 @@ try:
         mcp_tools_merge,
         mcp_tools_neuro,
         mcp_tools_policy,
+        mcp_tools_procedural,
         mcp_tools_reasoning,
         mcp_tools_reconcile,
         mcp_tools_reflexion,
@@ -497,8 +499,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         return {"ok": False, "error": f"Invalid category: {category}. Must be one of: {', '.join(VALID_MEMORY_CATEGORIES)}"}
     if not (0.0 <= confidence <= 1.0):
         return {"ok": False, "error": "confidence must be between 0.0 and 1.0"}
-    if memory_type not in ("episodic", "semantic"):
-        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+    if memory_type not in ("episodic", "semantic", "procedural"):
+        return {"ok": False, "error": "memory_type must be 'episodic', 'semantic', or 'procedural'"}
     if scope != "global" and not scope.startswith("project:") and not scope.startswith("agent:"):
         return {"ok": False, "error": "scope must be 'global', 'project:<name>', or 'agent:<id>'"}
     if source not in _SOURCE_TRUST_WEIGHTS:
@@ -766,6 +768,28 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     mid = cur.lastrowid
     db.commit()  # ensure the INSERT (and FTS trigger) is committed
 
+    procedure_id = None
+    indexed_content = content
+    indexed_category = category
+    indexed_tags = tags_json or ""
+    if memory_type == "procedural":
+        try:
+            from agentmemory import procedural as _procedural
+
+            proc = _procedural.ensure_procedure_for_memory(db, memory_id=mid, agent_id=agent_id)
+            procedure_id = proc.get("id")
+            db.commit()
+            indexed_row = db.execute(
+                "SELECT content, category, tags FROM memories WHERE id = ?",
+                (mid,),
+            ).fetchone()
+            if indexed_row:
+                indexed_content = indexed_row["content"]
+                indexed_category = indexed_row["category"]
+                indexed_tags = indexed_row["tags"] or ""
+        except Exception:
+            pass
+
     # Workaround: FTS5 content-external tables may not build the inverted index
     # from trigger INSERTs on some SQLite versions. Force a re-index for this memory.
     if do_index:
@@ -773,11 +797,11 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
             db.execute(
                 "INSERT INTO memories_fts(memories_fts, rowid, content, category, tags) "
                 "VALUES('delete', ?, ?, ?, ?)",
-                (mid, content, category, tags_json or ''))
+                (mid, indexed_content, indexed_category, indexed_tags))
             db.execute(
                 "INSERT INTO memories_fts(rowid, content, category, tags) "
                 "VALUES (?, ?, ?, ?)",
-                (mid, content, category, tags_json or ''))
+                (mid, indexed_content, indexed_category, indexed_tags))
             db.commit()
         except Exception:
             pass  # non-fatal
@@ -818,7 +842,7 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
     if do_index:
         try:
             if not blob:
-                blob = _embed_safe(content)
+                blob = _embed_safe(indexed_content)
             if blob:
                 vdb = _get_vec_db()
                 if vdb:
@@ -837,6 +861,8 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
               "surprise_score": surprise, "surprise_method": surprise_method,
               "source": source, "trust_score": source_trust,
               "memory_type": memory_type}
+    if procedure_id is not None:
+        result["procedure_id"] = procedure_id
     if _schema_resonance_hit:
         result["schema_resonance"] = _schema_resonance
         result["schema_resonance_fast_track"] = True
@@ -872,8 +898,8 @@ def tool_memory_search(agent_id: str, query: str, category: str = None,
     expansion adjuncts come after). Falls through gracefully if
     sentence-transformers isn't installed.
     """
-    if memory_type and memory_type not in ("episodic", "semantic"):
-        return {"ok": False, "error": "memory_type must be 'episodic' or 'semantic'"}
+    if memory_type and memory_type not in ("episodic", "semantic", "procedural"):
+        return {"ok": False, "error": "memory_type must be 'episodic', 'semantic', or 'procedural'"}
 
     # Cross-agent borrow restricts the SQL to `scope='global'` (line ~846).
     # Combining that with an explicit non-global scope produces an
@@ -2331,7 +2357,7 @@ TOOLS = [
                 "scope": {"type": "string", "description": "Scope: 'global', 'project:<name>', or 'agent:<id>'", "default": "global"},
                 "confidence": {"type": "number", "description": "Confidence 0.0-1.0", "default": 1.0},
                 "tags": {"type": "string", "description": "Comma-separated tags"},
-                "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "default": "episodic"},
+                "memory_type": {"type": "string", "enum": ["episodic", "semantic", "procedural"], "default": "episodic"},
                 "force": {"type": "boolean", "description": "Bypass W(m) worthiness gate", "default": False},
                 "supersedes_id": {"type": "integer", "description": "ID of memory being superseded; triggers PII recency gate"},
                 "source": {
@@ -2358,7 +2384,7 @@ TOOLS = [
                 "category": {"type": "string", "enum": VALID_MEMORY_CATEGORIES},
                 "scope": {"type": "string"},
                 "limit": {"type": "integer", "default": 20, "description": "Max results; capped by agent tier (7 × tier)"},
-                "memory_type": {"type": "string", "enum": ["episodic", "semantic"], "description": "Filter to one CLS store. Unset = both stores, semantic gets 1.1x confidence bonus."},
+                "memory_type": {"type": "string", "enum": ["episodic", "semantic", "procedural"], "description": "Filter to one memory store. Unset searches all supported memory types; semantic gets a mild confidence bonus in memory_search."},
                 "pagerank_boost": {"type": "number", "default": 0.0, "description": "Re-rank by graph centrality (0=FTS-only, 1=equal FTS+PageRank). Requires prior pagerank run. Implements SR retrieval."},
                 "borrow_from": {"type": "string", "description": "Agent ID to borrow from. When set, searches only that agent's scope='global' memories and logs the cross-agent access in access_log."},
                 "multi_pass": {"type": "boolean", "default": False, "description": "SDM-style iterative convergence: use pass-1 results to build a richer pass-2 query; merge and deduplicate both passes (items in both passes ranked first)."},

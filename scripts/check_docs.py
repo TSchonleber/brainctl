@@ -89,7 +89,7 @@ def main():
             print(f"  ✗ {e}", file=sys.stderr)
         sys.exit(1)
 
-    print("\nAll doc counts match implementation. ✓")
+    print("\nAll doc counts match implementation. OK")
     sys.exit(0)
 
 
