@@ -189,6 +189,59 @@ top of the standard signed-export fields:
 A failed mint after a successful Arweave upload still surfaces the
 `arweave_*` URIs so the user can retry the mint without re-uploading.
 
+### Decrypting a minted bundle locally
+
+After minting, the user can decrypt their own bundle without going
+through the marketplace flow:
+
+```bash
+brainctl bundle decrypt <mint> --ciphertext-uri ar://<id> [-o out.json]
+```
+
+Reads `~/.brainctl/keys/<mint>.key`, fetches ciphertext from Arweave,
+AES-256-GCM decrypts. Streams the bundle JSON to stdout if `-o` isn't
+passed.
+
+For transferring decryption capability to a recipient (gifted cNFT,
+off-marketplace sale), the `send-key` / `receive-key` commands are
+roadmap (v2.6.1) — currently the marketplace settle flow is the only
+turnkey way to hand a bundle key to another wallet.
+
+## Importers — onboarding from other providers (v2.6.0)
+
+`brainctl import <provider> <source>` brings a third-party memory
+export into brain.db. Imported memories land in a quarantine scope
+``imported:<provider>`` by default so the agent's primary scope stays
+clean until the user explicitly promotes specific records.
+
+Shipped today:
+  - ``brainctl import mem0 <export.json>`` — parses every mem0 export
+    shape I've seen (SDK ``{"results": [...]}``, ``{"memories": [...]}``,
+    legacy top-level list). Each mem0 ``memory`` becomes a brainctl
+    memory under category ``user`` (overridable via ``--category``).
+    Provider extras (score, app_id, run_id, etc.) round-trip via the
+    memory's source_metadata.
+  - ``brainctl import json <records.json>`` — generic JSON ingest.
+    Accepts ``.json`` (list or ``{"memories":[...]}``) and ``.jsonl``.
+    Schema: ``{"content": str, "category": str, "tags": [str],
+    "confidence": float, "source_id": str, "created_at": iso,
+    "agent_id": str, "metadata": {...}}`` — only ``content`` is
+    required.
+
+Common flags:
+  - ``--scope <scope>`` — override the destination scope
+  - ``--category <cat>`` — override category for every record
+  - ``--no-quarantine`` — write to global scope (skip the quarantine)
+  - ``--dry-run`` — parse + summarize without touching brain.db
+
+Adding a new provider:
+  1. Drop a new module in ``src/agentmemory/importers/`` that
+     subclasses ``BaseImporter`` (see ``mem0_importer.py``).
+  2. Call ``register_importer("<provider>", YourImporter)`` at module
+     load.
+  3. Add an autoload import in ``importers/base.py::_autoload``.
+  4. Write round-trip tests in ``tests/test_importers.py``.
+
 ## Marketplace — agent memory trading (v1.5, branch `feat/cnft-mint`, optional `[marketplace]` extra)
 
 `brainctl marketplace api ...` drives the chain-canonical agent memory

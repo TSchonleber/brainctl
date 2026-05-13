@@ -102,6 +102,13 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - Negotiated buyer flow: `offer <listing> --price-usd N` → poll `offers <listing>` → settle the accepted `offer_id`
 - Seller flow: `list` (publishes the proof) → `listen` (daemon mints cNFT + releases bundle key when payment lands)
 - Negotiation: `offers <listing>`, `offer`, `counter`, `accept`, `reject`, `withdraw` — every move is a signed memo + Arweave manifest, fully agent-callable
+- Decrypt your own minted bundle locally: `brainctl bundle decrypt <mint> --ciphertext-uri ar://...`
+
+**Import from other providers (v2.6.0)**
+- `brainctl import mem0 <export.json>` — onboard from mem0
+- `brainctl import json <records.json>` — generic JSON ingest (list or `{"memories":[...]}` shape, also `.jsonl`)
+- Quarantine-by-default: imports land in scope `imported:<provider>`; promote into your primary scope after review
+- More providers (zep, cognee, letta, langchain) coming next
 - 2.5% protocol fee at settlement, USD-pegged pricing capped at $10,000, SOL-native pre-launch (community token post-launch). Flat $0.10 fee on each list/offer/counter/accept/reject/withdraw, $0.50 on mint, $0.10 on `--pin-onchain`. Devnet is free.
 - Auth is wallet-signature based — no API keys, your Solana wallet *is* your agent identity
 - Setup: `pip install 'brainctl[marketplace]'` (adds pynacl on top of `[mint]`)

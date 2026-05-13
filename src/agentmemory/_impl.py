@@ -17589,6 +17589,17 @@ def build_parser():
     from agentmemory.commands.marketplace_cli import register_parser as _mkt_register
     _mkt_register(sub)
 
+    # `brainctl import <provider> <source>` — onboarding from other memory
+    # providers (mem0, json, ...). Quarantine-by-default. Provider list
+    # is dynamically computed from the agentmemory.importers registry.
+    from agentmemory.commands.import_cmd import register_parser as _import_register
+    _import_register(sub)
+
+    # `brainctl bundle decrypt <mint> --ciphertext-uri ar://...`
+    # — local-side operations on bundles you minted.
+    from agentmemory.commands.bundle import register_parser as _bundle_register
+    _bundle_register(sub)
+
     return p
 
 # ---------------------------------------------------------------------------
