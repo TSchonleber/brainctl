@@ -3072,15 +3072,92 @@ def _invoke_dispatch_fn(fn, agent_id: str, arguments: dict):
     return fn(agent_id=agent_id, **arguments)
 
 
+# ---------------------------------------------------------------------------
+# Tool allowlist (issue #114)
+# ---------------------------------------------------------------------------
+#
+# Some MCP clients (notably Google's Antigravity IDE) enforce a hard cap on
+# the total number of MCP tools they'll surface across all connected servers
+# — Antigravity's cap is 100, brainctl exposes 201. Without a way to filter
+# the surface, brainctl is entirely unusable in those clients.
+#
+# `BRAINCTL_ALLOWED_TOOLS` is a comma-separated allowlist read at process
+# start. When set, `tools/list` returns only the named tools and `tools/call`
+# rejects everything else. When unset (the default), the full 201-tool
+# surface is exposed unchanged — full backward compatibility for clients
+# without tool caps.
+#
+# Failure mode: unknown tool names in the allowlist are a HARD ERROR at
+# startup, not a silent skip. A typo like `memory-add` (should be
+# `memory_add`) would otherwise create a misconfiguration that's invisible
+# until the agent tries to call the missing tool. The error message lists
+# every unknown name with the closest valid match.
+#
+# Relationship to BRAINCTL_HTTP_ALLOWED_TOOLS in mcp_http.py: the HTTP
+# variant is REQUIRED + must be non-empty (HTTP transport is remote /
+# unattended, security default = no allowlist → no service). Stdio is
+# interactive and trusted (the client process spawns the server) so the
+# stdio allowlist is OPTIONAL and defaults to "expose everything". Same
+# env-var prefix family, different requiredness.
+
+_ALL_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in TOOLS)
+
+
+def _resolve_allowed_tools() -> frozenset[str] | None:
+    """Read BRAINCTL_ALLOWED_TOOLS at startup. Returns None when unset
+    (full surface exposed). Returns a non-empty frozenset of valid tool
+    names when set. Hard-fails with a clear message on unknown names.
+    """
+    raw = os.environ.get("BRAINCTL_ALLOWED_TOOLS", "").strip()
+    if not raw:
+        return None
+    requested = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    if not requested:
+        return None
+    unknown = requested - _ALL_TOOL_NAMES
+    if unknown:
+        # Suggest the closest valid match for each unknown name (helps
+        # catch typos like memory-add vs memory_add).
+        import difflib
+
+        hints = []
+        for name in sorted(unknown):
+            close = difflib.get_close_matches(name, sorted(_ALL_TOOL_NAMES), n=1, cutoff=0.6)
+            if close:
+                hints.append(f"    {name!r} → did you mean {close[0]!r}?")
+            else:
+                hints.append(f"    {name!r} → no close match")
+        msg = (
+            "BRAINCTL_ALLOWED_TOOLS contains unknown tool names. brainctl "
+            "exposes 201 tools (see `brainctl-mcp --list-tools`). Unknown:\n"
+            + "\n".join(hints)
+        )
+        raise SystemExit(msg)
+    return requested
+
+
+_ALLOWED_TOOLS: frozenset[str] | None = _resolve_allowed_tools()
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     _lifecycle.touch_activity()
-    return TOOLS
+    if _ALLOWED_TOOLS is None:
+        return TOOLS
+    return [t for t in TOOLS if t.name in _ALLOWED_TOOLS]
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _lifecycle.touch_activity()
+    if _ALLOWED_TOOLS is not None and name not in _ALLOWED_TOOLS:
+        # Stay consistent with how an unknown-tool call would surface
+        # to the client: raise so the MCP framework returns -32601
+        # method-not-found. We do NOT silently no-op.
+        raise ValueError(
+            f"tool {name!r} is not in BRAINCTL_ALLOWED_TOOLS — "
+            f"either add it to the env var or remove the call"
+        )
     # Inject agent_id from arguments or default
     agent_id = arguments.pop("agent_id", "mcp-client")
 

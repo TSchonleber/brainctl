@@ -5,6 +5,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.6.4] — 2026-05-13 — *Fix #114: BRAINCTL_ALLOWED_TOOLS for tool-capped MCP clients*
+
+### Added
+
+- `BRAINCTL_ALLOWED_TOOLS` env var on the stdio MCP server. When set
+  to a comma-separated list of tool names, `tools/list` returns only
+  the named tools and `tools/call` rejects everything else. When
+  unset (the default), the full 201-tool surface is exposed —
+  backward compatible for clients without tool caps.
+
+  Required for clients that enforce a hard cap on total MCP tools
+  (Google's Antigravity IDE caps at 100; with brainctl's 201 surface,
+  the IDE refused to load the server at all). Example:
+
+  ```json
+  "env": {
+    "BRAINCTL_ALLOWED_TOOLS":
+      "memory_add,memory_search,event_add,event_search,entity_create,
+       entity_get,entity_observe,entity_relate,entity_search,
+       decision_add,handoff_add,handoff_latest,handoff_consume,
+       trigger_create,trigger_list,trigger_check,stats,agent_orient,
+       agent_wrap_up,validate,lint"
+  }
+  ```
+
+- Hard-fail on unknown tool names at process start. A typo like
+  `memory-add` (hyphen) prints a clear error pointing at
+  `memory_add` (underscore) via `difflib.get_close_matches` —
+  prevents silent misconfigurations.
+
+### Design notes
+
+- The HTTP transport's `BRAINCTL_HTTP_ALLOWED_TOOLS` (v2.5.0) is
+  REQUIRED + must be non-empty (security default: no allowlist → no
+  remote service). The stdio variant is OPTIONAL by default for
+  backward compatibility — stdio clients spawn the server locally
+  and are trusted; we don't want to break every existing brainctl
+  user's MCP config by suddenly making the env var mandatory.
+- Both variants now hard-fail on unknown tool names (stdio: at module
+  import; HTTP: already raised at startup in v2.5.0). No silent
+  warnings.
+
+### Tests
+
+- 18 round-trip tests covering: unset / empty / whitespace-only env
+  → no filter; valid names → exact filter applied; unknown name →
+  SystemExit with helpful "did you mean X?" suggestions; whitespace
+  trimming; allowed call passes the gate; disallowed call raises
+  ValueError mentioning the env var.
+- Full suite: 2112 passed, 28 skipped, 2 xfailed.
+
 ## [2.6.3] — 2026-05-13 — *Wallet export-key: Phantom-compatible private-key export*
 
 ### Added

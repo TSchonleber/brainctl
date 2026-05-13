@@ -259,6 +259,7 @@ Relevant env vars:
 | `BRAINCTL_MCP_IDLE_TIMEOUT_SEC` | `0` (disabled) | Self-terminate after this many seconds of no MCP requests. Accepts `0` (disabled) or any value `>= 60`; 1–59 clamps up to 60. Set only when running under a parent that keeps idle pipes alive indefinitely. |
 | `BRAINCTL_MCP_PARENT_POLL_SEC`  | `5`  | How often the parent-death check runs. Min 1. |
 | `BRAINCTL_MCP_DISABLE_WATCHDOG` | unset | Set to `1` to disable the watchdog thread entirely (skips both parent-death and idle reaping). |
+| `BRAINCTL_ALLOWED_TOOLS` | unset (all 201 tools exposed) | Comma-separated list of tool names. When set, `tools/list` only returns those tools and `tools/call` rejects the rest. Required for clients that cap the total MCP tool count (e.g. Google's Antigravity IDE at 100). Unknown names hard-fail at startup with a `difflib` "did you mean?" hint. |
 
 The parent-death detection is the load-bearing safety net; leave it on
 in production. The idle timeout is only useful for explicit
