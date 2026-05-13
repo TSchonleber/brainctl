@@ -19,3 +19,6 @@ backups/
 *.swp
 config/distill-cron.sh
 .claude/
+
+# Next.js build artifacts (in case something runs 'next build' from this repo cwd by accident)
+.next/
