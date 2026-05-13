@@ -63,6 +63,19 @@ class TestMemoryValidation:
         result = tool_memory_add(agent_id="test", content="valid memory", category="lesson", force=True)
         assert result.get("ok") is True
 
+    def test_valid_procedural_memory_accepted(self):
+        _init()
+        from agentmemory.mcp_server import tool_memory_add
+        result = tool_memory_add(
+            agent_id="test",
+            content="How to deploy safely: run tests, apply migrations, deploy, then verify health checks.",
+            category="convention",
+            memory_type="procedural",
+            force=True,
+        )
+        assert result.get("ok") is True
+        assert result.get("procedure_id") is not None
+
 
 class TestEventValidation:
     def test_invalid_event_type_rejected(self):

@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (201)
+## Available Tools (209)
 
 | Tool | Description |
 |------|-------------|

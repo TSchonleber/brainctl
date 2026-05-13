@@ -349,31 +349,200 @@ class Brain:
     # Core: remember, search, forget
     # ------------------------------------------------------------------
 
-    def remember(self, content: str, category: str = "general", tags: Optional[Union[str, List[str]]] = None, confidence: float = 1.0) -> int:
+    def remember(
+        self,
+        content: str,
+        category: str = "general",
+        tags: Optional[Union[str, List[str]]] = None,
+        confidence: float = 1.0,
+        *,
+        memory_type: str = "episodic",
+        scope: str = "global",
+        procedure: Optional[Dict[str, Any]] = None,
+    ) -> int:
         """Add a memory. Returns memory ID."""
         tags_json = json.dumps(tags.split(",")) if isinstance(tags, str) else (json.dumps(tags) if tags else None)
         now = _now_ts()
         with self._lock:
             db = self._get_conn()
-            cur = db.execute(
-                "INSERT INTO memories (agent_id, category, content, confidence, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-                (self.agent_id, category, content, confidence, tags_json, now, now)
-            )
+            if procedure is not None:
+                from agentmemory import procedural as _procedural
+
+                payload = dict(procedure)
+                payload.setdefault("description", content)
+                payload.setdefault("goal", payload.get("goal") or content)
+                payload.setdefault("title", payload.get("title") or payload["goal"])
+                payload.setdefault("steps_json", payload.get("steps_json") or [{"action": payload["goal"]}])
+                result = _procedural.create_procedure(
+                    db,
+                    agent_id=self.agent_id,
+                    payload=payload,
+                    category=category,
+                    scope=scope,
+                    confidence=confidence,
+                )
+                mid = int(result["memory_id"])
+            else:
+                cur = db.execute(
+                    """
+                    INSERT INTO memories (
+                        agent_id, category, scope, content, confidence, tags,
+                        memory_type, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?)
+                    """,
+                    (self.agent_id, category, scope, content, confidence, tags_json, memory_type, now, now)
+                )
+                mid = int(cur.lastrowid)
+                if memory_type == "procedural":
+                    from agentmemory import procedural as _procedural
+
+                    _procedural.ensure_procedure_for_memory(db, memory_id=mid, agent_id=self.agent_id)
             db.commit()
-            mid = cur.lastrowid
             if _VEC_AVAILABLE:
                 try:
-                    # vec.index_memory opens its own connection to the same DB;
-                    # WAL mode handles concurrent write access cleanly, and it
-                    # does not contend with our RLock because it's a separate
-                    # sqlite3 connection object. Leave untouched — the async
-                    # embedding rework is tracked separately as Phase 1.2.
-                    _vec.index_memory(db, mid, content)
+                    memory_row = db.execute(
+                        "SELECT content FROM memories WHERE id = ?",
+                        (mid,),
+                    ).fetchone()
+                    _vec.index_memory(db, mid, memory_row["content"] if memory_row else content)
                 except Exception as exc:
                     _log.warning("vec.index_memory failed for memory %s: %s", mid, exc)
         return mid
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def remember_procedure(
+        self,
+        *,
+        goal: str,
+        title: Optional[str] = None,
+        description: str = "",
+        steps: Optional[List[Union[str, Dict[str, Any]]]] = None,
+        procedure_kind: str = "workflow",
+        scope: str = "global",
+        category: str = "convention",
+        confidence: float = 0.9,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            db = self._get_conn()
+            result = _procedural.create_procedure(
+                db,
+                agent_id=self.agent_id,
+                payload={
+                    "title": title,
+                    "goal": goal,
+                    "description": description,
+                    "procedure_kind": procedure_kind,
+                    "steps_json": steps or [{"action": goal}],
+                    **extra,
+                },
+                category=category,
+                scope=scope,
+                confidence=confidence,
+            )
+            db.commit()
+            return result
+
+    def get_procedure(self, procedure_id: int) -> Dict[str, Any]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            return _procedural.get_procedure(self._get_conn(), procedure_id, include_sources=True)
+
+    def list_procedures(
+        self,
+        *,
+        status: str = "all",
+        scope: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            return _procedural.list_procedures(self._get_conn(), status=status, scope=scope, limit=limit)
+
+    def search_procedures(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        scope: Optional[str] = None,
+        status: str = "all",
+        debug: bool = False,
+    ) -> Dict[str, Any]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            return _procedural.search_procedures(
+                self._get_conn(),
+                query,
+                limit=limit,
+                scope=scope,
+                status=status,
+                debug=debug,
+            )
+
+    def procedure_feedback(
+        self,
+        procedure_id: int,
+        *,
+        success: bool,
+        usefulness_score: Optional[float] = None,
+        outcome_summary: Optional[str] = None,
+        errors_seen: Optional[str] = None,
+        validated: bool = False,
+        task_signature: Optional[str] = None,
+        input_summary: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            db = self._get_conn()
+            result = _procedural.record_feedback(
+                db,
+                procedure_id=procedure_id,
+                agent_id=self.agent_id,
+                success=success,
+                usefulness_score=usefulness_score,
+                outcome_summary=outcome_summary,
+                errors_seen=errors_seen,
+                validated=validated,
+                task_signature=task_signature,
+                input_summary=input_summary,
+            )
+            db.commit()
+            return result
+
+    def backfill_procedures(
+        self,
+        *,
+        scope: Optional[str] = None,
+        limit: int = 100,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        from agentmemory import procedural as _procedural
+
+        with self._lock:
+            db = self._get_conn()
+            result = _procedural.backfill_procedures(
+                db,
+                agent_id=self.agent_id,
+                scope=scope,
+                limit=limit,
+                dry_run=dry_run,
+            )
+            if not dry_run:
+                db.commit()
+            return result
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        memory_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Search memories via the unified hybrid + reranker pipeline.
 
         Delegates to ``agentmemory._impl.cmd_search`` so programmatic callers
@@ -390,6 +559,8 @@ class Brain:
         """
         if not query or not query.strip():
             return []
+        if memory_type == "procedural":
+            return list(self.search_procedures(query, limit=limit).get("procedures") or [])[:limit]
         # Primary path: unified pipeline via cmd_search.
         try:
             from types import SimpleNamespace
@@ -414,9 +585,12 @@ class Brain:
             with self._lock:
                 out = _cmd_search(args, db=self._get_conn(), db_path=str(self.db_path))
             if isinstance(out, dict):
-                mems = out.get("memories") or []
-                if isinstance(mems, list):
-                    return mems[:limit]
+                combined: List[Dict[str, Any]] = []
+                combined.extend(out.get("memories") or [])
+                combined.extend(out.get("procedures") or [])
+                if isinstance(combined, list):
+                    combined.sort(key=lambda r: r.get("final_score", 0.0), reverse=True)
+                    return combined[:limit]
         except Exception:
             # Fall through to the lightweight path — unified pipeline failures
             # should never take down Brain.search, which has a minimal
@@ -628,7 +802,7 @@ class Brain:
             except sqlite3.OperationalError:
                 result["triggers"] = []
 
-            # 4. Search for relevant memories (if query or project given)
+            # 4. Search for relevant memories and procedures (if query or project given)
             search_q = query or project
             if search_q:
                 try:
@@ -650,6 +824,7 @@ class Brain:
                             "SELECT m.id, m.content, m.category, m.confidence, m.created_at "
                             "FROM memories_fts fts JOIN memories m ON m.id = fts.rowid "
                             "WHERE memories_fts MATCH ? AND m.retired_at IS NULL "
+                            "AND COALESCE(m.memory_type, 'episodic') != 'procedural' "
                             "ORDER BY fts.rank LIMIT 10",
                             (fts_q,)
                         ).fetchall()
@@ -660,6 +835,30 @@ class Brain:
                     result["memories"] = []
             else:
                 result["memories"] = []
+            try:
+                if search_q:
+                    result["procedures"] = self.search_procedures(
+                        search_q,
+                        limit=5,
+                        scope=f"project:{project}" if project else None,
+                    ).get("procedures", [])
+                elif result.get("handoff"):
+                    handoff_query = " ".join(
+                        str(result["handoff"].get(key, "") or "")
+                        for key in ("goal", "open_loops", "next_step")
+                    ).strip()
+                    if handoff_query:
+                        result["procedures"] = self.search_procedures(
+                            handoff_query,
+                            limit=5,
+                            scope=f"project:{project}" if project else None,
+                        ).get("procedures", [])
+                    else:
+                        result["procedures"] = []
+                else:
+                    result["procedures"] = []
+            except Exception:
+                result["procedures"] = []
 
             # 5. Quick stats
             try:
@@ -667,6 +866,7 @@ class Brain:
                     "active_memories": db.execute(
                         "SELECT count(*) FROM memories WHERE retired_at IS NULL"
                     ).fetchone()[0],
+                    "total_procedures": db.execute("SELECT count(*) FROM procedures").fetchone()[0],
                     "total_events": db.execute("SELECT count(*) FROM events").fetchone()[0],
                     "total_entities": db.execute("SELECT count(*) FROM entities").fetchone()[0],
                 }
@@ -844,7 +1044,16 @@ class Brain:
         stats: Dict[str, int] = {}
         with self._lock:
             db = self._get_conn()
-            for tbl in ["memories", "events", "entities", "decisions", "knowledge_edges", "affect_log"]:
+            for tbl in [
+                "memories",
+                "procedures",
+                "procedure_candidates",
+                "events",
+                "entities",
+                "decisions",
+                "knowledge_edges",
+                "affect_log",
+            ]:
                 try:
                     stats[tbl] = db.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
                 except Exception:

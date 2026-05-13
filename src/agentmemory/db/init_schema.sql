@@ -59,7 +59,7 @@ CREATE TABLE memories (
     retracted_at TEXT,
     retraction_reason TEXT,
     version INTEGER NOT NULL DEFAULT 1,
-    memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic')),
+    memory_type TEXT NOT NULL DEFAULT 'episodic' CHECK(memory_type IN ('episodic','semantic','procedural')),
     protected INTEGER NOT NULL DEFAULT 0,
     salience_score REAL NOT NULL DEFAULT 0.0,
     gw_broadcast INTEGER NOT NULL DEFAULT 0,
@@ -852,6 +852,162 @@ END;
 CREATE TRIGGER pm_fts_delete AFTER DELETE ON policy_memories BEGIN
     INSERT INTO policy_memories_fts(policy_memories_fts, rowid, trigger_condition, action_directive, name)
     VALUES ('delete', old.rowid, old.trigger_condition, old.action_directive, old.name);
+END;
+
+CREATE TABLE procedures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id INTEGER NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
+    procedure_key TEXT UNIQUE,
+    title TEXT,
+    goal TEXT NOT NULL,
+    description TEXT,
+    task_family TEXT,
+    procedure_kind TEXT NOT NULL DEFAULT 'workflow',
+    trigger_conditions TEXT,
+    preconditions TEXT,
+    constraints_json TEXT,
+    steps_json TEXT NOT NULL,
+    tools_json TEXT,
+    failure_modes_json TEXT,
+    rollback_steps_json TEXT,
+    success_criteria_json TEXT,
+    repair_strategies_json TEXT,
+    tool_policy_json TEXT,
+    expected_outcomes TEXT,
+    applicability_scope TEXT NOT NULL DEFAULT 'global',
+    temporal_class TEXT DEFAULT 'durable',
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','candidate','stale','needs_review','superseded','retired')),
+    automation_ready INTEGER NOT NULL DEFAULT 0,
+    determinism REAL NOT NULL DEFAULT 0.5,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    utility_score REAL NOT NULL DEFAULT 0.5,
+    generality_score REAL NOT NULL DEFAULT 0.5,
+    support_count INTEGER NOT NULL DEFAULT 0,
+    execution_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    last_executed_at TEXT,
+    last_validated_at TEXT,
+    stale_after_days INTEGER NOT NULL DEFAULT 90,
+    supersedes_procedure_id INTEGER REFERENCES procedures(id),
+    retired_at TEXT,
+    search_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_procedures_kind ON procedures(procedure_kind);
+
+CREATE INDEX idx_procedures_status ON procedures(status);
+
+CREATE INDEX idx_procedures_last_validated ON procedures(last_validated_at);
+
+CREATE INDEX idx_procedures_execution_count ON procedures(execution_count DESC);
+
+CREATE INDEX idx_procedures_scope ON procedures(applicability_scope);
+
+CREATE INDEX idx_procedures_memory_id ON procedures(memory_id);
+
+CREATE INDEX idx_procedures_supersedes ON procedures(supersedes_procedure_id);
+
+CREATE TABLE procedure_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    procedure_id INTEGER NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+    step_order INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    rationale TEXT,
+    tool_name TEXT,
+    expected_output TEXT,
+    stop_condition TEXT,
+    retry_policy TEXT,
+    rollback_hint TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_procedure_steps_procedure_order
+ON procedure_steps(procedure_id, step_order);
+
+CREATE TABLE procedure_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    procedure_id INTEGER NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+    memory_id INTEGER REFERENCES memories(id) ON DELETE CASCADE,
+    event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    decision_id INTEGER REFERENCES decisions(id) ON DELETE CASCADE,
+    entity_id INTEGER REFERENCES entities(id) ON DELETE CASCADE,
+    source_role TEXT NOT NULL DEFAULT 'evidence',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_procedure_sources_procedure ON procedure_sources(procedure_id);
+
+CREATE INDEX idx_procedure_sources_memory ON procedure_sources(memory_id);
+
+CREATE INDEX idx_procedure_sources_event ON procedure_sources(event_id);
+
+CREATE INDEX idx_procedure_sources_decision ON procedure_sources(decision_id);
+
+CREATE TABLE procedure_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    procedure_id INTEGER NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+    agent_id TEXT REFERENCES agents(id),
+    task_family TEXT,
+    task_signature TEXT,
+    input_summary TEXT,
+    outcome_summary TEXT,
+    success INTEGER NOT NULL DEFAULT 0,
+    usefulness_score REAL,
+    errors_seen TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_procedure_runs_procedure_created
+ON procedure_runs(procedure_id, created_at DESC);
+
+CREATE TABLE procedure_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_signature TEXT NOT NULL UNIQUE,
+    task_family TEXT,
+    normalized_signature TEXT NOT NULL,
+    support_count INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT,
+    mean_success REAL NOT NULL DEFAULT 0.0,
+    promoted_procedure_id INTEGER REFERENCES procedures(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_procedure_candidates_family ON procedure_candidates(task_family);
+
+CREATE INDEX idx_procedure_candidates_support ON procedure_candidates(support_count DESC);
+
+CREATE VIRTUAL TABLE procedures_fts USING fts5(
+    title,
+    goal,
+    description,
+    task_family,
+    search_text,
+    content=procedures,
+    content_rowid=id,
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER procedures_fts_insert AFTER INSERT ON procedures BEGIN
+    INSERT INTO procedures_fts(rowid, title, goal, description, task_family, search_text)
+    VALUES (new.id, new.title, new.goal, new.description, new.task_family, new.search_text);
+END;
+
+CREATE TRIGGER procedures_fts_update AFTER UPDATE ON procedures BEGIN
+    INSERT INTO procedures_fts(procedures_fts, rowid, title, goal, description, task_family, search_text)
+    VALUES ('delete', old.id, old.title, old.goal, old.description, old.task_family, old.search_text);
+    INSERT INTO procedures_fts(rowid, title, goal, description, task_family, search_text)
+    VALUES (new.id, new.title, new.goal, new.description, new.task_family, new.search_text);
+END;
+
+CREATE TRIGGER procedures_fts_delete AFTER DELETE ON procedures BEGIN
+    INSERT INTO procedures_fts(procedures_fts, rowid, title, goal, description, task_family, search_text)
+    VALUES ('delete', old.id, old.title, old.goal, old.description, old.task_family, old.search_text);
 END;
 
 CREATE TABLE agent_beliefs (

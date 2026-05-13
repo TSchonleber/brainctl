@@ -50,8 +50,10 @@ EMBED_MODEL = os.environ.get("BRAINCTL_EMBED_MODEL", "nomic-embed-text")
 _MEB_TTL_HOURS_DEFAULT = 72
 _MEB_MAX_DEPTH_DEFAULT = 10_000
 
-# FTS5 special characters — strip everything that isn't word chars or spaces
-_FTS5_SPECIAL = re.compile(r'[.&|*"()\-@^?!]')
+# FTS5 MATCH is brittle around punctuation and symbolic tokens. Strip any
+# non-word, non-space character, plus `_`, so questions like "$5 coupon" or
+# "LGBTQ+" cannot crash the tool path.
+_FTS5_SPECIAL = re.compile(r"[^\w\s]|_")
 
 # ---------------------------------------------------------------------------
 # DB helpers
