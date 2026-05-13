@@ -82,7 +82,15 @@ REGRESSION_THRESHOLD = 1.50
 # Sub-1ms ops are dominated by sqlite3.connect + page-cache jitter (±0.5ms
 # is normal on macOS), so a ratio test would flag noise as regression.
 SUB_MS_BASELINE_BOUNDARY = 1.0
-SUB_MS_BUDGET_MS = 1.0
+# 2.0ms absolute budget on sub-ms baselines. The bench's p95 distributions
+# for sub-ms ops have fat-tailed noise floors that differ across runner
+# classes (darwin laptop → ubuntu CI). Example: brain_decide@100 has
+# baseline p95 0.191ms but baseline p99 1.599ms, so a single cold-cache
+# outlier on a noisier CI runner can push fresh p95 above a tight 1.0ms
+# budget without any real code regression. 2.0ms still catches real
+# sub-ms regressions (a 0.1ms baseline op going to 2.1ms is unambiguously
+# broken) while tolerating runner-class noise.
+SUB_MS_BUDGET_MS = 2.0
 
 # Scales where the ratio gate is meaningful. N=10k results are kept in the
 # baseline (and reported in `brainctl perf --full`) for diagnostic value but
