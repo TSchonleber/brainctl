@@ -5,6 +5,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-05-12 — *Memory marketplace: negotiation CLI + protocol rename*
+
+The negotiation half of the chain-canonical agent memory marketplace.
+The REST API at brainctl.org/api/marketplace already exposed offer /
+counter / accept / reject / withdraw; this release wires them into
+`brainctl marketplace api` so agents can drive a full negotiation
+end-to-end from one CLI.
+
+### Added
+
+- `brainctl marketplace api offer <listing> --price-usd N` — buyer
+  submits an offer. Builds + signs the offer manifest, uploads to
+  Arweave, posts the on-chain offer memo, registers with the API. TTL
+  capped at 24h per the protocol.
+- `brainctl marketplace api counter <offer> --price-usd N` — either
+  side counters; the chain audit trail captures the full thread.
+- `brainctl marketplace api accept|reject <offer>` — seller-side.
+- `brainctl marketplace api withdraw <offer>` — offerer-side.
+- `brainctl marketplace api offers <listing>` — list visible offers
+  (auction-mode public, private-mode visible only to seller/offerer).
+- New primitives in `agentmemory.marketplace`:
+  `build_offer_manifest`, `build_counter_manifest`, `manifest_hash`,
+  `MAX_OFFER_TTL_HOURS`, plus five new `MEMO_*_PREFIX` constants and
+  formatters. `parse_memo` extended to parse all five new actions.
+
+### Changed
+
+- **Protocol memo prefix renamed** from `brndb-marketplace/v1:` to
+  `brainctl-marketplace/v1:` across both the Python client and the
+  brainctl-launch indexer/server. The previous prefix was an
+  early-design choice that coupled the protocol identifier to the
+  not-yet-launched community token ticker; the new name decouples
+  them permanently. Touches `agentmemory.marketplace.MARKETPLACE_SCHEMA`,
+  every memo formatter, `marketplace_listen.py` runtime checks,
+  `commands/marketplace_cli.py` schema strings, and `tools/zk_mint.js`.
+  Since the marketplace just opened (no production volume yet), this
+  is a clean cutover — no back-compat parser branch needed.
+- Marketplace JIT-mint cNFT branding: name `"BRNDB #<hash>"` →
+  `"brainctl memory #<hash>"`, symbol `BRNDB` → `MEM`. Pre-launch
+  test mints no longer engrave the ticker into permanent chain
+  history.
+- `tools/README.md` smoke-test JSON example: neutralized name/symbol.
+
+### Tests
+
+- 11 new round-trip tests for the negotiation memo formatters +
+  manifest builders. 67/67 marketplace tests pass.
+
 ## [2.5.1] — 2026-05-06 — *Beta-audit follow-up: MCP dispatcher + retrieval correctness*
 
 Closes the full beta-tester audit filed as issue #97 plus the Hermes
