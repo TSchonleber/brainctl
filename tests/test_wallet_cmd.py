@@ -325,6 +325,78 @@ def test_wallet_export_refuses_to_overwrite_without_force(_isolate_wallet_path, 
 
 
 # ---------------------------------------------------------------------------
+# 5b. wallet_export_key_impl — base58 private key for Phantom-style import
+# ---------------------------------------------------------------------------
+
+def test_wallet_export_key_returns_phantom_compatible_secret(_isolate_wallet_path):
+    """The base58 private key must round-trip through solders.Keypair —
+    that's exactly what Phantom / Backpack / Solflare do under the hood
+    when a user pastes the secret into 'Import private key'."""
+    import base58
+    from solders.keypair import Keypair as _Kp
+
+    new_res = wallet_mod.wallet_new_impl()
+    res = wallet_mod.wallet_export_key_impl()
+    assert res["ok"] is True
+    assert res["address"] == new_res["address"]
+
+    b58 = res["private_key_b58"]
+    assert isinstance(b58, str) and len(b58) > 80
+
+    # The base58 string must decode to 64 bytes (secret_seed||pubkey)
+    # and the derived address must match.
+    decoded = base58.b58decode(b58)
+    assert len(decoded) == 64
+    rebuilt = _Kp.from_bytes(decoded)
+    assert str(rebuilt.pubkey()) == new_res["address"]
+
+
+def test_wallet_export_key_writes_to_file(_isolate_wallet_path, tmp_path):
+    wallet_mod.wallet_new_impl()
+    out = tmp_path / "secret.b58"
+    res = wallet_mod.wallet_export_key_impl(output_path=str(out))
+    assert res["ok"] is True
+    assert out.exists()
+    # File contains the base58 secret only (no whitespace, no JSON).
+    body = out.read_text().strip()
+    assert len(body) > 80
+    import base58
+    assert len(base58.b58decode(body)) == 64
+    # JSON payload elides the secret when written to disk.
+    assert res["private_key_b58"] is None
+    if not IS_WINDOWS:
+        mode = stat.S_IMODE(out.stat().st_mode)
+        assert mode == 0o600
+
+
+def test_wallet_export_key_refuses_existing_file_without_force(
+    _isolate_wallet_path, tmp_path
+):
+    wallet_mod.wallet_new_impl()
+    out = tmp_path / "secret.b58"
+    out.write_text("placeholder")
+    res = wallet_mod.wallet_export_key_impl(output_path=str(out))
+    assert res["ok"] is False
+    assert "already exists" in res["error"]
+    assert out.read_text() == "placeholder"
+
+
+def test_wallet_export_key_overwrites_with_force(_isolate_wallet_path, tmp_path):
+    wallet_mod.wallet_new_impl()
+    out = tmp_path / "secret.b58"
+    out.write_text("placeholder")
+    res = wallet_mod.wallet_export_key_impl(output_path=str(out), force=True)
+    assert res["ok"] is True
+    assert out.read_text() != "placeholder"
+
+
+def test_wallet_export_key_fails_without_wallet(_isolate_wallet_path):
+    res = wallet_mod.wallet_export_key_impl()
+    assert res["ok"] is False
+    assert "no wallet" in res["error"]
+
+
+# ---------------------------------------------------------------------------
 # 6. wallet_import_impl — validates input, rejects garbage
 # ---------------------------------------------------------------------------
 

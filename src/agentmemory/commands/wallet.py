@@ -451,6 +451,110 @@ def wallet_export_impl(
     }
 
 
+def wallet_export_key_impl(
+    *,
+    path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Export the wallet's secret key as a base58 string that
+    Phantom / Backpack / Solflare / Glow accept under "import
+    private key".
+
+    Why this exists: ``wallet_export_impl`` (the file backup) writes
+    the Solana CLI keystore format — a 64-int JSON array. Wallet UIs
+    don't accept that format; they want a base58-encoded 64-byte
+    secret. This impl renders the same secret in the form those UIs
+    will actually accept.
+
+    Security: the returned string IS the full private key. Anyone
+    with it can sign as the wallet's owner.
+
+    Without ``output_path`` the secret is returned in the payload so
+    the caller (CLI handler) can print it. With ``output_path`` it
+    lands at that file at mode 0600 and the payload reports the
+    write target but elides the secret from the JSON.
+    """
+    src = resolve_wallet_path(path)
+    if not src.exists():
+        return {
+            "ok": False, "src": str(src),
+            "error": (
+                f"no wallet at {src}. Run `brainctl wallet new` first."
+            ),
+        }
+    try:
+        raw = json.loads(src.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "src": str(src),
+                "error": f"could not parse keystore: {e}"}
+    if not isinstance(raw, list) or len(raw) != 64:
+        return {
+            "ok": False, "src": str(src),
+            "error": (
+                "keystore is not a Solana CLI 64-int array. Was the "
+                "file created by `brainctl wallet new` or imported "
+                "from `solana-keygen`?"
+            ),
+        }
+    try:
+        secret_bytes = bytes(raw)
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "src": str(src),
+                "error": f"keystore array is not bytes-coercible: {e}"}
+
+    try:
+        import base58
+    except ImportError:
+        return {
+            "ok": False, "src": str(src),
+            "error": (
+                "base58 package is required. "
+                "Install with `pip install 'brainctl[signing]'`."
+            ),
+        }
+    private_key_b58 = base58.b58encode(secret_bytes).decode("ascii")
+    address = base58.b58encode(secret_bytes[32:]).decode("ascii")
+
+    if output_path:
+        dst = Path(output_path).expanduser()
+        if dst.exists() and not force:
+            return {
+                "ok": False, "src": str(src), "dst": str(dst),
+                "error": (
+                    f"output path already exists: {dst}. "
+                    "Pass --force to overwrite."
+                ),
+            }
+        try:
+            if dst.exists() and force:
+                dst.unlink()
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(private_key_b58, encoding="utf-8")
+            if not _is_windows():
+                os.chmod(dst, 0o600)
+        except OSError as e:
+            return {"ok": False, "src": str(src), "dst": str(dst),
+                    "error": f"could not write secret: {e}"}
+        return {
+            "ok": True, "src": str(src), "dst": str(dst),
+            "address": address,
+            "mode": _file_mode_octal(dst),
+            # Elide from JSON output when writing to file. The user
+            # asked for the file path — printing the secret in JSON
+            # too would defeat the purpose of the write.
+            "private_key_b58": None,
+            "error": None,
+        }
+
+    return {
+        "ok": True, "src": str(src),
+        "address": address,
+        "private_key_b58": private_key_b58,
+        "error": None,
+    }
+
+
 def wallet_import_impl(
     input_path: str,
     *,
@@ -731,6 +835,64 @@ def cmd_wallet_export(args: Any) -> None:
     sys.exit(0)
 
 
+def cmd_wallet_export_key(args: Any) -> None:
+    """Print the wallet's base58 private key so it can be imported into
+    Phantom / Backpack / Solflare / Glow / any standard Solana wallet UI.
+
+    SECURITY: this is the full private key. Anyone with it controls the
+    wallet. We print prominent stderr warnings and never to the
+    `brainctl` daemon log. With `-o <path>` the secret is written
+    directly to disk at mode 0600 and the JSON payload elides it so it
+    can't leak via piping.
+    """
+    path_arg = getattr(args, "path", None)
+    output_path = getattr(args, "output", None)
+    force = bool(getattr(args, "force", False))
+    as_json = bool(getattr(args, "json", False))
+
+    res = wallet_export_key_impl(
+        path=path_arg,
+        output_path=output_path,
+        force=force,
+    )
+
+    if as_json:
+        _emit_json(res, exit_code=0 if res["ok"] else 1)
+
+    if not res["ok"]:
+        print(f"FAIL: {res['error']}", file=sys.stderr)
+        sys.exit(1)
+
+    # Print SAFETY banner to stderr before the secret hits stdout so
+    # the warning shows even when stdout is being piped or redirected.
+    sys.stderr.write(
+        "============================================================\n"
+        "  SAFETY: the value below is your FULL Solana private key.\n"
+        "  Anyone who copies it can sign as you, transfer your tokens,\n"
+        "  and drain your wallet. brainctl can never recover it.\n"
+        "  - NEVER paste it into a chat, AI tool, or screenshot.\n"
+        "  - NEVER commit it to git or store it in a cloud note.\n"
+        "  - Paste it into your wallet UI under:\n"
+        "      Phantom:  Settings -> Add / Connect Wallet ->\n"
+        "                Import Private Key\n"
+        "      Backpack: + -> Import Wallet -> Private Key\n"
+        "      Solflare: Settings -> Wallets -> + -> Import Private Key\n"
+        "  - The secret has no recovery phrase (brainctl wallets are\n"
+        "    not BIP39-mnemonic-derived). Losing the secret is final.\n"
+        "============================================================\n"
+    )
+    sys.stderr.flush()
+
+    if output_path:
+        print(f"Wrote base58 private key to {res['dst']} (mode {res.get('mode')})")
+        print(f"Address: {res['address']}")
+        sys.exit(0)
+
+    # No -o: print the secret on stdout so the user can copy it.
+    print(res["private_key_b58"])
+    sys.exit(0)
+
+
 def cmd_wallet_import(args: Any) -> None:
     yes = bool(getattr(args, "yes", False))
     force = bool(getattr(args, "force", False))
@@ -965,6 +1127,31 @@ def register_parser(sub: Any) -> None:
     p_exp.add_argument("--force", action="store_true",
                        help="Overwrite the output file if it already exists")
 
+    # --- export-key ---
+    p_xkey = wsub.add_parser(
+        "export-key",
+        help=("Print/save the base58 private key for Phantom / Backpack / "
+              "Solflare / Glow import"),
+        description=(
+            "Render the managed wallet's secret key in the base58 format "
+            "every standard Solana wallet UI accepts under 'import private "
+            "key'. brainctl wallets are not BIP39-mnemonic-derived, so the "
+            "base58 secret IS the recovery — there is no separate seed "
+            "phrase. Without -o the secret is printed to stdout (with "
+            "stderr SAFETY warnings). With -o it lands at the path at "
+            "mode 0600 and is elided from the JSON output."
+        ),
+    )
+    _common(p_xkey)
+    p_xkey.add_argument("-o", "--output", default=None,
+                        help="Write the base58 secret to this file "
+                             "(chmod 0600) instead of printing it to "
+                             "stdout. Recommended for piping into a "
+                             "password manager.")
+    p_xkey.add_argument("--force", action="store_true",
+                        help="Overwrite -o output file if it exists")
+    p_xkey.set_defaults(func=cmd_wallet_export_key)
+
     # --- import ---
     p_imp = wsub.add_parser(
         "import",
@@ -1012,14 +1199,15 @@ def register_parser(sub: Any) -> None:
 # ---------------------------------------------------------------------------
 
 WALLET_DISPATCH = {
-    "new":      cmd_wallet_new,
-    "address":  cmd_wallet_address,
-    "balance":  cmd_wallet_balance,
-    "show":     cmd_wallet_show,
-    "export":   cmd_wallet_export,
-    "import":   cmd_wallet_import,
-    "rm":       cmd_wallet_rm,
-    "onboard":  cmd_wallet_onboard,
+    "new":         cmd_wallet_new,
+    "address":     cmd_wallet_address,
+    "balance":     cmd_wallet_balance,
+    "show":        cmd_wallet_show,
+    "export":      cmd_wallet_export,
+    "export-key":  cmd_wallet_export_key,
+    "import":      cmd_wallet_import,
+    "rm":          cmd_wallet_rm,
+    "onboard":     cmd_wallet_onboard,
 }
 
 
@@ -1041,8 +1229,8 @@ __all__ = [
     "resolve_wallet_path",
     # Pure impl
     "wallet_new_impl", "wallet_address_impl", "wallet_balance_impl",
-    "wallet_show_impl", "wallet_export_impl", "wallet_import_impl",
-    "wallet_rm_impl", "wallet_onboard_impl",
+    "wallet_show_impl", "wallet_export_impl", "wallet_export_key_impl",
+    "wallet_import_impl", "wallet_rm_impl", "wallet_onboard_impl",
     # CLI / parser
     "cmd_wallet", "register_parser",
 ]

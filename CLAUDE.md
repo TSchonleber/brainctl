@@ -104,6 +104,30 @@ shot. `--pin-onchain` with 0 SOL skips cleanly with `exit 0` and
 `pin_skipped_reason="zero_balance"` — the offline signature is still
 valid; pinning is opportunistic.
 
+### Exporting the wallet to Phantom / Backpack / Solflare / Glow (2.6.3+)
+
+`brainctl wallet export` produces the **Solana CLI 64-int JSON
+keystore format**, which standard wallet UIs do NOT accept. For
+wallet-UI import use the `export-key` subcommand instead:
+
+```
+brainctl wallet export-key             # prints base58 secret to stdout
+brainctl wallet export-key -o key.b58  # writes to file, mode 0600
+```
+
+The base58 string is exactly what Phantom (`Settings → Add / Connect
+Wallet → Import Private Key`), Backpack (`+ → Import Wallet → Private
+Key`), Solflare (`Settings → Wallets → + → Import Private Key`), and
+Glow accept under their "import private key" flows.
+
+**Important security note for agents**: brainctl wallets are not
+BIP39-mnemonic-derived — they're random ed25519 keypairs. There is no
+recovery phrase. The base58 secret IS the only backup. Surface this
+to the user before running `export-key` so they don't expect a 12/24-
+word mnemonic. The CLI prints prominent stderr SAFETY warnings; an
+agent should mirror them in chat output and refuse to read the secret
+back from CLI output (it should never be logged or echoed).
+
 ## Mint — Light Protocol compressed tokens (v1, branch `feat/cnft-mint`, optional `[mint]` extra)
 
 `brainctl export --sign --mint` ships the next layer on top of signed

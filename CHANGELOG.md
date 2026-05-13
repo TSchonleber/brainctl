@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.6.3] — 2026-05-13 — *Wallet export-key: Phantom-compatible private-key export*
+
+### Added
+
+- `brainctl wallet export-key` — print or save the wallet's secret as
+  a **base58 private key** in the format every standard Solana wallet
+  UI accepts under "Import private key" (Phantom, Backpack, Solflare,
+  Glow). Required because `wallet export` writes the Solana CLI
+  64-int JSON format which those wallets do not accept.
+
+  Two modes:
+    - default: secret printed to stdout (with stderr SAFETY warnings)
+    - `-o <path>`: secret written to the file at mode 0600; JSON
+      payload elides the secret to prevent piping leaks
+
+  brainctl wallets are NOT BIP39-mnemonic-derived (they're ed25519
+  keypairs generated directly), so the base58 secret IS the recovery —
+  there is no separate seed phrase. The CLI prints prominent SAFETY
+  warnings explaining this and the wallet-UI import paths for each
+  supported wallet.
+
+### Documentation
+
+- README + CLAUDE.md updated to reference `wallet export-key`.
+
+### Tests
+
+- 5 new round-trip tests confirming the base58 secret decodes to a
+  valid solders Keypair, matches the wallet address, writes to disk
+  at 0600 with secret elided from the JSON payload, and handles
+  existing files / force / missing-wallet edge cases correctly.
+
 ## [2.6.2] — 2026-05-13 — *Fix #108: brainctl-mcp idle-timeout no longer kills stdio servers*
 
 ### Fixed

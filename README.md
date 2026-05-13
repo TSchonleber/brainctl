@@ -168,6 +168,7 @@ brainctl decide "title" -r "rationale"        # record a decision
 brainctl export --sign -o bundle.json         # signed export
 brainctl verify bundle.json                   # verify a bundle
 brainctl wallet new                           # create managed signing wallet
+brainctl wallet export-key                    # base58 private key for Phantom/Backpack/Solflare/Glow import
 brainctl stats                                # DB overview
 brainctl doctor                               # health check
 brainctl lint                                 # quality issues
