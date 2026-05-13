@@ -5,6 +5,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-05-13 — *Procedural memory layer (Velamj, PR #94)*
+
+The third memory type. brainctl now treats Tulving's 1972 tripartite
+typology as a first-class data model: `episodic`, `semantic`, and
+new in 2.7.0, `procedural`. Procedures are reusable workflow patterns
+(tool sequences, decision recipes, recovery playbooks) with their own
+canonical table, FTS5-backed search, and execution-feedback loop.
+
+**Provenance note:** this primitive was contributed by [Velamj] as
+[PR #94] on 2026-04-24, **19 days before** any of the public competing
+implementations in the agent-memory space. Shipping it as the headline
+v2.7.0 feature.
+
+[Velamj]: https://github.com/Velamj
+[PR #94]: https://github.com/TSchonleber/brainctl/pull/94
+
+### Added
+
+- **Procedural memory layer** (`src/agentmemory/procedural.py`,
+  +1679 LOC). Canonical procedure tables (`procedures`,
+  `procedure_steps`, `procedure_sources`) added via migration 052,
+  plus an FTS5 virtual table for `procedure_search`. Bridge synopsis
+  rows are kept in `memories` so legacy memory search still surfaces
+  procedures by their text content.
+
+- `brainctl procedure ...` CLI subcommand surface — `add`, `get`,
+  `list`, `search`, `update`, `feedback`, `backfill`, `stats`. The
+  `feedback` subcommand records execution outcomes and updates a
+  procedure's quality counters + status so successful patterns
+  accumulate reuse signal.
+
+- **8 new MCP tools** (now 209 total, was 201) for the same surface:
+  `procedure_add`, `procedure_get`, `procedure_list`,
+  `procedure_search`, `procedure_update`, `procedure_feedback`,
+  `procedure_backfill`, `procedure_stats`.
+
+- `docs/PROCEDURAL_MEMORY_MIGRATION.md` documents the migration
+  envelope (`PRAGMA foreign_keys=OFF; BEGIN; ... COMMIT;`), the
+  schema_versions-only-on-success contract, backward-compat
+  expectations for legacy episodic/semantic readers, and the
+  rollout discipline for mixed-version operators.
+
+### Tests
+
+- 70 new procedural-targeted tests (`test_procedural.py`,
+  `test_mcp_tools_procedural.py`, additions to `test_migrate.py`
+  and `test_validation.py`). Full suite green at 2225 passed,
+  13 skipped, 2 xfailed (fresh-venv `[all]` install).
+
+### Doc counts updated
+
+- `MCP_SERVER.md` + `scripts/check_docs.py` asserts: 201 → 209 MCP
+  tools. `brainctl-mcp --list-tools` reflects the new surface.
+
 ## [2.6.4] — 2026-05-13 — *Fix #114: BRAINCTL_ALLOWED_TOOLS for tool-capped MCP clients*
 
 ### Added
