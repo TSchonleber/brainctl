@@ -5,6 +5,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-05-13 — *Onboarding from other providers + local bundle decrypt*
+
+Two launch-readiness additions on top of v2.6.0.
+
+### Added
+
+- `brainctl import <provider> <source>` — onboard memories from
+  other providers into brain.db. Quarantine-by-default into scope
+  `imported:<provider>` so the agent's primary scope stays clean
+  until the user explicitly promotes specific records via
+  `brainctl memory promote`.
+
+  Shipped providers:
+
+  - `brainctl import mem0 <export.json>` — parses every mem0 export
+    shape (SDK `{"results":[...]}`, `{"memories":[...]}`, legacy
+    top-level list). mem0-only fields (score, app_id, run_id,
+    categories, labels) round-trip via the memory's source_metadata.
+  - `brainctl import json <records.json>` — generic JSON / JSONL.
+    Accepts list root, `{"memories":[...]}`, `{"data":[...]}`,
+    `{"records":[...]}`. Required record field is `content`;
+    everything else is optional.
+
+  CLI flags: `--scope`, `--category`, `--no-quarantine`, `--dry-run`,
+  `--json`. Uses the canonical `cmd_memory_add` path so FTS5 indexes,
+  vec embeddings, and scope/tag persistence stay consistent.
+  Provider registry under `src/agentmemory/importers/`; adding a new
+  provider is a three-step BaseImporter subclass + register_importer
+  call (zep / cognee / letta / langchain are the natural next ones).
+
+- `brainctl bundle decrypt <mint> --ciphertext-uri ar://...` —
+  local-side AES decryption of a bundle you minted yourself. Reads
+  the per-bundle key from `~/.brainctl/keys/<mint>.key`, fetches
+  ciphertext from Arweave, AES-256-GCM decrypts, streams the
+  plaintext bundle JSON to stdout (or `-o <path>`).
+
+  Closes the "I minted but can't read my own bundle without writing
+  Python" gap. The companion `send-key` / `receive-key` commands for
+  gifting decryption capability to another wallet are roadmap
+  (v2.6.2+); the marketplace settle flow remains the only turnkey
+  key-handoff path for now.
+
+### Tests
+
+- 17 new round-trip tests for the importers (mem0 SDK shape, mem0
+  legacy shape, JSON list, JSON wrapped, JSONL, missing-content
+  skips, malformed-input rejections, tag-extraction edge cases).
+  Full suite: 2093 passed, 28 skipped, 2 xfailed.
+
 ## [2.6.0] — 2026-05-12 — *Marketplace negotiation, protocol rename, and protocol fees*
 
 Three coordinated changes:
