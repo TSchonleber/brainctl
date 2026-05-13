@@ -52,6 +52,10 @@ def _emit(payload: Dict[str, Any], *, as_json: bool, exit_code: int = 0) -> None
             "bundle_path", "bundle_hash", "signer_pubkey",
             "memories_count", "signed_at", "signature", "tx_signature",
             "slot", "block_time", "found", "checked_onchain",
+            "minted", "mint_address", "mint_tx_signature",
+            "mint_cluster", "arweave_metadata_uri",
+            "arweave_ciphertext_uri", "bundle_key_path",
+            "mint_warning",
         ):
             if key in payload and payload[key] is not None:
                 print(f"  {key}: {payload[key]}")
@@ -290,6 +294,39 @@ def cmd_export(args: Any) -> None:
                 # so callers know the pin failed but the bundle is on disk.
                 _emit(payload, as_json=as_json, exit_code=1)
 
+    # --- Light Protocol compressed-token mint (v1 marketplace primitive) ---
+    if getattr(args, "mint", False):
+        from agentmemory import minting
+
+        cluster = getattr(args, "cluster", minting.DEFAULT_CLUSTER)
+        helius_api_key = getattr(args, "helius_api_key", None)
+        mint_recipient = getattr(args, "mint_recipient", None) or signed["signer_pubkey_b58"]
+        keys_dir_arg = getattr(args, "keys_dir", None)
+        keys_dir = Path(keys_dir_arg).expanduser() if keys_dir_arg else None
+
+        mint_result = minting.mint_bundle(
+            signed,
+            owner_pubkey_b58=mint_recipient,
+            cluster=cluster,
+            helius_api_key=helius_api_key,
+            keystore_path=keystore_path,
+            keys_dir=keys_dir,
+        )
+        payload["minted"] = bool(mint_result.get("ok"))
+        payload["mint_address"] = mint_result.get("mint")
+        payload["mint_tx_signature"] = mint_result.get("tx_signature")
+        payload["mint_cluster"] = mint_result.get("cluster")
+        payload["arweave_metadata_uri"] = mint_result.get("arweave_metadata_uri")
+        payload["arweave_ciphertext_uri"] = mint_result.get("arweave_ciphertext_uri")
+        payload["bundle_key_path"] = mint_result.get("key_path")
+        if mint_result.get("warning"):
+            payload["mint_warning"] = mint_result["warning"]
+        if not mint_result.get("ok"):
+            payload["error"] = f"mint failed: {mint_result.get('error')}"
+            # Local sign succeeded; surface the mint failure but don't
+            # destroy the signing work. Exit 1 to flag the partial fail.
+            _emit(payload, as_json=as_json, exit_code=1)
+
     if not out_path and not as_json:
         # No output file and not JSON mode — dump bundle to stdout so
         # the user gets *something* (mirrors `git format-patch -` UX).
@@ -411,6 +448,29 @@ def register_parser(sub: Any) -> None:
                             "memo-program transaction (~$0.001/pin)")
     p_exp.add_argument("--rpc-url", dest="rpc_url", default=None,
                        help="Solana RPC URL (default: mainnet-beta public RPC)")
+    p_exp.add_argument("--mint", dest="mint", action="store_true",
+                       help="Mint a Light Protocol compressed token "
+                            "representing this signed bundle. Encrypted "
+                            "content uploaded to Arweave, ownership token "
+                            "minted to the signer wallet (or "
+                            "--mint-recipient). Requires Node 20+ and the "
+                            "tools/ helper (`cd tools && npm install`).")
+    p_exp.add_argument("--cluster", default="devnet",
+                       choices=["devnet", "mainnet-beta"],
+                       help="Solana cluster for --mint (default: devnet). "
+                            "mainnet-beta requires --helius-api-key and "
+                            "real SOL for fees.")
+    p_exp.add_argument("--helius-api-key", dest="helius_api_key",
+                       default=None,
+                       help="Helius API key for Photon RPC. Falls back to "
+                            "$HELIUS_API_KEY. Required for mainnet-beta.")
+    p_exp.add_argument("--mint-recipient", dest="mint_recipient",
+                       default=None,
+                       help="Base58 pubkey to receive the minted token "
+                            "(default: signer wallet).")
+    p_exp.add_argument("--keys-dir", dest="keys_dir", default=None,
+                       help="Where to persist the per-bundle AES key on "
+                            "disk (default: ~/.brainctl/keys).")
     p_exp.add_argument("-o", "--output", default=None,
                        help="Path to write the signed bundle JSON (default: stdout)")
     p_exp.add_argument("--json", action="store_true",

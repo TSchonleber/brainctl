@@ -17581,6 +17581,14 @@ def build_parser():
     from agentmemory.commands.ingest import register_parser as _ingest_register
     _ingest_register(sub)
 
+    # --- marketplace api client (2.5.x feat/cnft-mint) ---
+    # Wraps the REST API at brainctl.org/api/marketplace. Wallet-sig
+    # auth, browse, list, offer, counter, accept/reject/withdraw,
+    # settle, status. Uses signing + wallet primitives from this same
+    # package, so no extra brainctl extras required beyond [signing].
+    from agentmemory.commands.marketplace_cli import register_parser as _mkt_register
+    _mkt_register(sub)
+
     return p
 
 # ---------------------------------------------------------------------------

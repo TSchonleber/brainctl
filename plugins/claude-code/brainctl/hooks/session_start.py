@@ -21,7 +21,13 @@ from _common import read_hook_input, project_name, get_brain, safe_exit  # noqa:
 
 def format_context(snap: dict) -> str:
     """Render an orient snapshot as a compact markdown brief for Claude."""
-    lines: list[str] = ["## brainctl session context"]
+    lines: list[str] = [
+        "## brainctl session context",
+        "",
+        "**Session discipline:**",
+        "- Before ending this Claude Code session, call `mcp__brainctl__agent_wrap_up` with a substantive summary, goal, open loops, and next step.",
+        "- Do not rely on the automatic SessionEnd hook for meaningful continuity; it can only synthesize shallow tool-call summaries.",
+    ]
 
     handoff = snap.get("handoff")
     if handoff:

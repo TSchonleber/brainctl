@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainctl"
-version = "2.5.1"
+version = "2.6.0"
 description = "Context engineering for AI agents — persistent memory, knowledge graph, affect tracking, and MCP server. Single SQLite file, zero LLM cost."
 readme = "README.md"
 license = {text = "MIT"}
@@ -63,6 +63,27 @@ crewai = ["crewai>=0.80.0"]
 # needed. brainctl imports cleanly without solders; signing CLI
 # commands print an install hint if the extra is missing.
 signing = ["solders>=0.21"]
+# Light Protocol compressed-token mint (`brainctl export --mint`). Adds
+# `cryptography` for AES-256-GCM bundle encryption. The actual minting
+# happens in a Node.js helper at `tools/zk_mint.js` because Light
+# Protocol's SDK is TypeScript-only as of v0.23 — run
+# `cd tools && npm install` once to pull the JS deps. The Python side
+# only needs the encryption library; everything else shells out.
+mint = [
+    "solders>=0.21",
+    "cryptography>=42",
+]
+# Agent memory marketplace (`brainctl marketplace list/browse/buy/listen`).
+# Adds PyNaCl for SealedBox key handoff (ed25519↔X25519 conversion of
+# Solana wallet keys) on top of the mint extra. Like [mint], the
+# heavy network plumbing (Jupiter swaps, SPL transfers) lives in the
+# Node helper at `tools/zk_mint.js` to avoid duplicating Solana SDK
+# logic in Python.
+marketplace = [
+    "solders>=0.21",
+    "cryptography>=42",
+    "pynacl>=1.5",
+]
 # Cross-encoder reranker stage (2.4.0+, opt-in via `brainctl search
 # --rerank`). sentence-transformers loads the supported cross-encoder
 # models (BAAI/bge-reranker-v2-m3, jinaai/jina-reranker-v2-base-

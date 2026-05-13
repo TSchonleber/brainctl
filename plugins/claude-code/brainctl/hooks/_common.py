@@ -14,6 +14,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Hooks are often launched by Claude Code with plain `python3`, outside the
+# repo's virtualenv. Make the source checkout importable when the hook command
+# points at a plugin script inside this repository.
+_REPO_SRC = Path(__file__).resolve().parents[4] / "src"
+if _REPO_SRC.exists():
+    sys.path.insert(0, str(_REPO_SRC))
+
 
 def read_hook_input() -> dict[str, Any]:
     """Parse Claude Code's hook payload from stdin. Returns `{}` on any error."""

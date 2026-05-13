@@ -1,0 +1,23 @@
+{
+  "name": "brainctl-zk-mint-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node.js subprocess helper for `brainctl export --mint`. Wraps Light Protocol compressed-token minting + Irys Arweave uploads so the Python CLI can shell out for the parts that have no Python SDK.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "brnctl-zk-mint": "./zk_mint.js"
+  },
+  "scripts": {
+    "smoke": "node zk_mint.js --request examples/smoke-request.json"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "@lightprotocol/stateless.js": "^0.23.0",
+    "@lightprotocol/compressed-token": "^0.23.0",
+    "@irys/sdk": "^0.2.11"
+  }
+}
