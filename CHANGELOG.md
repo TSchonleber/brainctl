@@ -5,6 +5,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.6.2] — 2026-05-13 — *Fix #108: brainctl-mcp idle-timeout no longer kills stdio servers*
+
+### Fixed
+
+- **`brainctl-mcp` no longer self-terminates after 1h idle on stdio**
+  (closes #108). Stdio MCP clients (Claude Desktop, Codex, Cursor)
+  own the process lifecycle, so killing the server out from under
+  them left the agent without memory tools until manual restart, with
+  no upstream warning surfaced to the user. The `BRAINCTL_MCP_IDLE_TIMEOUT_SEC`
+  default is now `0` (disabled) instead of `3600` (1h). The
+  parent-death watchdog stays active — that's the actually load-bearing
+  safety net for orphaned children when Claude Desktop crashes.
+
+### Changed
+
+- `BRAINCTL_MCP_IDLE_TIMEOUT_SEC` semantics:
+  - `0`, empty, garbage, or negative → disabled (no idle check at all)
+  - `1..59` → clamps up to `60` (sub-minute idle timeouts can kill the
+    server mid-LLM-thought)
+  - `>= 60` → honored verbatim
+- Loop now skips the idle check entirely when the timeout is `0`.
+
+### Documentation
+
+- New section in `docs/AGENT_ONBOARDING.md` covering the MCP server
+  lifecycle watchdog (parent-death detection, idle-timeout reaping,
+  the three relevant env vars).
+
+### Tests
+
+- Six lifecycle tests updated/added for the new defaults:
+  disabled-by-default, explicit-zero, sub-minute clamp, explicit
+  honored value, garbage → disabled, negative → disabled. New test
+  `test_watchdog_skips_idle_check_when_timeout_is_zero` confirms the
+  loop runs cleanly through an "idle forever" state.
+
 ## [2.6.1] — 2026-05-13 — *Onboarding from other providers + local bundle decrypt*
 
 Two launch-readiness additions on top of v2.6.0.

@@ -237,6 +237,34 @@ cat /proc/<pid>/environ | tr '\0' '\n' | grep -E 'BRAIN(_DB|CTL_HOME)'
 If the service env is empty or different from your shell, the unit is
 not propagating — fix it there, not in brainctl.
 
+### MCP server lifecycle (stdio transport)
+
+`brainctl-mcp` installs a daemon watchdog at startup that handles two
+failure modes for long-lived stdio MCP servers:
+
+1. **Parent-death detection.** If the parent process (Claude Desktop,
+   Codex, Cursor, etc.) crashes and reparents us to launchd/init, we
+   self-terminate cleanly so the orphan doesn't pile up. **Always
+   active.**
+2. **Idle-timeout reaping.** Optional. **Disabled by default** as of
+   v2.6.2 (issue #108). Stdio clients own the process lifecycle, so
+   killing the server while the client is still attached leaves the
+   agent without memory tools until a manual restart with no upstream
+   warning.
+
+Relevant env vars:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BRAINCTL_MCP_IDLE_TIMEOUT_SEC` | `0` (disabled) | Self-terminate after this many seconds of no MCP requests. Accepts `0` (disabled) or any value `>= 60`; 1–59 clamps up to 60. Set only when running under a parent that keeps idle pipes alive indefinitely. |
+| `BRAINCTL_MCP_PARENT_POLL_SEC`  | `5`  | How often the parent-death check runs. Min 1. |
+| `BRAINCTL_MCP_DISABLE_WATCHDOG` | unset | Set to `1` to disable the watchdog thread entirely (skips both parent-death and idle reaping). |
+
+The parent-death detection is the load-bearing safety net; leave it on
+in production. The idle timeout is only useful for explicit
+operator-driven cleanup of stuck idle processes — most users should
+leave it at the default (`0`).
+
 ## Common Patterns
 
 ### Autonomous Agent (long-running, self-directed)

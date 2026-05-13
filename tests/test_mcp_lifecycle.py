@@ -109,20 +109,40 @@ def test_touch_activity_works_without_install():
 # ---------------------------------------------------------------------------
 
 
-def test_idle_timeout_default_is_one_hour():
-    assert lifecycle.idle_timeout_sec() == 3600.0
+def test_idle_timeout_default_is_disabled(monkeypatch):
+    """Issue #108: stdio MCP clients own the process lifecycle, so the
+    idle timeout is disabled by default. Operators can opt in via env."""
+    monkeypatch.delenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", raising=False)
+    assert lifecycle.idle_timeout_sec() == 0.0
 
 
-def test_idle_timeout_clamps_to_minimum(monkeypatch):
+def test_idle_timeout_explicit_zero_disables(monkeypatch):
+    monkeypatch.setenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", "0")
+    assert lifecycle.idle_timeout_sec() == 0.0
+
+
+def test_idle_timeout_clamps_subminute_to_minimum(monkeypatch):
     monkeypatch.setenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", "5")
-    # Floor is 60 seconds — anything lower would be operationally
-    # dangerous (a slow client could be killed mid-thought).
+    # 1..59 clamps up to 60 — anything below would be operationally
+    # dangerous (a slow LLM could trip the watchdog mid-thought).
+    # Zero is the only legal sub-60 value (disables entirely).
     assert lifecycle.idle_timeout_sec() == 60.0
 
 
+def test_idle_timeout_explicit_value_honored(monkeypatch):
+    monkeypatch.setenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", "7200")
+    assert lifecycle.idle_timeout_sec() == 7200.0
+
+
 def test_idle_timeout_falls_back_on_garbage(monkeypatch):
+    """Garbage env value → disabled (was: 1h default before #108)."""
     monkeypatch.setenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", "not-a-number")
-    assert lifecycle.idle_timeout_sec() == 3600.0
+    assert lifecycle.idle_timeout_sec() == 0.0
+
+
+def test_idle_timeout_negative_treated_as_disabled(monkeypatch):
+    monkeypatch.setenv("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", "-1")
+    assert lifecycle.idle_timeout_sec() == 0.0
 
 
 def test_parent_poll_default_is_five_seconds():
@@ -212,6 +232,33 @@ def test_watchdog_exits_on_idle_timeout(monkeypatch):
     with pytest.raises(SystemExit):
         lifecycle._watchdog_loop()
     assert "idle timeout" in exit_called["reason"]
+
+
+def test_watchdog_skips_idle_check_when_timeout_is_zero(monkeypatch):
+    """Issue #108: when idle_timeout_sec() returns 0, the loop must
+    NOT exit even if the activity clock looks ancient. Parent-death
+    detection still fires (covered by other tests)."""
+    _patch_loop_to_run_once(monkeypatch)
+
+    monkeypatch.setattr(lifecycle.os, "getppid", lambda: 12345)
+    monkeypatch.setattr(lifecycle, "idle_timeout_sec", lambda: 0.0)
+    monkeypatch.setattr(lifecycle, "parent_poll_sec", lambda: 1.0)
+    # Pretend the server has been idle forever — should still NOT exit.
+    monkeypatch.setattr(lifecycle, "last_activity_age_sec", lambda: 99999.0)
+
+    exit_called = {"called": False}
+    def fake_exit(_reason, _code=0):
+        exit_called["called"] = True
+        raise SystemExit(0)
+    monkeypatch.setattr(lifecycle, "_exit_clean", fake_exit)
+
+    lifecycle._INITIAL_PPID = 12345
+    with pytest.raises(StopIteration):
+        # StopIteration from the patched sleep means one clean loop
+        # iteration ran without calling _exit_clean — i.e. the idle
+        # check correctly skipped.
+        lifecycle._watchdog_loop()
+    assert exit_called["called"] is False
 
 
 def test_watchdog_does_not_exit_when_healthy(monkeypatch):

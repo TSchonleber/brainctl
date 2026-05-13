@@ -38,7 +38,15 @@ and a hard exit gives MCP clients deterministic shutdown semantics.
 
 Tunables (env vars)
 -------------------
-``BRAINCTL_MCP_IDLE_TIMEOUT_SEC``  default 3600 (1 h). Min 60.
+``BRAINCTL_MCP_IDLE_TIMEOUT_SEC``  default 0 (disabled). Accepts 0 or
+    any value >= 60. Closes issue #108: stdio clients like Claude
+    Desktop own the process lifecycle, so killing the server on idle
+    leaves the client without memory tools until manual restart.
+    The parent-death watchdog (below) still catches the orphan case,
+    which is the failure this whole module exists to address. Set
+    a positive value when running brainctl-mcp under a parent that
+    keeps idle pipes alive indefinitely (e.g. some sandboxed sandboxes)
+    and you want explicit per-process idle reaping.
 ``BRAINCTL_MCP_PARENT_POLL_SEC``   default 5. Min 1.
 ``BRAINCTL_MCP_DISABLE_WATCHDOG``  set to "1" to fully disable.
 
@@ -181,7 +189,30 @@ def last_activity_age_sec() -> float:
 
 
 def idle_timeout_sec() -> float:
-    return _read_float_env("BRAINCTL_MCP_IDLE_TIMEOUT_SEC", default=3600.0, minimum=60.0)
+    """Idle-timeout in seconds. 0 = disabled (default).
+
+    Issue #108: stdio MCP clients (Claude Desktop, Codex, Cursor) own
+    the process lifecycle and re-spawn the server on demand. An idle
+    timeout that kills the server while the client is still attached
+    leaves the agent without memory tools until the client manually
+    re-spawns, with no upstream warning. We disable by default and
+    let operators opt in via the env var when their parent process
+    is the kind that keeps idle pipes alive forever.
+
+    Accepts 0 (disabled) or any value >= 60. Values in 1..59 clamp up
+    to 60 (a sub-minute idle window can kill the server mid-thought
+    for slow LLMs).
+    """
+    raw = os.environ.get("BRAINCTL_MCP_IDLE_TIMEOUT_SEC")
+    if raw is None or raw == "":
+        return 0.0
+    try:
+        v = float(raw)
+    except ValueError:
+        return 0.0
+    if v <= 0:
+        return 0.0
+    return max(60.0, v)
 
 
 def parent_poll_sec() -> float:
@@ -239,11 +270,13 @@ def _watchdog_loop() -> None:
             return
 
         # 2. Idle timeout. Only trips after at least one idle window has
-        #    elapsed since install or the last touch_activity().
-        age = last_activity_age_sec()
-        if age > idle:
-            _exit_clean(f"idle timeout: {age:.0f}s > {idle:.0f}s")
-            return
+        #    elapsed since install or the last touch_activity(). When
+        #    idle == 0 the check is disabled entirely (issue #108).
+        if idle > 0:
+            age = last_activity_age_sec()
+            if age > idle:
+                _exit_clean(f"idle timeout: {age:.0f}s > {idle:.0f}s")
+                return
 
 
 # ---------------------------------------------------------------------------
