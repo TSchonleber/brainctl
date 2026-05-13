@@ -295,11 +295,57 @@ async function doMint(req) {
     return;
   }
 
+  // Protocol mint fee — sent as a separate SystemProgram.transfer tx
+  // AFTER the mint+supply succeed. Not atomic with the mint (Light's
+  // SDK builds its own txs), but the mint is durable on chain by the
+  // time we send the fee, so a fee-tx failure is recoverable / not
+  // fatal to the mint itself. Caller decides whether to charge via
+  // req.fee_lamports > 0 and req.fee_treasury (devnet, marketplace_jit
+  // pass 0/empty to skip).
+  const feeLamports = Number(req.fee_lamports || 0);
+  const feeTreasury = req.fee_treasury || "";
+  let feeTxSignature = null;
+  let feeError = null;
+  if (feeLamports > 0 && feeTreasury) {
+    try {
+      const {
+        Connection,
+        Transaction,
+        PublicKey,
+        SystemProgram,
+      } = requireOrInstallHint("@solana/web3.js");
+      const conn = new Connection(rpcUrl, "confirmed");
+      const blockhashInfo = await conn.getLatestBlockhash("confirmed");
+      const feeTx = new Transaction({
+        feePayer: payer.publicKey,
+        blockhash: blockhashInfo.blockhash,
+        lastValidBlockHeight: blockhashInfo.lastValidBlockHeight,
+      });
+      feeTx.add(
+        SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: new PublicKey(feeTreasury),
+          lamports: feeLamports,
+        })
+      );
+      feeTx.sign(payer);
+      feeTxSignature = await conn.sendRawTransaction(feeTx.serialize(), {
+        preflightCommitment: "confirmed",
+      });
+    } catch (e) {
+      feeError = e && e.message ? e.message : String(e);
+    }
+  }
+
   ok({
     mint: mintAddress,
     tx_signature: txSignature,
     supply_tx_signature: supplyTx,
     cluster: req.cluster,
+    fee_lamports: feeLamports || 0,
+    fee_treasury: feeLamports > 0 ? feeTreasury : null,
+    fee_tx_signature: feeTxSignature,
+    fee_error: feeError,
   });
 }
 
@@ -426,6 +472,7 @@ async function doMarketplacePostMemo(req) {
     Transaction,
     TransactionInstruction,
     PublicKey,
+    SystemProgram,
   } = requireOrInstallHint("@solana/web3.js");
 
   const keypair = loadKeypair(
@@ -441,15 +488,31 @@ async function doMarketplacePostMemo(req) {
     fail(`getLatestBlockhash failed: ${e && e.message ? e.message : String(e)}`);
   }
 
-  const ix = new TransactionInstruction({
-    keys: [{ pubkey: keypair.publicKey, isSigner: true, isWritable: false }],
-    programId: new PublicKey(MEMO_PROGRAM_ID),
-    data: Buffer.from(req.memo, "utf-8"),
-  });
   const tx = new Transaction({
     feePayer: keypair.publicKey,
     blockhash: blockhashInfo.blockhash,
     lastValidBlockHeight: blockhashInfo.lastValidBlockHeight,
+  });
+
+  // Protocol fee: prepend a SystemProgram.transfer so the marketplace
+  // memo + fee land atomically. Caller (Python) decides whether to
+  // charge — passes fee_lamports=0 to skip (devnet, settle paths, JIT).
+  const feeLamports = Number(req.fee_lamports || 0);
+  const feeTreasury = req.fee_treasury || "";
+  if (feeLamports > 0 && feeTreasury) {
+    tx.add(
+      SystemProgram.transfer({
+        fromPubkey: keypair.publicKey,
+        toPubkey: new PublicKey(feeTreasury),
+        lamports: feeLamports,
+      })
+    );
+  }
+
+  const ix = new TransactionInstruction({
+    keys: [{ pubkey: keypair.publicKey, isSigner: true, isWritable: false }],
+    programId: new PublicKey(MEMO_PROGRAM_ID),
+    data: Buffer.from(req.memo, "utf-8"),
   });
   tx.add(ix);
   tx.sign(keypair);
@@ -474,7 +537,12 @@ async function doMarketplacePostMemo(req) {
     // ignore
   }
 
-  ok({ tx_signature: signature, slot });
+  ok({
+    tx_signature: signature,
+    slot,
+    fee_lamports: feeLamports,
+    fee_treasury: feeLamports > 0 ? feeTreasury : null,
+  });
 }
 
 main().catch((err) => {

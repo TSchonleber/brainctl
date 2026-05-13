@@ -264,6 +264,11 @@ def listen_loop(
                 print(f"[listen] no buyer signer found in tx, skipping", flush=True)
                 continue
 
+            # JIT mint: no protocol mint fee here. The seller already paid
+            # 2.5% to treasury at settlement (the buyer's settle tx), so
+            # this seller-funded mint runs without an additional fee. We
+            # signal this by omitting fee_lamports/fee_treasury from the
+            # request — the Node helper treats absence as "skip fee".
             mint_req = {
                 "action": "mint",
                 "cluster": cluster,
@@ -273,6 +278,7 @@ def listen_loop(
                 "symbol": "MEM",
                 "metadata_uri": manifest.get("metadata_uri"),
                 "helius_api_key": os.environ.get("HELIUS_API_KEY"),
+                "marketplace_jit": True,  # documentation flag; fee already skipped above
             }
             mint_result = api._run_node_helper(mint_req, timeout=180)
             if not mint_result.get("ok"):

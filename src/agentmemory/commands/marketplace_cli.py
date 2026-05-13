@@ -339,9 +339,13 @@ def cmd_list(args: Any) -> None:
         return
     listing_arweave_id = upload["arweave_id"]
 
-    # Post the list memo.
+    # Post the list memo (with protocol fee disclosure + bundled fee tx).
     list_memo = mp.format_list_memo(listing_arweave_id, bundle_hash_hex)
-    post = api.post_marketplace_memo(memo=list_memo, cluster=args.cluster)
+    from agentmemory import protocol_fees as _pfees
+    _fee_msg = _pfees.format_fee_disclosure(cluster=args.cluster, op="list")
+    if _fee_msg and not as_json:
+        sys.stderr.write(_fee_msg + "\n")
+    post = api.post_marketplace_memo(memo=list_memo, cluster=args.cluster, op="list")
     if not post.get("ok"):
         _emit({"ok": False, **post,
                "arweave_id": listing_arweave_id,
@@ -395,8 +399,18 @@ def _derive_x25519_pub_b58(keystore_path: str) -> str:
     return base58.b58encode(bytes(x_priv.public_key)).decode("ascii")
 
 
-def _post_memo_or_die(memo: str, cluster: str, as_json: bool) -> str:
-    post = api.post_marketplace_memo(memo=memo, cluster=cluster)
+def _post_memo_or_die(
+    memo: str,
+    cluster: str,
+    as_json: bool,
+    *,
+    op: str = "marketplace_op",
+) -> str:
+    from agentmemory import protocol_fees as _pfees
+    _fee_msg = _pfees.format_fee_disclosure(cluster=cluster, op=op)
+    if _fee_msg and not as_json:
+        sys.stderr.write(_fee_msg + "\n")
+    post = api.post_marketplace_memo(memo=memo, cluster=cluster, op=op)
     if not post.get("ok"):
         _emit({"ok": False, **post}, as_json=as_json, exit_code=1)
     return post["tx_signature"]
@@ -499,7 +513,7 @@ def cmd_offer(args: Any) -> None:
     offer_arweave_id = upload["arweave_id"]
 
     offer_memo = mp.format_offer_memo(args.listing_id, offer_arweave_id, pubkey)
-    offer_tx = _post_memo_or_die(offer_memo, args.cluster, as_json)
+    offer_tx = _post_memo_or_die(offer_memo, args.cluster, as_json, op="offer")
 
     try:
         result = api.create_offer(
@@ -561,7 +575,7 @@ def cmd_counter(args: Any) -> None:
     counter_arweave_id = upload["arweave_id"]
 
     counter_memo = mp.format_counter_memo(args.offer_id, counter_arweave_id, pubkey)
-    counter_tx = _post_memo_or_die(counter_memo, args.cluster, as_json)
+    counter_tx = _post_memo_or_die(counter_memo, args.cluster, as_json, op="counter")
 
     try:
         result = api.counter_offer(
@@ -605,7 +619,7 @@ def _cmd_offer_action(args: Any, action: str) -> None:
         "withdraw": mp.format_withdraw_memo,
     }[action]
     memo = formatter(args.offer_id)
-    tx = _post_memo_or_die(memo, args.cluster, as_json)
+    tx = _post_memo_or_die(memo, args.cluster, as_json, op=action)
 
     api_caller = {
         "accept": api.accept_offer,

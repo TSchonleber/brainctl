@@ -242,6 +242,16 @@ def cmd_export(args: Any) -> None:
 
     if getattr(args, "pin_onchain", False):
         rpc_url = getattr(args, "rpc_url", None) or signing.DEFAULT_RPC_URL
+        # Pin cluster: derive from rpc_url. mainnet-beta if RPC is the
+        # default or contains "mainnet"; otherwise devnet (so devnet
+        # users default to no fee).
+        pin_cluster = "mainnet-beta" if "mainnet" in rpc_url else "devnet"
+
+        # Disclose protocol fee to the user before signing the tx.
+        from agentmemory import protocol_fees as _pfees
+        _fee_msg = _pfees.format_fee_disclosure(cluster=pin_cluster, op="pin")
+        if _fee_msg and not as_json:
+            sys.stderr.write(_fee_msg + "\n")
 
         # Pre-check the wallet's balance. If it's zero, the on-chain
         # pin would fail with an opaque "insufficient funds" RPC
@@ -276,7 +286,7 @@ def cmd_export(args: Any) -> None:
                 f"warning: could not pre-check wallet balance "
                 f"({bal['error']}); attempting pin anyway.\n"
             )
-            pin = signing.pin_onchain(signed, keypair, rpc_url=rpc_url)
+            pin = signing.pin_onchain(signed, keypair, rpc_url=rpc_url, cluster=pin_cluster)
             payload["pinned_onchain"] = bool(pin.get("ok"))
             payload["signature"] = pin.get("signature")
             payload["slot"] = pin.get("slot")
@@ -284,7 +294,7 @@ def cmd_export(args: Any) -> None:
                 payload["error"] = f"on-chain pin failed: {pin.get('error')}"
                 _emit(payload, as_json=as_json, exit_code=1)
         else:
-            pin = signing.pin_onchain(signed, keypair, rpc_url=rpc_url)
+            pin = signing.pin_onchain(signed, keypair, rpc_url=rpc_url, cluster=pin_cluster)
             payload["pinned_onchain"] = bool(pin.get("ok"))
             payload["signature"] = pin.get("signature")
             payload["slot"] = pin.get("slot")
@@ -297,12 +307,18 @@ def cmd_export(args: Any) -> None:
     # --- Light Protocol compressed-token mint (v1 marketplace primitive) ---
     if getattr(args, "mint", False):
         from agentmemory import minting
+        from agentmemory import protocol_fees as _pfees
 
         cluster = getattr(args, "cluster", minting.DEFAULT_CLUSTER)
         helius_api_key = getattr(args, "helius_api_key", None)
         mint_recipient = getattr(args, "mint_recipient", None) or signed["signer_pubkey_b58"]
         keys_dir_arg = getattr(args, "keys_dir", None)
         keys_dir = Path(keys_dir_arg).expanduser() if keys_dir_arg else None
+
+        # Disclose protocol mint fee before invoking the mint.
+        _mint_fee_msg = _pfees.format_fee_disclosure(cluster=cluster, op="mint")
+        if _mint_fee_msg and not as_json:
+            sys.stderr.write(_mint_fee_msg + "\n")
 
         mint_result = minting.mint_bundle(
             signed,

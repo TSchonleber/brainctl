@@ -410,8 +410,20 @@ def _rpc_call(rpc_url: str, method: str, params: list, *, timeout: float = 30.0)
     return parsed.get("result", {})
 
 
-def _build_memo_tx(payer_keypair, memo_bytes: bytes, recent_blockhash_b58: str):
+def _build_memo_tx(
+    payer_keypair,
+    memo_bytes: bytes,
+    recent_blockhash_b58: str,
+    *,
+    fee_lamports: int = 0,
+    fee_treasury_b58: str = "",
+):
     """Construct a single-instruction memo transaction signed by ``payer_keypair``.
+
+    If ``fee_lamports > 0`` and ``fee_treasury_b58`` is set, prepends a
+    ``SystemProgram.Transfer`` instruction so the protocol fee is paid
+    atomically with the memo. The whole bundle is signed once and lands
+    in a single tx.
 
     The memo program accepts arbitrary UTF-8 bytes as its instruction
     data. Signers listed in the instruction's accounts metadata become
@@ -422,18 +434,29 @@ def _build_memo_tx(payer_keypair, memo_bytes: bytes, recent_blockhash_b58: str):
     from solders.instruction import AccountMeta, Instruction   # type: ignore
     from solders.message import Message                        # type: ignore
     from solders.pubkey import Pubkey                          # type: ignore
+    from solders.system_program import TransferParams, transfer  # type: ignore
     from solders.transaction import Transaction                # type: ignore
 
     program_id = Pubkey.from_string(MEMO_PROGRAM_ID_B58)
     payer_pub = payer_keypair.pubkey()
 
+    instructions = []
+    if fee_lamports > 0 and fee_treasury_b58:
+        instructions.append(transfer(TransferParams(
+            from_pubkey=payer_pub,
+            to_pubkey=Pubkey.from_string(fee_treasury_b58),
+            lamports=fee_lamports,
+        )))
+
     # Memo v2 records signers via account metadata so the on-chain
     # receipt is provably linked to the wallet that paid for it.
     accounts = [AccountMeta(pubkey=payer_pub, is_signer=True, is_writable=True)]
-    ix = Instruction(program_id=program_id, accounts=accounts, data=memo_bytes)
+    instructions.append(
+        Instruction(program_id=program_id, accounts=accounts, data=memo_bytes)
+    )
 
     blockhash = Hash.from_string(recent_blockhash_b58)
-    msg = Message.new_with_blockhash([ix], payer_pub, blockhash)
+    msg = Message.new_with_blockhash(instructions, payer_pub, blockhash)
     return Transaction([payer_keypair], msg, blockhash)
 
 
@@ -441,6 +464,8 @@ def pin_onchain(
     signed_bundle: Dict[str, Any],
     keypair,
     rpc_url: str = DEFAULT_RPC_URL,
+    *,
+    cluster: str = "mainnet-beta",
 ) -> Dict[str, Any]:
     """Pin a bundle's hash on-chain via the SPL memo program.
 
@@ -448,9 +473,14 @@ def pin_onchain(
     The memo + the signer pubkey is enough for any third party to
     later verify "this wallet attested to this hash at this slot".
     Memory contents themselves never touch the network.
+
+    A flat protocol fee (set in ``agentmemory.protocol_fees``) is
+    bundled into the same transaction when ``cluster="mainnet-beta"``
+    and the fee kill-switch is not set. Devnet is free.
     """
     _require_solders()
     from solders.signature import Signature  # type: ignore  # noqa: F401
+    from agentmemory import protocol_fees as _pfees
 
     bundle_hash_hex = signed_bundle.get("bundle_hash_hex")
     signer_b58 = signed_bundle.get("signer_pubkey_b58")
@@ -463,13 +493,27 @@ def pin_onchain(
     memo_str = f"{MEMO_PREFIX}:{bundle_hash_hex}:{signer_b58}"
     memo_bytes = memo_str.encode("utf-8")
 
+    # Protocol fee: bundle in the same tx as the memo so it's atomic.
+    if _pfees.charge_fee(cluster):
+        fee_lamports = _pfees.fee_lamports_for_op("pin")
+        fee_treasury = _pfees.resolve_treasury_pubkey()
+    else:
+        fee_lamports = 0
+        fee_treasury = ""
+
     try:
         # 1. recent blockhash
         bh = _rpc_call(rpc_url, "getLatestBlockhash", [{"commitment": "finalized"}])
         recent_bh = bh["value"]["blockhash"]
 
-        # 2. build + sign tx
-        tx = _build_memo_tx(keypair, memo_bytes, recent_bh)
+        # 2. build + sign tx (with fee transfer prepended atomically)
+        tx = _build_memo_tx(
+            keypair,
+            memo_bytes,
+            recent_bh,
+            fee_lamports=fee_lamports,
+            fee_treasury_b58=fee_treasury,
+        )
         raw = bytes(tx)
         import base64 as _b64
         tx_b64 = _b64.b64encode(raw).decode("ascii")
@@ -491,7 +535,14 @@ def pin_onchain(
         except Exception:
             pass
 
-        return {"ok": True, "signature": sig, "slot": slot, "error": None}
+        return {
+            "ok": True,
+            "signature": sig,
+            "slot": slot,
+            "error": None,
+            "fee_lamports": fee_lamports,
+            "fee_treasury": fee_treasury or None,
+        }
     except Exception as e:
         return {"ok": False, "signature": None, "slot": None, "error": str(e)}
 

@@ -713,8 +713,21 @@ def post_marketplace_memo(
     cluster: str,
     helius_api_key: Optional[str] = None,
     keystore_path: Optional[str] = None,
+    op: str = "marketplace_op",
+    marketplace_jit: bool = False,
 ) -> Dict[str, Any]:
-    """Shell to the Node helper to post a brainctl-marketplace memo to Solana."""
+    """Shell to the Node helper to post a brainctl-marketplace memo to Solana.
+
+    Bundles the flat protocol fee (set in ``agentmemory.protocol_fees``)
+    into the same transaction as the memo, atomic. ``op`` is the op name
+    used to look up the fee amount (``list`` / ``offer`` / ``counter``
+    / ``accept`` / ``reject`` / ``withdraw`` / ``cancel``). The fee is
+    skipped on devnet, when the kill-switch env is set, or when
+    ``marketplace_jit=True`` (the seller daemon at settlement already
+    paid the 2.5%).
+    """
+    from agentmemory import protocol_fees as _pfees
+
     req: Dict[str, Any] = {
         "action": "marketplace_post_memo",
         "cluster": cluster,
@@ -724,6 +737,11 @@ def post_marketplace_memo(
         req["helius_api_key"] = helius_api_key
     if keystore_path:
         req["keystore_path"] = keystore_path
+
+    if _pfees.charge_fee(cluster, marketplace_jit=marketplace_jit):
+        req["fee_lamports"] = _pfees.fee_lamports_for_op(op)
+        req["fee_treasury"] = _pfees.resolve_treasury_pubkey()
+
     return _run_node_helper(req)
 
 

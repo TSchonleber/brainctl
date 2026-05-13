@@ -238,7 +238,7 @@ brainctl marketplace api listen     # daemon: JIT-mint + release bundle key
   detection — one fresh mint per buyer.
 - **TTL on offers is 24h max.** Auction-mode listings can run up to
   30 days; offers always expire within a day.
-- **3.5% protocol fee.** Atomic with the seller transfer at settle
+- **2.5% protocol fee at settlement.** Atomic with the seller transfer at settle
   time. No off-chain bookkeeping.
 - **$10,000 USD price cap.** Listings + offers + counters all enforce.
 - **Pre-launch: SOL settlement.** Post-launch the community token

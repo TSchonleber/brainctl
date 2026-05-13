@@ -22,15 +22,15 @@ from agentmemory import marketplace as mp
 # ---------------------------------------------------------------------------
 
 class TestFeeSplit:
-    def test_default_3_5_pct(self):
-        # 1,000,000 micro-BRNDB → seller 965k, treasury 35k
+    def test_default_2_5_pct(self):
+        # 1,000,000 micro-token → seller 975k, treasury 25k (2.5% default)
         seller, treasury = mp.split_with_fee(1_000_000)
-        assert seller == 965_000
-        assert treasury == 35_000
+        assert seller == 975_000
+        assert treasury == 25_000
         assert seller + treasury == 1_000_000
 
     def test_rounds_fee_up(self):
-        # 1 atom and 3.5% — fee rounds up so treasury gets 1, seller 0
+        # 1 atom and 2.5% — fee rounds up so treasury gets 1, seller 0
         seller, treasury = mp.split_with_fee(1)
         assert seller == 0
         assert treasury == 1
@@ -57,12 +57,12 @@ class TestFeeSplit:
         assert treasury == 0
 
     def test_huge_total_no_overflow(self):
-        # 1 billion BRNDB (1e15 micro) — well within Python int range
+        # 1 billion tokens (1e15 micro) — well within Python int range
         total = 10 ** 15
         seller, treasury = mp.split_with_fee(total)
         assert seller + treasury == total
-        # 3.5% of 1e15 = 3.5e13
-        assert abs(treasury - 35 * 10 ** 12) <= 1
+        # 2.5% of 1e15 = 2.5e13
+        assert abs(treasury - 25 * 10 ** 12) <= 1
 
 
 # ---------------------------------------------------------------------------

@@ -454,6 +454,7 @@ def mint_bundle(
     keys_dir: Optional[Path] = None,
     upload_fn: Optional[Any] = None,
     helper_runner: Optional[Any] = None,
+    marketplace_jit: bool = False,
 ) -> Dict[str, Any]:
     """Mint a Light Protocol compressed token for a signed memory bundle.
 
@@ -580,6 +581,16 @@ def mint_bundle(
         "name": f"{DEFAULT_NAME_PREFIX} #{bundle_hash_hex[:8]}",
         "symbol": DEFAULT_TOKEN_SYMBOL,
     }
+
+    # Protocol mint fee: sent as a separate SystemProgram.transfer tx
+    # AFTER the mint succeeds. Skipped on devnet, when the kill-switch
+    # is set, or for the marketplace JIT mint at settlement (the
+    # seller's daemon has already paid the 2.5% at settle, so the JIT
+    # mint runs free). Caller signals JIT via marketplace_jit=True.
+    from agentmemory import protocol_fees as _pfees
+    if _pfees.charge_fee(cluster, marketplace_jit=marketplace_jit):
+        request["fee_lamports"] = _pfees.fee_lamports_for_op("mint")
+        request["fee_treasury"] = _pfees.resolve_treasury_pubkey()
     runner = helper_runner or _run_helper
     helper_result = runner(request)
     if not helper_result.get("ok"):

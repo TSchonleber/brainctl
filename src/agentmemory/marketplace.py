@@ -64,9 +64,11 @@ WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDC_DECIMALS = 6
 
-# Protocol fee. 3.5% in basis points. Hardcoded by design; if you
-# ever want to lower it, ship a new module version and migrate.
-MARKETPLACE_FEE_BPS = 350
+# Protocol fee. 2.5% in basis points (250 bps). Hardcoded by design;
+# if you ever want to change it, ship a new module version and
+# migrate. Prior versions (pre-v2.6.0) used 350 bps (3.5%); lowered
+# to 2.5% before any production volume hit chain.
+MARKETPLACE_FEE_BPS = 250
 MAX_FEE_BPS = 1000  # 10% — safety cap if a config override ever tries to set higher
 
 # Price cap per listing (USD). Sellers can list for any non-negative
@@ -78,8 +80,8 @@ MAX_LISTING_PRICE_USD = 10_000.0
 # 24h if no dispute filed; slashed otherwise.
 LISTING_STAKE_USD = 1.0
 
-# Treasury wallet — where the 3.5% fee lands. Defaults to the
-# brainctl managed wallet. Override via ``$BRNDB_TREASURY_PUBKEY``.
+# Treasury wallet — where the 2.5% marketplace fee lands. Defaults to
+# the brainctl managed wallet. Override via ``$BRNDB_TREASURY_PUBKEY``.
 DEFAULT_TREASURY_ENV = "BRNDB_TREASURY_PUBKEY"
 
 # Schema version baked into listing manifests + on-chain memos.
@@ -170,9 +172,9 @@ def split_with_fee(
     truncation. The seller's amount is then ``total - rounded_fee``.
 
     Examples:
-      >>> split_with_fee(1_000_000, fee_bps=350)
-      (965_000, 35_000)
-      >>> split_with_fee(1, fee_bps=350)
+      >>> split_with_fee(1_000_000, fee_bps=250)
+      (975_000, 25_000)
+      >>> split_with_fee(1, fee_bps=250)
       (0, 1)        # too small to split — entire amount goes to treasury
     """
     if total_atoms < 0:
