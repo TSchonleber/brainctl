@@ -358,7 +358,7 @@ async function doMarketplaceUploadManifest(req) {
   if (!req.manifest || typeof req.manifest !== "object") {
     fail("manifest is required");
   }
-  const schema = req.schema || "brndb-marketplace/v1/unknown";
+  const schema = req.schema || "brainctl-marketplace/v1/unknown";
 
   const irys = requireOrInstallHint("@irys/sdk");
   const Irys = irys.default || irys;
@@ -417,8 +417,8 @@ async function doMarketplacePostMemo(req) {
   if (typeof req.memo !== "string" || !req.memo) {
     fail("memo string is required");
   }
-  if (!req.memo.startsWith("brndb-marketplace/v1:")) {
-    fail("memo must start with brndb-marketplace/v1: prefix");
+  if (!req.memo.startsWith("brainctl-marketplace/v1:")) {
+    fail("memo must start with brainctl-marketplace/v1: prefix");
   }
 
   const {

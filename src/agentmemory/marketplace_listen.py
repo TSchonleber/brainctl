@@ -9,14 +9,14 @@ runs it under tmux, screen, systemd, or whatever they prefer).
 Polling loop (default 10s interval):
   1. Query Solana for the seller wallet's recent tx signatures.
   2. For each unseen tx, fetch the memo body.
-  3. If the body matches `brndb-marketplace/v1:buy:<listing>:<x25519>`,
+  3. If the body matches `brainctl-marketplace/v1:buy:<listing>:<x25519>`,
      and the listing belongs to us, and the payment amount matches
      the listing price, transition into the release path:
        a. Mint a fresh Light Protocol compressed token to the buyer.
        b. Encrypt this listing's AES key with NaCl SealedBox to the
           buyer's X25519 pubkey.
        c. Upload the SealedBox envelope to Arweave via the Node helper.
-       d. Post the release memo: brndb-marketplace/v1:release:
+       d. Post the release memo: brainctl-marketplace/v1:release:
           <listing>:<envelope_arweave_id>:<minted_cnft_address>.
   4. Mark the buy tx as processed (idempotency — disk-persisted) and
      loop.
@@ -203,7 +203,7 @@ def listen_loop(
                 if verbose:
                     print(f"[listen] tx fetch {sig[:10]}… failed: {e}", flush=True)
                 continue
-            if not memo or not memo.startswith("brndb-marketplace/v1:buy:"):
+            if not memo or not memo.startswith("brainctl-marketplace/v1:buy:"):
                 processed.add(sig)
                 continue
             parsed = mp.parse_memo(memo)
@@ -269,8 +269,8 @@ def listen_loop(
                 "cluster": cluster,
                 "owner_pubkey": buyer_pubkey,
                 "keystore_path": keystore,
-                "name": f"BRNDB #{manifest.get('bundle_hash', '')[:8]}",
-                "symbol": "BRNDB",
+                "name": f"brainctl memory #{manifest.get('bundle_hash', '')[:8]}",
+                "symbol": "MEM",
                 "metadata_uri": manifest.get("metadata_uri"),
                 "helius_api_key": os.environ.get("HELIUS_API_KEY"),
             }
@@ -296,7 +296,7 @@ def listen_loop(
             # `marketplace_upload_manifest` action handles it; the
             # buyer's CLI knows to base64-decode envelope_b64 on read.
             envelope_manifest = {
-                "schema": "brndb-marketplace/v1/envelope",
+                "schema": "brainctl-marketplace/v1/envelope",
                 "listing_id": listing_id,
                 "buyer_pubkey": buyer_pubkey,
                 "envelope_b64": _b64(envelope),
@@ -304,7 +304,7 @@ def listen_loop(
             }
             upload_result = api.upload_manifest_to_arweave(
                 manifest=envelope_manifest,
-                schema="brndb-marketplace/v1/envelope",
+                schema="brainctl-marketplace/v1/envelope",
                 cluster=cluster,
             )
             if not upload_result.get("ok"):

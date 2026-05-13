@@ -714,7 +714,7 @@ def post_marketplace_memo(
     helius_api_key: Optional[str] = None,
     keystore_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Shell to the Node helper to post a brndb-marketplace memo to Solana."""
+    """Shell to the Node helper to post a brainctl-marketplace memo to Solana."""
     req: Dict[str, Any] = {
         "action": "marketplace_post_memo",
         "cluster": cluster,

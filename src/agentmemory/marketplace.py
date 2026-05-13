@@ -83,7 +83,7 @@ LISTING_STAKE_USD = 1.0
 DEFAULT_TREASURY_ENV = "BRNDB_TREASURY_PUBKEY"
 
 # Schema version baked into listing manifests + on-chain memos.
-MARKETPLACE_SCHEMA = "brndb-marketplace/v1"
+MARKETPLACE_SCHEMA = "brainctl-marketplace/v1"
 MEMO_LIST_PREFIX = f"{MARKETPLACE_SCHEMA}:list"
 MEMO_BUY_PREFIX = f"{MARKETPLACE_SCHEMA}:buy"
 MEMO_RELEASE_PREFIX = f"{MARKETPLACE_SCHEMA}:release"

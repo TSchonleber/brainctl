@@ -48,8 +48,8 @@ cat > /tmp/smoke.json <<EOF
   "keystore_path": "~/.brainctl/wallet.json",
   "helius_api_key": null,
   "metadata_uri": "ar://test-uri",
-  "name": "BRNDB smoke",
-  "symbol": "BRNDB"
+  "name": "brainctl smoke",
+  "symbol": "BRN"
 }
 EOF
 node tools/zk_mint.js --request /tmp/smoke.json

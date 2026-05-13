@@ -331,7 +331,7 @@ def cmd_list(args: Any) -> None:
     # Upload to Arweave via the Node helper.
     upload = api.upload_manifest_to_arweave(
         manifest=manifest,
-        schema="brndb-marketplace/v1/listing",
+        schema="brainctl-marketplace/v1/listing",
         cluster=args.cluster,
     )
     if not upload.get("ok"):
