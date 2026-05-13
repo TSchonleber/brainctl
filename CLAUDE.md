@@ -111,7 +111,7 @@ exports: every bundle becomes a Light Protocol **compressed token**
 owned by the user's brainctl wallet, with the bundle's encrypted
 content on Arweave and metadata pointing back at it. The chain mediates
 ownership; it never sees plaintext. This is the v1 primitive that the
-$BRNDB memory-marketplace narrative is built on.
+agent memory-marketplace narrative is built on.
 
 Architecture: Python orchestrator
 (`src/agentmemory/minting.py`) + Node.js helper

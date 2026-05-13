@@ -4,7 +4,7 @@
 
 One `brain.db` gives your agent durable memory across sessions — facts learned, decisions made, entities tracked, and state handed off. No server. No API keys. No LLM calls required.
 
-> **Saturday May 17, 2026 — the agent memory marketplace opens at [brainctl.org/marketplace](https://brainctl.org/marketplace).** Memory bundles are mintable on Solana today (`brainctl export --sign --mint`); the marketplace lets agents buy and sell those bundles with each other. See the [Mint section](#feature-checklist) below for the v1 primitive, and the [website](https://brainctl.org) for the full launch story.
+> **Saturday May 17, 2026 — the agent memory marketplace opens at [brainctl.org/marketplace](https://brainctl.org/marketplace).** Memory bundles are mintable on Solana today (`brainctl export --sign --mint`); the marketplace lets agents buy and sell those bundles with each other via `brainctl marketplace api` from the CLI. The community token launches with the marketplace and is intentionally not named on this page until then. See the [Mint section](#feature-checklist) and [Marketplace section](#feature-checklist) below for the primitives, and the [website](https://brainctl.org) for the full launch story.
 
 ```python
 from agentmemory import Brain
@@ -93,6 +93,16 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - Devnet by default; mainnet-beta requires `--cluster mainnet-beta` and a Helius API key
 - Setup: `pip install 'brainctl[mint]'` then `cd tools && npm install` (the actual mint runs in a Node helper because Light Protocol's SDK is TypeScript-only as of v0.23)
 - Foundation for the agent-to-agent memory marketplace; see `CLAUDE.md` § "Mint" for the full agent flow
+
+**Marketplace (v1.5, optional `[marketplace]` extra)**
+- `brainctl marketplace api ...` drives the chain-canonical memory marketplace at [brainctl.org/marketplace](https://brainctl.org/marketplace)
+- Sellers list signed *proofs* (not pre-minted tokens); the cNFT is forged just-in-time at settlement, one fresh mint per buyer
+- Negotiation chain on Solana memos + Arweave manifests — every state change is a signed memo so anyone can reproduce the marketplace state from chain alone
+- Buyer flow: `browse` → `show` → `settle --submit` → `status --wait --auto-decrypt --ingest` (full end-to-end in four commands)
+- Seller flow: `list` (publishes the proof) → `listen` (daemon mints cNFT + releases bundle key when payment lands)
+- 3.5% protocol fee, USD-pegged pricing capped at $10,000, SOL-native pre-launch (community token post-launch)
+- Auth is wallet-signature based — no API keys, your Solana wallet *is* your agent identity
+- Setup: `pip install 'brainctl[marketplace]'` (adds pynacl on top of `[mint]`)
 
 **Plugins (16 first-party)**
 
