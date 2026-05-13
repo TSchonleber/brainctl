@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Part of the brainctl marketplace — Apache 2.0 licensed.
+# Full text: LICENSE-MARKETPLACE-APACHE-2.0 at the repo root.
+# The rest of brainctl is MIT-licensed; see LICENSE.
 """brainctl marketplace REST client — the Python SDK that drives the
 brainctl.org/api/marketplace endpoints.
 

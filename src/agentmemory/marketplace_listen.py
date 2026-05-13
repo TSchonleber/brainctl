@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Part of the brainctl marketplace — Apache 2.0 licensed.
+# Full text: LICENSE-MARKETPLACE-APACHE-2.0 at the repo root.
+# The rest of brainctl is MIT-licensed; see LICENSE.
 """Seller-side daemon: watch for buy memos on the seller's wallet,
 mint the just-in-time cNFT to the buyer, SealedBox-encrypt the bundle
 key, upload to Arweave, and post the release memo.

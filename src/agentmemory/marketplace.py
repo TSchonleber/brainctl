@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Part of the brainctl marketplace — Apache 2.0 licensed.
+# Full text: LICENSE-MARKETPLACE-APACHE-2.0 at the repo root.
+# The rest of brainctl is MIT-licensed; see LICENSE.
 """brainctl memory marketplace (v1.5) — pricing, BRNDB math, listings.
 
 This module backs the ``brainctl marketplace`` subcommands (list,

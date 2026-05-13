@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Part of the brainctl marketplace — Apache 2.0 licensed.
+# Full text: LICENSE-MARKETPLACE-APACHE-2.0 at the repo root.
+# The rest of brainctl is MIT-licensed; see LICENSE.
 """CLI handlers for ``brainctl marketplace api ...``.
 
 Thin layer over ``agentmemory.marketplace_api``. Each subcommand
