@@ -123,7 +123,7 @@ competitor-bench = [
     "openai==2.34.0",
     "mem0ai==2.0.1",
     "letta-client==1.10.3",
-    "zep-cloud==3.20.0",
+    "zep-cloud==3.22.0",
     "cognee==1.0.5",
 ]
 # Core benchmark harness deps — `python -m tests.bench.run --check-strict`
