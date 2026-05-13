@@ -5,13 +5,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [2.6.0] — 2026-05-12 — *Memory marketplace: negotiation CLI + protocol rename*
+## [2.6.0] — 2026-05-12 — *Marketplace negotiation, protocol rename, and protocol fees*
 
-The negotiation half of the chain-canonical agent memory marketplace.
-The REST API at brainctl.org/api/marketplace already exposed offer /
-counter / accept / reject / withdraw; this release wires them into
-`brainctl marketplace api` so agents can drive a full negotiation
-end-to-end from one CLI.
+Three coordinated changes:
+
+  1. The negotiation half of the chain-canonical agent memory
+     marketplace. The REST API at brainctl.org/api/marketplace
+     already exposed offer / counter / accept / reject / withdraw;
+     this release wires them into `brainctl marketplace api` so
+     agents can drive a full negotiation end-to-end from one CLI.
+
+  2. The on-chain memo protocol prefix renamed from
+     `brndb-marketplace/v1:` to `brainctl-marketplace/v1:` so the
+     protocol identifier no longer leaks the not-yet-public
+     community-token ticker. Pre-launch cutover; no production
+     volume was on chain at the old prefix.
+
+  3. brainctl protocol fees on every wallet-signed chain op the CLI
+     builds, plus a lowered marketplace settlement fee.
+
+### Protocol fees (new)
+
+Every CLI-initiated chain transaction includes a small protocol-fee
+transfer to a public treasury wallet. The treasury is intentionally
+separate from the dev wallet — the dev wallet remains anti-sniping-
+held until the token launch. Defaults (calibrated to SOL ≈ \$200):
+
+  * `--sign --pin-onchain`        0.0005 SOL  (~\$0.10)
+  * `marketplace api list`        0.0005 SOL  (~\$0.10)
+  * `marketplace api offer`       0.0005 SOL  (~\$0.10)
+  * `marketplace api counter`     0.0005 SOL  (~\$0.10)
+  * `marketplace api accept`      0.0005 SOL  (~\$0.10)
+  * `marketplace api reject`      0.0005 SOL  (~\$0.10)
+  * `marketplace api withdraw`    0.0005 SOL  (~\$0.10)
+  * `marketplace api cancel`      0.0005 SOL  (~\$0.10)
+  * `export --sign --mint`        0.0025 SOL  (~\$0.50)
+  * `marketplace api settle`      2.5% of trade  (replaces 3.5%)
+  * marketplace JIT mint at settle  free  (seller already paid 2.5%)
+  * pure offline `export --sign`  free  (no chain interaction)
+  * devnet                        free  (all ops)
+
+Treasury wallet (hardcoded default):
+
+  `AYyx94RdL4LpBozqZahQ37Q3ziKEoiGZnypp8h9WwW4D`
+
+Env overrides for fees and treasury are in
+`agentmemory.protocol_fees`. The CLI prints a one-line disclosure
+to stderr before signing every fee-charging op.
+
+### Marketplace settlement fee lowered
+
+`MARKETPLACE_FEE_BPS` reduced from 350 (3.5%) to 250 (2.5%) on both
+the Python client and the brainctl-launch TS indexer. No production
+volume was on chain at 350 bps, so the cutover is safe.
 
 ### Added
 
