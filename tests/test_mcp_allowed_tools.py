@@ -11,9 +11,14 @@ not a silent skip — so a typo can't cause an invisible misconfiguration.
 These tests exercise the pure resolver (`_resolve_allowed_tools`) and
 patch the module-level `_ALLOWED_TOOLS` for the filter tests. We
 deliberately avoid `importlib.reload(mcp_server)` because it disturbs
-function identity for other tests in the suite.
+function identity for other tests in the suite. For the async filter
+checks we drive `list_tools` / `call_tool` via `asyncio.run()` from
+sync test functions so the tests don't need pytest-asyncio (which is
+not in the CI install).
 """
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -79,22 +84,19 @@ class TestResolveAllowedTools:
 
 
 class TestListToolsFiltering:
-    @pytest.mark.asyncio
-    async def test_unset_returns_full_surface(self, monkeypatch):
+    def test_unset_returns_full_surface(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "_ALLOWED_TOOLS", None)
-        tools = await mcp_server.list_tools()
+        tools = asyncio.run(mcp_server.list_tools())
         assert len(tools) == len(mcp_server.TOOLS)
 
-    @pytest.mark.asyncio
-    async def test_allowlist_filters_surface(self, monkeypatch):
+    def test_allowlist_filters_surface(self, monkeypatch):
         allowlist = frozenset({"memory_add", "memory_search", "event_add", "stats"})
         monkeypatch.setattr(mcp_server, "_ALLOWED_TOOLS", allowlist)
-        tools = await mcp_server.list_tools()
+        tools = asyncio.run(mcp_server.list_tools())
         names = {t.name for t in tools}
         assert names == allowlist
 
-    @pytest.mark.asyncio
-    async def test_antigravity_subset_fits_under_100_cap(self, monkeypatch):
+    def test_antigravity_subset_fits_under_100_cap(self, monkeypatch):
         antigravity_set = frozenset({
             "memory_add", "memory_search", "search", "event_add",
             "event_search", "entity_create", "entity_get", "entity_observe",
@@ -104,25 +106,23 @@ class TestListToolsFiltering:
             "agent_wrap_up", "validate", "lint",
         })
         monkeypatch.setattr(mcp_server, "_ALLOWED_TOOLS", antigravity_set)
-        tools = await mcp_server.list_tools()
+        tools = asyncio.run(mcp_server.list_tools())
         assert len(tools) <= 100
         assert len(tools) == 22
 
 
 class TestCallToolGating:
-    @pytest.mark.asyncio
-    async def test_disallowed_call_raises(self, monkeypatch):
+    def test_disallowed_call_raises(self, monkeypatch):
         monkeypatch.setattr(
             mcp_server, "_ALLOWED_TOOLS", frozenset({"memory_add"})
         )
         with pytest.raises(ValueError) as exc_info:
-            await mcp_server.call_tool("stats", {})
+            asyncio.run(mcp_server.call_tool("stats", {}))
         msg = str(exc_info.value)
         assert "stats" in msg
         assert "BRAINCTL_ALLOWED_TOOLS" in msg
 
-    @pytest.mark.asyncio
-    async def test_allowed_call_passes_gate(self, monkeypatch):
+    def test_allowed_call_passes_gate(self, monkeypatch):
         """Calling an allowed tool must NOT be rejected by the gate.
         The handler may still error for its own reasons (DB missing,
         invalid args, etc.) but the error must not mention the allowlist
@@ -131,17 +131,16 @@ class TestCallToolGating:
             mcp_server, "_ALLOWED_TOOLS", frozenset({"stats"})
         )
         try:
-            await mcp_server.call_tool("stats", {})
+            asyncio.run(mcp_server.call_tool("stats", {}))
         except ValueError as e:
             assert "BRAINCTL_ALLOWED_TOOLS" not in str(e)
         except Exception:
             pass  # other errors (DB env, etc.) are out of scope
 
-    @pytest.mark.asyncio
-    async def test_unset_allowlist_does_not_gate(self, monkeypatch):
+    def test_unset_allowlist_does_not_gate(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "_ALLOWED_TOOLS", None)
         try:
-            await mcp_server.call_tool("stats", {})
+            asyncio.run(mcp_server.call_tool("stats", {}))
         except ValueError as e:
             assert "BRAINCTL_ALLOWED_TOOLS" not in str(e)
         except Exception:

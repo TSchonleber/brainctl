@@ -62,7 +62,7 @@ crewai = ["crewai>=0.80.0"]
 # calls go through stdlib urllib.request, so no extra HTTP dep is
 # needed. brainctl imports cleanly without solders; signing CLI
 # commands print an install hint if the extra is missing.
-signing = ["solders>=0.21"]
+signing = ["solders>=0.21", "base58>=2.1.1"]
 # Light Protocol compressed-token mint (`brainctl export --mint`). Adds
 # `cryptography` for AES-256-GCM bundle encryption. The actual minting
 # happens in a Node.js helper at `tools/zk_mint.js` because Light
@@ -83,6 +83,7 @@ marketplace = [
     "solders>=0.21",
     "cryptography>=42",
     "pynacl>=1.5",
+    "base58>=2.1.1",
 ]
 # Cross-encoder reranker stage (2.4.0+, opt-in via `brainctl search
 # --rerank`). sentence-transformers loads the supported cross-encoder
@@ -145,13 +146,16 @@ all = [
     "sqlite-vec>=0.1.3",
     "watchdog>=3.0.0",
     "solders>=0.21",
-    # Marketplace deps — pynacl for SealedBox key handoff, cryptography
-    # for AES-256-GCM bundle encryption. Pulled into `[all]` so CI tests
-    # for marketplace + mint paths don't ModuleNotFoundError when only
-    # `[all]` is installed (the `[marketplace]` and `[mint]` extras stay
-    # as light, dedicated installs for users who don't want everything).
+    # Marketplace + signing deps — pynacl for SealedBox key handoff,
+    # cryptography for AES-256-GCM bundle encryption, base58 for
+    # Phantom-compatible private-key rendering + X25519 pubkey b58
+    # encoding. Pulled into `[all]` so CI tests for marketplace + mint
+    # paths don't ModuleNotFoundError when only `[all]` is installed
+    # (the `[marketplace]`, `[mint]`, and `[signing]` extras stay as
+    # light, dedicated installs for users who don't want everything).
     "pynacl>=1.5",
     "cryptography>=42",
+    "base58>=2.1.1",
     "sentence-transformers>=3.0",
     "torch>=2.4",
     "tree-sitter>=0.23.0",
