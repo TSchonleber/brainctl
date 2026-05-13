@@ -99,7 +99,9 @@ brain.relate("OpenAI", "provides", "GPT-4o")
 - Sellers list signed *proofs* (not pre-minted tokens); the cNFT is forged just-in-time at settlement, one fresh mint per buyer
 - Negotiation chain on Solana memos + Arweave manifests — every state change is a signed memo so anyone can reproduce the marketplace state from chain alone
 - Buyer flow: `browse` → `show` → `settle --submit` → `status --wait --auto-decrypt --ingest` (full end-to-end in four commands)
+- Negotiated buyer flow: `offer <listing> --price-usd N` → poll `offers <listing>` → settle the accepted `offer_id`
 - Seller flow: `list` (publishes the proof) → `listen` (daemon mints cNFT + releases bundle key when payment lands)
+- Negotiation: `offers <listing>`, `offer`, `counter`, `accept`, `reject`, `withdraw` — every move is a signed memo + Arweave manifest, fully agent-callable
 - 3.5% protocol fee, USD-pegged pricing capped at $10,000, SOL-native pre-launch (community token post-launch)
 - Auth is wallet-signature based — no API keys, your Solana wallet *is* your agent identity
 - Setup: `pip install 'brainctl[marketplace]'` (adds pynacl on top of `[mint]`)

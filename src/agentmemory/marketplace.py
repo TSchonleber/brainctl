@@ -85,9 +85,16 @@ DEFAULT_TREASURY_ENV = "BRNDB_TREASURY_PUBKEY"
 # Schema version baked into listing manifests + on-chain memos.
 MARKETPLACE_SCHEMA = "brainctl-marketplace/v1"
 MEMO_LIST_PREFIX = f"{MARKETPLACE_SCHEMA}:list"
+MEMO_OFFER_PREFIX = f"{MARKETPLACE_SCHEMA}:offer"
+MEMO_COUNTER_PREFIX = f"{MARKETPLACE_SCHEMA}:counter"
+MEMO_ACCEPT_PREFIX = f"{MARKETPLACE_SCHEMA}:accept"
+MEMO_REJECT_PREFIX = f"{MARKETPLACE_SCHEMA}:reject"
+MEMO_WITHDRAW_PREFIX = f"{MARKETPLACE_SCHEMA}:withdraw"
 MEMO_BUY_PREFIX = f"{MARKETPLACE_SCHEMA}:buy"
 MEMO_RELEASE_PREFIX = f"{MARKETPLACE_SCHEMA}:release"
 MEMO_CANCEL_PREFIX = f"{MARKETPLACE_SCHEMA}:cancel"
+
+MAX_OFFER_TTL_HOURS = 24
 
 # Jupiter v6 endpoints. Free, no API key. Free-tier is per-IP-throttled
 # but generous enough for any one-user CLI flow.
@@ -510,6 +517,143 @@ def format_cancel_memo(listing_id: str) -> str:
     return f"{MEMO_CANCEL_PREFIX}:{listing_id}"
 
 
+def format_offer_memo(
+    listing_id: str,
+    offer_arweave_id: str,
+    buyer_pubkey_b58: str,
+) -> str:
+    return (
+        f"{MEMO_OFFER_PREFIX}:{listing_id}:"
+        f"{offer_arweave_id}:{buyer_pubkey_b58}"
+    )
+
+
+def format_counter_memo(
+    offer_id: str,
+    counter_arweave_id: str,
+    counterer_pubkey_b58: str,
+) -> str:
+    return (
+        f"{MEMO_COUNTER_PREFIX}:{offer_id}:"
+        f"{counter_arweave_id}:{counterer_pubkey_b58}"
+    )
+
+
+def format_accept_memo(offer_id: str) -> str:
+    return f"{MEMO_ACCEPT_PREFIX}:{offer_id}"
+
+
+def format_reject_memo(offer_id: str) -> str:
+    return f"{MEMO_REJECT_PREFIX}:{offer_id}"
+
+
+def format_withdraw_memo(offer_id: str) -> str:
+    return f"{MEMO_WITHDRAW_PREFIX}:{offer_id}"
+
+
+def _new_offer_id() -> str:
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return f"offer-{today}-{uuid.uuid4().hex[:12]}"
+
+
+def build_offer_manifest(
+    *,
+    listing_id: str,
+    buyer_pubkey_b58: str,
+    buyer_x25519_pubkey_b58: str,
+    offered_price_usd: float,
+    visibility: str = "private",
+    message: Optional[str] = None,
+    ttl_hours: float = MAX_OFFER_TTL_HOURS,
+    offer_id: Optional[str] = None,
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an unsigned offer manifest.
+
+    The caller signs the canonical-JSON hash with the buyer's wallet
+    afterwards; ``signature_b58`` is the only field the server uses to
+    validate authorship.
+    """
+    if offered_price_usd < 0 or offered_price_usd > MAX_LISTING_PRICE_USD:
+        raise ValueError(
+            f"offered_price_usd must be in [0, {MAX_LISTING_PRICE_USD}], "
+            f"got {offered_price_usd}"
+        )
+    if ttl_hours <= 0 or ttl_hours > MAX_OFFER_TTL_HOURS + 0.01:
+        raise ValueError(
+            f"ttl_hours must be in (0, {MAX_OFFER_TTL_HOURS}], got {ttl_hours}"
+        )
+    if visibility not in ("auction", "private"):
+        raise ValueError(
+            f"visibility must be 'auction' or 'private', got {visibility!r}"
+        )
+    if message is not None and len(message) > 280:
+        raise ValueError("message must be <= 280 chars")
+
+    now = datetime.now(timezone.utc)
+    expires_iso = (
+        datetime.fromtimestamp(now.timestamp() + ttl_hours * 3600, tz=timezone.utc)
+        .isoformat()
+    )
+    return {
+        "schema": f"{MARKETPLACE_SCHEMA}/offer",
+        "offer_id": offer_id or _new_offer_id(),
+        "listing_id": listing_id,
+        "buyer_pubkey": buyer_pubkey_b58,
+        "buyer_x25519_pubkey": buyer_x25519_pubkey_b58,
+        "offered_price_usd": float(offered_price_usd),
+        "visibility": visibility,
+        "message": message,
+        "expires_at": expires_iso,
+        "created_at": created_at or now.isoformat(),
+    }
+
+
+def build_counter_manifest(
+    *,
+    parent_offer_id: str,
+    from_pubkey_b58: str,
+    counter_price_usd: float,
+    message: Optional[str] = None,
+    ttl_hours: float = MAX_OFFER_TTL_HOURS,
+    created_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an unsigned counter-offer manifest."""
+    if counter_price_usd < 0 or counter_price_usd > MAX_LISTING_PRICE_USD:
+        raise ValueError(
+            f"counter_price_usd must be in [0, {MAX_LISTING_PRICE_USD}], "
+            f"got {counter_price_usd}"
+        )
+    if ttl_hours <= 0 or ttl_hours > MAX_OFFER_TTL_HOURS + 0.01:
+        raise ValueError(
+            f"ttl_hours must be in (0, {MAX_OFFER_TTL_HOURS}], got {ttl_hours}"
+        )
+    if message is not None and len(message) > 280:
+        raise ValueError("message must be <= 280 chars")
+
+    now = datetime.now(timezone.utc)
+    expires_iso = (
+        datetime.fromtimestamp(now.timestamp() + ttl_hours * 3600, tz=timezone.utc)
+        .isoformat()
+    )
+    return {
+        "schema": f"{MARKETPLACE_SCHEMA}/counter",
+        "parent_offer_id": parent_offer_id,
+        "from_pubkey": from_pubkey_b58,
+        "counter_price_usd": float(counter_price_usd),
+        "message": message,
+        "expires_at": expires_iso,
+        "created_at": created_at or now.isoformat(),
+    }
+
+
+def manifest_hash(manifest: Dict[str, Any]) -> bytes:
+    """SHA-256 of any manifest, ignoring ``signature_b58``."""
+    import hashlib
+    body = {k: v for k, v in manifest.items() if k != "signature_b58"}
+    return hashlib.sha256(canonical_json(body)).digest()
+
+
 def parse_memo(body: str) -> Optional[Dict[str, str]]:
     """Parse a brainctl marketplace memo body. Returns ``None`` for non-matches.
 
@@ -537,6 +681,22 @@ def parse_memo(body: str) -> Optional[Dict[str, str]]:
                 "minted_cnft_address": parts[4]}
     if action == "cancel":
         return {"action": "cancel", "listing_id": parts[2]}
+    if action == "offer" and len(parts) >= 5:
+        return {"action": "offer",
+                "listing_id": parts[2],
+                "offer_arweave_id": parts[3],
+                "buyer_pubkey": parts[4]}
+    if action == "counter" and len(parts) >= 5:
+        return {"action": "counter",
+                "offer_id": parts[2],
+                "counter_arweave_id": parts[3],
+                "counterer_pubkey": parts[4]}
+    if action == "accept":
+        return {"action": "accept", "offer_id": parts[2]}
+    if action == "reject":
+        return {"action": "reject", "offer_id": parts[2]}
+    if action == "withdraw":
+        return {"action": "withdraw", "offer_id": parts[2]}
     return None
 
 
@@ -557,9 +717,15 @@ __all__ = [
     "LISTING_STAKE_USD",
     "MARKETPLACE_SCHEMA",
     "MEMO_LIST_PREFIX",
+    "MEMO_OFFER_PREFIX",
+    "MEMO_COUNTER_PREFIX",
+    "MEMO_ACCEPT_PREFIX",
+    "MEMO_REJECT_PREFIX",
+    "MEMO_WITHDRAW_PREFIX",
     "MEMO_BUY_PREFIX",
     "MEMO_RELEASE_PREFIX",
     "MEMO_CANCEL_PREFIX",
+    "MAX_OFFER_TTL_HOURS",
     # Jupiter
     "JUPITER_PRICE_API",
     "JUPITER_QUOTE_API",
@@ -573,9 +739,12 @@ __all__ = [
     "atoms_to_usd",
     # Manifests
     "build_listing_manifest",
+    "build_offer_manifest",
+    "build_counter_manifest",
     "build_preview_from_bundle",
     "canonical_json",
     "listing_hash",
+    "manifest_hash",
     # X25519 / SealedBox
     "ed25519_to_x25519_seed",
     "ed25519_pub_to_x25519_pub",
@@ -583,6 +752,11 @@ __all__ = [
     "sealedbox_decrypt",
     # Memos
     "format_list_memo",
+    "format_offer_memo",
+    "format_counter_memo",
+    "format_accept_memo",
+    "format_reject_memo",
+    "format_withdraw_memo",
     "format_buy_memo",
     "format_release_memo",
     "format_cancel_memo",

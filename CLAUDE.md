@@ -189,6 +189,81 @@ top of the standard signed-export fields:
 A failed mint after a successful Arweave upload still surfaces the
 `arweave_*` URIs so the user can retry the mint without re-uploading.
 
+## Marketplace — agent memory trading (v1.5, branch `feat/cnft-mint`, optional `[marketplace]` extra)
+
+`brainctl marketplace api ...` drives the chain-canonical agent memory
+marketplace at brainctl.org/marketplace. The marketplace API is
+backend-less — chain-canonical state lives entirely in Solana memos +
+Arweave manifests. Anyone can run their own indexer.
+
+### Quick reference (agent-callable)
+
+```bash
+# Authenticate (challenge-response signed by your wallet)
+brainctl marketplace api login
+
+# Discover + inspect
+brainctl marketplace api browse --max-price-usd 50 --category facts
+brainctl marketplace api show <listing_id>
+brainctl marketplace api offers <listing_id>             # visible offers
+
+# Negotiation (every move is a signed memo + Arweave manifest)
+brainctl marketplace api offer   <listing_id> --price-usd 12 --message "agent-bot here"
+brainctl marketplace api counter <offer_id>   --price-usd 14
+brainctl marketplace api accept  <offer_id>              # seller side
+brainctl marketplace api reject  <offer_id>              # seller side
+brainctl marketplace api withdraw <offer_id>             # offerer side
+
+# Settle (atomic on-chain payment + memo)
+brainctl marketplace api settle <listing_id> \
+    --offer-id <offer_id> --buyer-x25519-pubkey <X> --submit
+brainctl marketplace api status <listing_id> --wait \
+    --auto-decrypt --ingest
+
+# Seller side
+brainctl marketplace api list --bundle bundle.json --price-usd 25 \
+    --encrypted-bundle-uri ar://... --metadata-uri ar://...
+brainctl marketplace api listen     # daemon: JIT-mint + release bundle key
+```
+
+### Architectural invariants
+
+- **Wallet = identity.** Every API call carries a session token bound
+  to the wallet that signed the auth challenge. The on-chain memo of
+  any negotiation step is verified to be signed by the same pubkey the
+  manifest claims as `buyer_pubkey` / `from_pubkey` / `seller_pubkey`.
+- **Trade proofs, mint on settlement.** Sellers list signed bundles
+  (the `bundle_hash` lives on chain via the list memo). The cNFT is
+  forged just-in-time by the seller's `listen` daemon on payment
+  detection — one fresh mint per buyer.
+- **TTL on offers is 24h max.** Auction-mode listings can run up to
+  30 days; offers always expire within a day.
+- **3.5% protocol fee.** Atomic with the seller transfer at settle
+  time. No off-chain bookkeeping.
+- **$10,000 USD price cap.** Listings + offers + counters all enforce.
+- **Pre-launch: SOL settlement.** Post-launch the community token
+  takes over via a single env-var flip (`BRNDB_MINT`).
+
+### Memo prefix
+
+All marketplace memos use the schema prefix
+`brainctl-marketplace/v1:<action>:<args>`. The Python formatters live
+in `agentmemory.marketplace` (`format_list_memo`,
+`format_offer_memo`, `format_counter_memo`, etc.) and the TypeScript
+side mirrors them byte-for-byte in
+`brainctl-launch/lib/marketplace/memos.ts`.
+
+### Agent flow for first-time users
+
+1. `pip install 'brainctl[marketplace]'`
+2. `brainctl wallet new --yes` if no wallet yet.
+3. Fund the wallet with a small amount of SOL.
+4. `brainctl marketplace api login` — opens a wallet-signature session.
+5. Pick a flow: `list` to sell, `browse` → `offer` to buy.
+
+The auth session is persisted at `~/.brainctl/marketplace-session.json`
+(chmod 0600). `logout` clears it.
+
 ## Code-aware ingestion (2.4.5+, optional `[code]` extra)
 
 `brainctl ingest code <path>` walks a source tree and writes file /

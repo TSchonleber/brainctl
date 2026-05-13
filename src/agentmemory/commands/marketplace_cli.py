@@ -378,6 +378,265 @@ def cmd_list(args: Any) -> None:
     }, as_json=as_json)
 
 
+# ---------------------------------------------------------------------------
+# Negotiation: offer / counter / accept / reject / withdraw / offers
+# ---------------------------------------------------------------------------
+
+def _derive_x25519_pub_b58(keystore_path: str) -> str:
+    """Read the wallet keystore + return its X25519 pubkey in base58."""
+    from agentmemory import marketplace as mp
+    from agentmemory import signing
+    import base58
+    kp = signing.load_keystore(keystore_path)
+    secret = bytes(kp)[:32]
+    x_seed = mp.ed25519_to_x25519_seed(secret)
+    from nacl.public import PrivateKey
+    x_priv = PrivateKey(x_seed)
+    return base58.b58encode(bytes(x_priv.public_key)).decode("ascii")
+
+
+def _post_memo_or_die(memo: str, cluster: str, as_json: bool) -> str:
+    post = api.post_marketplace_memo(memo=memo, cluster=cluster)
+    if not post.get("ok"):
+        _emit({"ok": False, **post}, as_json=as_json, exit_code=1)
+    return post["tx_signature"]
+
+
+def _sign_manifest_and_upload(
+    manifest: Dict[str, Any],
+    schema: str,
+    keystore_path: str,
+    cluster: str,
+    as_json: bool,
+) -> Dict[str, Any]:
+    """Add signature_b58 to manifest, upload to Arweave, return upload result."""
+    from agentmemory import marketplace as mp
+    from agentmemory import signing
+    keypair = signing.load_keystore(keystore_path)
+    h = mp.manifest_hash(manifest)
+    sig = keypair.sign_message(h)
+    manifest["signature_b58"] = str(sig)
+    upload = api.upload_manifest_to_arweave(
+        manifest=manifest, schema=schema, cluster=cluster
+    )
+    if not upload.get("ok"):
+        _emit({"ok": False, **upload}, as_json=as_json, exit_code=1)
+    return upload
+
+
+def cmd_offers(args: Any) -> None:
+    """List open offers on a listing. Auction offers are public;
+    private-mode offers are returned only if you're the seller or the
+    offerer.
+    """
+    as_json = bool(getattr(args, "json", False))
+    api_base = api.api_base_from_env()
+    pubkey = _resolve_wallet_pubkey()
+    token: str | None
+    try:
+        token = api.ensure_session(api_base, pubkey)
+    except Exception:
+        token = None
+    try:
+        result = api.list_offers(
+            api_base, args.listing_id, cluster=args.cluster, session_token=token
+        )
+    except api.MarketplaceApiError as e:
+        _emit({"ok": False, "error": str(e), **e.payload}, as_json=as_json, exit_code=1)
+        return
+    if as_json:
+        _emit(result, as_json=True)
+    offers = result.get("offers", [])
+    if not offers:
+        print("no visible offers on this listing.")
+        sys.exit(0)
+    for o in offers:
+        m = (o or {}).get("manifest") or {}
+        print(
+            f"  ${m.get('offered_price_usd', '?'):>7.2f}  "
+            f"{m.get('offer_id','?'):>26}  "
+            f"by {(m.get('buyer_pubkey') or '?')[:8]}…  "
+            f"{(m.get('visibility','?')+'')[:7]:7}  "
+            f"expires {m.get('expires_at','?')[:19]}"
+        )
+    sys.exit(0)
+
+
+def cmd_offer(args: Any) -> None:
+    """Buyer: submit an offer on a listing."""
+    as_json = bool(getattr(args, "json", False))
+    api_base = api.api_base_from_env()
+    pubkey = _resolve_wallet_pubkey()
+    try:
+        token = api.ensure_session(api_base, pubkey)
+    except Exception as e:
+        _emit({"ok": False, "error": f"auth_failed: {e}"}, as_json=as_json, exit_code=1)
+        return
+
+    from agentmemory import marketplace as mp
+    from agentmemory.commands import wallet as _wallet
+    keystore = str(_wallet.resolve_wallet_path(None))
+    x25519_b58 = _derive_x25519_pub_b58(keystore)
+
+    try:
+        manifest = mp.build_offer_manifest(
+            listing_id=args.listing_id,
+            buyer_pubkey_b58=pubkey,
+            buyer_x25519_pubkey_b58=x25519_b58,
+            offered_price_usd=float(args.price_usd),
+            visibility=args.visibility,
+            message=args.message,
+            ttl_hours=float(args.expires_hours),
+        )
+    except ValueError as e:
+        _emit({"ok": False, "error": "bad_offer", "detail": str(e)},
+              as_json=as_json, exit_code=1)
+        return
+
+    upload = _sign_manifest_and_upload(
+        manifest, f"{mp.MARKETPLACE_SCHEMA}/offer", keystore, args.cluster, as_json
+    )
+    offer_arweave_id = upload["arweave_id"]
+
+    offer_memo = mp.format_offer_memo(args.listing_id, offer_arweave_id, pubkey)
+    offer_tx = _post_memo_or_die(offer_memo, args.cluster, as_json)
+
+    try:
+        result = api.create_offer(
+            api_base,
+            args.listing_id,
+            manifest=manifest,
+            offer_arweave_id=offer_arweave_id,
+            offer_tx_signature=offer_tx,
+            cluster=args.cluster,
+            session_token=token,
+        )
+    except api.MarketplaceApiError as e:
+        _emit({"ok": False, "error": str(e), **e.payload,
+               "offer_arweave_id": offer_arweave_id, "offer_tx": offer_tx,
+               "hint": "manifest + memo are on chain; API rejected registration."},
+              as_json=as_json, exit_code=1)
+        return
+
+    _emit({
+        **result,
+        "offer_arweave_id": offer_arweave_id,
+        "offer_tx_signature": offer_tx,
+        "offer_id": manifest["offer_id"],
+        "offered_price_usd": float(args.price_usd),
+    }, as_json=as_json)
+
+
+def cmd_counter(args: Any) -> None:
+    """Counter an existing offer (seller or another counter-er)."""
+    as_json = bool(getattr(args, "json", False))
+    api_base = api.api_base_from_env()
+    pubkey = _resolve_wallet_pubkey()
+    try:
+        token = api.ensure_session(api_base, pubkey)
+    except Exception as e:
+        _emit({"ok": False, "error": f"auth_failed: {e}"}, as_json=as_json, exit_code=1)
+        return
+
+    from agentmemory import marketplace as mp
+    from agentmemory.commands import wallet as _wallet
+    keystore = str(_wallet.resolve_wallet_path(None))
+
+    try:
+        manifest = mp.build_counter_manifest(
+            parent_offer_id=args.offer_id,
+            from_pubkey_b58=pubkey,
+            counter_price_usd=float(args.price_usd),
+            message=args.message,
+            ttl_hours=float(args.expires_hours),
+        )
+    except ValueError as e:
+        _emit({"ok": False, "error": "bad_counter", "detail": str(e)},
+              as_json=as_json, exit_code=1)
+        return
+
+    upload = _sign_manifest_and_upload(
+        manifest, f"{mp.MARKETPLACE_SCHEMA}/counter", keystore, args.cluster, as_json
+    )
+    counter_arweave_id = upload["arweave_id"]
+
+    counter_memo = mp.format_counter_memo(args.offer_id, counter_arweave_id, pubkey)
+    counter_tx = _post_memo_or_die(counter_memo, args.cluster, as_json)
+
+    try:
+        result = api.counter_offer(
+            api_base,
+            args.offer_id,
+            manifest=manifest,
+            counter_arweave_id=counter_arweave_id,
+            counter_tx_signature=counter_tx,
+            cluster=args.cluster,
+            session_token=token,
+        )
+    except api.MarketplaceApiError as e:
+        _emit({"ok": False, "error": str(e), **e.payload,
+               "counter_arweave_id": counter_arweave_id, "counter_tx": counter_tx},
+              as_json=as_json, exit_code=1)
+        return
+
+    _emit({
+        **result,
+        "counter_arweave_id": counter_arweave_id,
+        "counter_tx_signature": counter_tx,
+        "counter_price_usd": float(args.price_usd),
+    }, as_json=as_json)
+
+
+def _cmd_offer_action(args: Any, action: str) -> None:
+    """Shared body for accept / reject / withdraw — no manifest, just memo+API."""
+    as_json = bool(getattr(args, "json", False))
+    api_base = api.api_base_from_env()
+    pubkey = _resolve_wallet_pubkey()
+    try:
+        token = api.ensure_session(api_base, pubkey)
+    except Exception as e:
+        _emit({"ok": False, "error": f"auth_failed: {e}"}, as_json=as_json, exit_code=1)
+        return
+
+    from agentmemory import marketplace as mp
+    formatter = {
+        "accept": mp.format_accept_memo,
+        "reject": mp.format_reject_memo,
+        "withdraw": mp.format_withdraw_memo,
+    }[action]
+    memo = formatter(args.offer_id)
+    tx = _post_memo_or_die(memo, args.cluster, as_json)
+
+    api_caller = {
+        "accept": api.accept_offer,
+        "reject": api.reject_offer,
+        "withdraw": api.withdraw_offer,
+    }[action]
+    try:
+        result = api_caller(
+            api_base, args.offer_id,
+            tx_signature=tx, cluster=args.cluster, session_token=token,
+        )
+    except api.MarketplaceApiError as e:
+        _emit({"ok": False, "error": str(e), **e.payload, "tx_signature": tx},
+              as_json=as_json, exit_code=1)
+        return
+
+    _emit({**result, "tx_signature": tx, "action": action}, as_json=as_json)
+
+
+def cmd_accept(args: Any) -> None:
+    _cmd_offer_action(args, "accept")
+
+
+def cmd_reject(args: Any) -> None:
+    _cmd_offer_action(args, "reject")
+
+
+def cmd_withdraw(args: Any) -> None:
+    _cmd_offer_action(args, "withdraw")
+
+
 def cmd_listen(args: Any) -> None:
     """Seller daemon: watch for buy memos + release bundle keys."""
     from agentmemory.marketplace_listen import listen_loop
@@ -597,6 +856,93 @@ def register_parser(sub: Any) -> None:
                                "Without --submit, the base64 tx is returned for manual signing.")
     p_settle.add_argument("--json", action="store_true")
     p_settle.set_defaults(func=cmd_settle)
+
+    # ----- offers (list offers on a listing) -----
+    p_offers = api_op.add_parser(
+        "offers",
+        help=(
+            "List open offers on a listing. Auction-mode offers are public; "
+            "private-mode offers are visible only to the seller + the offerer."
+        ),
+    )
+    p_offers.add_argument("listing_id")
+    p_offers.add_argument("--cluster", default="mainnet-beta",
+                          choices=["mainnet-beta", "devnet"])
+    p_offers.add_argument("--json", action="store_true")
+    p_offers.set_defaults(func=cmd_offers)
+
+    # ----- offer (buyer creates offer) -----
+    p_offer = api_op.add_parser(
+        "offer",
+        help=(
+            "Submit a buy-side offer on a listing. Builds + signs the offer "
+            "manifest, uploads to Arweave, posts the offer memo, registers "
+            "with the marketplace API. TTL capped at 24h."
+        ),
+    )
+    p_offer.add_argument("listing_id")
+    p_offer.add_argument("--price-usd", dest="price_usd", required=True, type=float,
+                         help="Offered price in USD")
+    p_offer.add_argument("--expires-hours", dest="expires_hours", type=float, default=24,
+                         help="Offer TTL in hours (default 24, max 24)")
+    p_offer.add_argument("--visibility", default="private",
+                         choices=["auction", "private"],
+                         help="auction = offer is public on the listing; private = only seller sees")
+    p_offer.add_argument("--message", default=None,
+                         help="Optional message to seller (max 280 chars)")
+    p_offer.add_argument("--cluster", default="mainnet-beta",
+                         choices=["mainnet-beta", "devnet"])
+    p_offer.add_argument("--json", action="store_true")
+    p_offer.set_defaults(func=cmd_offer)
+
+    # ----- counter (counter an existing offer) -----
+    p_counter = api_op.add_parser(
+        "counter",
+        help=(
+            "Counter an existing offer with a new price. Either side of a "
+            "negotiation can counter — the chain audit trail captures the "
+            "full thread."
+        ),
+    )
+    p_counter.add_argument("offer_id")
+    p_counter.add_argument("--price-usd", dest="price_usd", required=True, type=float,
+                           help="Counter price in USD")
+    p_counter.add_argument("--expires-hours", dest="expires_hours", type=float, default=24,
+                           help="Counter TTL in hours (default 24, max 24)")
+    p_counter.add_argument("--message", default=None,
+                           help="Optional message (max 280 chars)")
+    p_counter.add_argument("--cluster", default="mainnet-beta",
+                           choices=["mainnet-beta", "devnet"])
+    p_counter.add_argument("--json", action="store_true")
+    p_counter.set_defaults(func=cmd_counter)
+
+    # ----- accept / reject / withdraw -----
+    p_accept = api_op.add_parser(
+        "accept", help="Seller-side: accept an offer (unlocks the settlement path)"
+    )
+    p_accept.add_argument("offer_id")
+    p_accept.add_argument("--cluster", default="mainnet-beta",
+                          choices=["mainnet-beta", "devnet"])
+    p_accept.add_argument("--json", action="store_true")
+    p_accept.set_defaults(func=cmd_accept)
+
+    p_reject = api_op.add_parser(
+        "reject", help="Seller-side: reject an offer"
+    )
+    p_reject.add_argument("offer_id")
+    p_reject.add_argument("--cluster", default="mainnet-beta",
+                          choices=["mainnet-beta", "devnet"])
+    p_reject.add_argument("--json", action="store_true")
+    p_reject.set_defaults(func=cmd_reject)
+
+    p_withdraw = api_op.add_parser(
+        "withdraw", help="Buyer-side: retract an offer you posted"
+    )
+    p_withdraw.add_argument("offer_id")
+    p_withdraw.add_argument("--cluster", default="mainnet-beta",
+                            choices=["mainnet-beta", "devnet"])
+    p_withdraw.add_argument("--json", action="store_true")
+    p_withdraw.set_defaults(func=cmd_withdraw)
 
 
 __all__ = ["register_parser"]

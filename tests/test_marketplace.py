@@ -389,6 +389,114 @@ class TestMemos:
         assert mp.parse_memo(f"{mp.MARKETPLACE_SCHEMA}:list") is None
         assert mp.parse_memo(f"{mp.MARKETPLACE_SCHEMA}:") is None
 
+    def test_offer_roundtrip(self):
+        memo = mp.format_offer_memo("20260512-abc", "arweave-offer-1", "BuyerPubKey")
+        parsed = mp.parse_memo(memo)
+        assert parsed == {
+            "action": "offer",
+            "listing_id": "20260512-abc",
+            "offer_arweave_id": "arweave-offer-1",
+            "buyer_pubkey": "BuyerPubKey",
+        }
+
+    def test_counter_roundtrip(self):
+        memo = mp.format_counter_memo("offer-20260512-xyz", "arweave-counter-1", "SellerPubKey")
+        parsed = mp.parse_memo(memo)
+        assert parsed == {
+            "action": "counter",
+            "offer_id": "offer-20260512-xyz",
+            "counter_arweave_id": "arweave-counter-1",
+            "counterer_pubkey": "SellerPubKey",
+        }
+
+    def test_accept_roundtrip(self):
+        memo = mp.format_accept_memo("offer-20260512-xyz")
+        parsed = mp.parse_memo(memo)
+        assert parsed == {"action": "accept", "offer_id": "offer-20260512-xyz"}
+
+    def test_reject_roundtrip(self):
+        memo = mp.format_reject_memo("offer-20260512-xyz")
+        parsed = mp.parse_memo(memo)
+        assert parsed == {"action": "reject", "offer_id": "offer-20260512-xyz"}
+
+    def test_withdraw_roundtrip(self):
+        memo = mp.format_withdraw_memo("offer-20260512-xyz")
+        parsed = mp.parse_memo(memo)
+        assert parsed == {"action": "withdraw", "offer_id": "offer-20260512-xyz"}
+
+
+class TestOfferManifest:
+    def test_build_offer_defaults(self):
+        m = mp.build_offer_manifest(
+            listing_id="20260512-abc",
+            buyer_pubkey_b58="BuyerPub",
+            buyer_x25519_pubkey_b58="BuyerX",
+            offered_price_usd=42.50,
+        )
+        assert m["schema"] == f"{mp.MARKETPLACE_SCHEMA}/offer"
+        assert m["listing_id"] == "20260512-abc"
+        assert m["buyer_pubkey"] == "BuyerPub"
+        assert m["buyer_x25519_pubkey"] == "BuyerX"
+        assert m["offered_price_usd"] == 42.5
+        assert m["visibility"] == "private"
+        assert m["offer_id"].startswith("offer-")
+        # Default TTL is 24h, expires_at must be after created_at.
+        from datetime import datetime
+        c = datetime.fromisoformat(m["created_at"])
+        e = datetime.fromisoformat(m["expires_at"])
+        assert (e - c).total_seconds() == pytest.approx(24 * 3600, abs=2)
+
+    def test_build_offer_rejects_price_over_cap(self):
+        with pytest.raises(ValueError, match="offered_price_usd"):
+            mp.build_offer_manifest(
+                listing_id="20260512-abc",
+                buyer_pubkey_b58="BuyerPub",
+                buyer_x25519_pubkey_b58="BuyerX",
+                offered_price_usd=mp.MAX_LISTING_PRICE_USD + 1,
+            )
+
+    def test_build_offer_rejects_ttl_over_24h(self):
+        with pytest.raises(ValueError, match="ttl_hours"):
+            mp.build_offer_manifest(
+                listing_id="20260512-abc",
+                buyer_pubkey_b58="BuyerPub",
+                buyer_x25519_pubkey_b58="BuyerX",
+                offered_price_usd=10,
+                ttl_hours=48,
+            )
+
+    def test_build_offer_rejects_long_message(self):
+        with pytest.raises(ValueError, match="message"):
+            mp.build_offer_manifest(
+                listing_id="20260512-abc",
+                buyer_pubkey_b58="BuyerPub",
+                buyer_x25519_pubkey_b58="BuyerX",
+                offered_price_usd=10,
+                message="x" * 281,
+            )
+
+    def test_build_counter_defaults(self):
+        m = mp.build_counter_manifest(
+            parent_offer_id="offer-20260512-xyz",
+            from_pubkey_b58="SellerPub",
+            counter_price_usd=20,
+        )
+        assert m["schema"] == f"{mp.MARKETPLACE_SCHEMA}/counter"
+        assert m["parent_offer_id"] == "offer-20260512-xyz"
+        assert m["from_pubkey"] == "SellerPub"
+        assert m["counter_price_usd"] == 20.0
+
+    def test_manifest_hash_ignores_signature_field(self):
+        m1 = mp.build_offer_manifest(
+            listing_id="20260512-abc",
+            buyer_pubkey_b58="B",
+            buyer_x25519_pubkey_b58="X",
+            offered_price_usd=10,
+        )
+        m2 = dict(m1)
+        m2["signature_b58"] = "anything-here-doesnt-matter"
+        assert mp.manifest_hash(m1) == mp.manifest_hash(m2)
+
 
 # ---------------------------------------------------------------------------
 # Treasury / mint resolution
