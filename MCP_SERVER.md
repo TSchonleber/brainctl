@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (219)
+## Available Tools (230)
 
 | Tool | Description |
 |------|-------------|
@@ -154,7 +154,8 @@ server over stdio.
 | Metacognition | `memory_calibration`, `attention_snapshot`, `free_energy_check` | Self-monitoring |
 | Affect | `affect_classify`, `affect_log`, `affect_check`, `affect_monitor` | Emotional state tracking |
 | Thalamus (Phase 1+2, shadow gate) | `thalamus_status`, `thalamus_salience`, `thalamus_relay_create`, `thalamus_gate_set`, `thalamus_burst`, `thalamus_mode_set`, `thalamus_shadow_stats` | Typed routing layer + integrated salience scoring + shadow-mode gate consult on every W(m) write (see `docs/proposals/thalamus.md`) |
-| Basal Ganglia (Phase 1, inspection) | `bg_status`, `bg_action_register`, `bg_modulator_set` | Action-selection catalog + 3 neuromodulator dials (tonic DA / LC-NE / 5-HT); pairs with thalamus, completes the cortex → BG → thalamus loop (see `docs/proposals/basal_ganglia.md`) |
+| Basal Ganglia (Phase 1+2+3 + holds + cascade) | `bg_status`, `bg_action_register`, `bg_modulator_set`, `bg_td_emit`, `bg_shadow_stats`, `bg_sweep_traces`, `bg_weights_show`, `bg_hold_trigger`, `bg_hold_release`, `bg_holds_active` | Five parallel loops + opponent Go/NoGo learning from real outcomes (three-factor rule) + dispatch shadow + outcome→δ wired into `outcome_annotate` + hyperdirect holds + cascade to thalamus (see `docs/proposals/basal_ganglia.md`) |
+| Cerebellum (Phase 1, predict/observe) | `cerebellum_status`, `cerebellum_module_register`, `cerebellum_predict`, `cerebellum_observe` | Forward-model layer per cortical partner (motor/oculomotor/dlpfc/lofc/acc) × 3 prediction kinds. Marr-Albus sparse expansion + supervised LTD update. Boundary markers fire on |δ_forward|≥0.5; broadcasts onto BG TD-error bus (see `docs/proposals/cerebellum.md`) |
 
 ### Tier 3: Specialist (~150 tools)
 
