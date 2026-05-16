@@ -65,17 +65,65 @@ _DEFAULT_TRACE_DECAY = 0.95
 _TRACE_PRUNE_STRENGTH = 0.05
 _TRACE_TTL_SECONDS = 3600  # 1 hour
 
-# Hyperdirect-pathway hold thresholds. When recent |δ| exceeds this, the
-# system fires a global surprise-hold. Conflict threshold compares parallel
-# dispatches in different loops within a tight time window.
+# Hyperdirect-pathway hold thresholds.
 _HOLD_SURPRISE_DELTA = 0.8
 _HOLD_CONFLICT_WINDOW_SECONDS = 5
+
+# Perf cache: (db_path, action_key) → (timestamp, (action_id, loop) | None).
+# None means "definitely not registered as of timestamp." 60s TTL.
+_ACTION_CACHE: dict[tuple[str, str], tuple[float, tuple[int, str] | None]] = {}
+_ACTION_TTL_SECONDS = 60.0
+
+
+def _resolve_action_cached(action_key: str, db_path_str: str) -> tuple[int, str] | None:
+    """Cache-first lookup. Returns (action_id, loop) or None. Opens a DB
+    connection only on cache miss / TTL expiry.
+    """
+    import time as _time
+    lookup_key = action_key if action_key.startswith("tool:") else f"tool:{action_key}"
+    cache_key = (db_path_str, lookup_key)
+    now = _time.monotonic()
+    entry = _ACTION_CACHE.get(cache_key)
+    if entry is not None and (now - entry[0]) < _ACTION_TTL_SECONDS:
+        return entry[1]
+
+    conn = _connect(db_path_str)
+    if conn is None:
+        return None
+    try:
+        try:
+            row = conn.execute(
+                "SELECT id, loop FROM bg_actions WHERE action_key = ? LIMIT 1",
+                (lookup_key,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            _ACTION_CACHE[cache_key] = (now, None)
+            return None
+        value = (int(row[0]), str(row[1])) if row else None
+        _ACTION_CACHE[cache_key] = (now, value)
+        return value
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def clear_caches() -> None:
+    """Test helper — clear module-level perf caches."""
+    _ACTION_CACHE.clear()
 
 
 def _connect(db_path: Optional[str] = None) -> sqlite3.Connection | None:
     try:
         path = db_path or str(get_db_path())
-        return sqlite3.connect(path, timeout=2.0)
+        c = sqlite3.connect(path, timeout=2.0)
+        # Shadow audit writes — NORMAL sync. See cerebellum_shadow for rationale.
+        try:
+            c.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass
+        return c
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("bg_shadow: cannot open db: %s", exc)
         return None
@@ -111,42 +159,50 @@ def consult_for_dispatch(
     """Pre-dispatch shadow consult. Returns the decision dict if a bg_action
     was registered for this tool name; otherwise returns None (no-op, no DB
     write). Never raises.
+
+    Performance-optimized path: cached action lookup avoids a DB open on
+    unregistered tools; single transaction across shadow_decisions insert,
+    eligibility_trace insert, and (optional) hold check.
     """
     if not action_key or not isinstance(action_key, str):
         return None
-    # Guard: skip our own observability tools so we don't recurse / spam.
     if action_key.startswith("bg_") or action_key in {"stats", "health"}:
         return None
 
-    conn = _connect(db_path)
+    db_path_str = db_path or str(get_db_path())
+    cached = _resolve_action_cached(action_key, db_path_str)
+    if cached is None:
+        return None
+    action_id, loop = cached
+    action_lookup_key = action_key if action_key.startswith("tool:") else f"tool:{action_key}"
+
+    conn = _connect(db_path_str)
     if conn is None:
         return None
     try:
-        # Look up bg_action by action_key — match the tool: prefix convention.
-        action_lookup_key = action_key if action_key.startswith("tool:") else f"tool:{action_key}"
+        # Single transaction wrapping everything below.
         try:
-            row = conn.execute(
-                """
-                SELECT a.id, a.loop,
-                       COALESCE(SUM(w.w_go), 0.0) AS sum_go,
-                       COALESCE(SUM(w.w_nogo), 0.0) AS sum_nogo
-                FROM bg_actions a
-                LEFT JOIN bg_striatal_weights w ON w.action_id = a.id
-                WHERE a.action_key = ?
-                GROUP BY a.id
-                LIMIT 1
-                """,
-                (action_lookup_key,),
-            ).fetchone()
+            conn.execute("BEGIN")
         except sqlite3.OperationalError:
-            # Migration 054 not applied yet
             return None
 
-        if not row:
-            return None  # not registered; no-op
+        # Fetch weight sums + recent surprise + recent conflict in one shot.
+        try:
+            sums = conn.execute(
+                "SELECT COALESCE(SUM(w_go), 0.0), COALESCE(SUM(w_nogo), 0.0) "
+                "FROM bg_striatal_weights WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            sum_go = float(sums[0]) if sums else 0.0
+            sum_nogo = float(sums[1]) if sums else 0.0
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return None
 
-        _action_id, loop, sum_go, sum_nogo = row
-        net = float(sum_go) - float(sum_nogo)
+        net = sum_go - sum_nogo
         if net > 0.5:
             decision = "approve"
             reason = f"net Go signal {net:.2f} > 0.5"
@@ -157,63 +213,49 @@ def consult_for_dispatch(
             decision = "approve"
             reason = f"neutral signal {net:.2f}; default approve"
 
+        ctx_hash = _context_hash(agent_id, arguments)
+        args_hash = _arguments_hash(arguments)
+
         try:
             conn.execute(
-                """
-                INSERT INTO bg_shadow_decisions (
-                    agent_id, action_key, loop, decision, reason,
-                    net_signal, w_go, w_nogo, context_hash, arguments_hash
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    agent_id,
-                    action_lookup_key,
-                    loop,
-                    decision,
-                    reason,
-                    net,
-                    float(sum_go),
-                    float(sum_nogo),
-                    _context_hash(agent_id, arguments),
-                    _arguments_hash(arguments),
-                ),
+                "INSERT INTO bg_shadow_decisions "
+                "(agent_id, action_key, loop, decision, reason, net_signal, "
+                " w_go, w_nogo, context_hash, arguments_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (agent_id, action_lookup_key, loop, decision, reason,
+                 net, sum_go, sum_nogo, ctx_hash, args_hash),
             )
-            conn.commit()
         except sqlite3.OperationalError as exc:
             logger.debug("bg_shadow: shadow_decisions table missing: %s", exc)
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
             return None
 
-        # Phase 3: deposit an eligibility trace so a future δ can update
-        # the (action, context) weights that produced this decision.
-        ctx_hash = _context_hash(agent_id, arguments)
+        # Eligibility trace (same transaction).
         try:
             conn.execute(
-                """
-                INSERT INTO bg_eligibility_traces (
-                    action_id, context_hash, trace_strength, decay_constant,
-                    expires_at
-                )
-                VALUES (?, ?, 1.0, ?,
-                        strftime('%Y-%m-%dT%H:%M:%S', 'now', '+' || ? || ' seconds'))
-                """,
-                (_action_id, ctx_hash, _DEFAULT_TRACE_DECAY, _TRACE_TTL_SECONDS),
+                "INSERT INTO bg_eligibility_traces "
+                "(action_id, context_hash, trace_strength, decay_constant, expires_at) "
+                "VALUES (?, ?, 1.0, ?, "
+                "        strftime('%Y-%m-%dT%H:%M:%S', 'now', '+' || ? || ' seconds'))",
+                (action_id, ctx_hash, _DEFAULT_TRACE_DECAY, _TRACE_TTL_SECONDS),
             )
-            conn.commit()
         except sqlite3.OperationalError as exc:
             logger.debug("bg_shadow: bg_eligibility_traces missing: %s", exc)
 
-        # Phase 3.5: hyperdirect-pathway hold detection. Fires a bg_holds
-        # row if recent traffic shows conflict (cross-loop) or surprise
-        # (large recent |δ|). Holds are reported in the response so future
-        # Phase 4 enforcement can branch on active holds. Shadow-only for now.
+        # Hyperdirect hold detection (same connection, same transaction).
         fired_hold = _maybe_fire_hold(
-            conn,
-            action_loop=str(loop),
-            action_key=action_lookup_key,
-            agent_id=agent_id,
+            conn, action_loop=str(loop),
+            action_key=action_lookup_key, agent_id=agent_id,
         )
         active_holds = _check_active_holds(conn)
+
+        try:
+            conn.execute("COMMIT")
+        except sqlite3.OperationalError:
+            pass
 
         result: dict[str, Any] = {
             "action_key": action_lookup_key,
@@ -387,7 +429,7 @@ def _maybe_fire_hold(
                 """,
                 (action_loop, max_abs_delta),
             )
-            conn.commit()
+            # Outer caller controls the transaction; do NOT commit here.
             fired = {
                 "id": cur.lastrowid, "loop": action_loop, "reason": "surprise",
                 "trigger_score_gap": max_abs_delta, "ticks": 1,
@@ -422,7 +464,7 @@ def _maybe_fire_hold(
                 """,
                 (action_loop, float(row[1])),
             )
-            conn.commit()
+            # Outer caller controls the transaction; do NOT commit here.
             fired = {
                 "id": cur.lastrowid, "loop": action_loop, "reason": "conflict",
                 "trigger_score_gap": float(row[1]), "ticks": 1,

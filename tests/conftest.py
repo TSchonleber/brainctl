@@ -44,6 +44,15 @@ def _restore_module_helpers():
             "open_db": getattr(mod, "open_db", None),
             "DB_PATH": getattr(mod, "DB_PATH", None),
         }
+    # Clear perf caches so tests using temp DBs don't see stale entries
+    # from previous tests pointing at the live DB.
+    for mod_name in ("agentmemory.bg_shadow", "agentmemory.cerebellum_shadow"):
+        try:
+            mod = importlib.import_module(mod_name)
+            if hasattr(mod, "clear_caches"):
+                mod.clear_caches()
+        except Exception:
+            pass
     yield
     for mod_name, snapshot in saved.items():
         try:
@@ -53,6 +62,14 @@ def _restore_module_helpers():
         for attr, value in snapshot.items():
             if value is not None:
                 setattr(mod, attr, value)
+    # Final cache clear so the next test's setup starts clean too.
+    for mod_name in ("agentmemory.bg_shadow", "agentmemory.cerebellum_shadow"):
+        try:
+            mod = sys.modules.get(mod_name)
+            if mod and hasattr(mod, "clear_caches"):
+                mod.clear_caches()
+        except Exception:
+            pass
 
 
 @pytest.fixture
