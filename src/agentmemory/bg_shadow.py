@@ -1,21 +1,33 @@
-"""Basal ganglia Phase 2 hookpoints.
+"""Basal ganglia Phase 2 + 3 hookpoints.
 
-Two functions:
+Phase 2 (shadow-only logging):
 - `consult_for_dispatch(action_key, agent_id, arguments)` — called before
   every MCP tool dispatch. Looks up the bg_action; if registered, reads the
   striatal weights for the current context and emits a shadow decision row.
   Never raises; silent when no bg_action is registered for the tool name
-  (early-exit, no DB write). Decision policy in Phase 2:
-    * net_signal (w_go − w_nogo) > 0.5 → "approve"
-    * net_signal < -0.5 → "block" (shadow only)
-    * |net_signal| < 0.5 → "approve" (default conservative)
-  Real enforcement is Phase 3.
+  (early-exit, no DB write).
 
 - `broadcast_td_error(task_id, agent_id, outcome, utility=None)` — called
-  from outcome_annotate. Converts outcome string ("success"/"failure"/...)
-  to utility scalar, computes δ (without V(s) learning yet, δ ≈ utility),
-  inserts a bg_td_events row. Eligibility trace updates are deferred to
-  Phase 3.
+  from outcome_annotate. Converts outcome string to utility scalar, computes
+  δ = utility + γ·V(s') − V(s), inserts a bg_td_events row.
+
+Phase 3 (closing the actor-critic loop — the BG now LEARNS from outcomes):
+- `consult_for_dispatch` additionally **deposits an eligibility trace** in
+  bg_eligibility_traces tagged with (action_id, context_hash). Strength
+  starts at 1.0 and decays each time it's consumed.
+- `broadcast_td_error` additionally **consumes active eligibility traces**
+  and updates bg_striatal_weights via the opponent Go/NoGo three-factor
+  learning rule:
+    if δ > 0: w_go  += lr · trace · δ      (D1 LTP)
+              w_nogo -= lr · trace · δ/2    (D2 LTD, weaker)
+    if δ < 0: w_nogo += lr · trace · |δ|   (D2 LTP)
+              w_go  -= lr · trace · |δ|/2  (D1 LTD, weaker)
+  Weights clamped to [0, 1]. After consumption, trace strength is decayed
+  by its decay_constant (default 0.95); traces with strength < 0.05 or
+  older than 1 hour are pruned by `sweep_eligibility_traces`.
+
+Dispatch enforcement remains shadow-only — weights move from real outcomes,
+but the gate doesn't act on them yet. That flip is Phase 4.
 """
 from __future__ import annotations
 
@@ -46,6 +58,12 @@ _OUTCOME_UTILITY = {
     "tool_misuse": -0.7,
     "context_loss": -0.7,
 }
+
+
+_DEFAULT_LEARNING_RATE = 0.1
+_DEFAULT_TRACE_DECAY = 0.95
+_TRACE_PRUNE_STRENGTH = 0.05
+_TRACE_TTL_SECONDS = 3600  # 1 hour
 
 
 def _connect(db_path: Optional[str] = None) -> sqlite3.Connection | None:
@@ -160,13 +178,157 @@ def consult_for_dispatch(
             logger.debug("bg_shadow: shadow_decisions table missing: %s", exc)
             return None
 
+        # Phase 3: deposit an eligibility trace so a future δ can update
+        # the (action, context) weights that produced this decision.
+        ctx_hash = _context_hash(agent_id, arguments)
+        try:
+            conn.execute(
+                """
+                INSERT INTO bg_eligibility_traces (
+                    action_id, context_hash, trace_strength, decay_constant,
+                    expires_at
+                )
+                VALUES (?, ?, 1.0, ?,
+                        strftime('%Y-%m-%dT%H:%M:%S', 'now', '+' || ? || ' seconds'))
+                """,
+                (_action_id, ctx_hash, _DEFAULT_TRACE_DECAY, _TRACE_TTL_SECONDS),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            logger.debug("bg_shadow: bg_eligibility_traces missing: %s", exc)
+
         return {
             "action_key": action_lookup_key,
             "loop": loop,
             "decision": decision,
             "reason": reason,
             "net_signal": net,
+            "context_hash": ctx_hash,
         }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _apply_three_factor_update(
+    conn: sqlite3.Connection,
+    *,
+    action_id: int,
+    context_hash: str,
+    trace_strength: float,
+    delta: float,
+    learning_rate: float = _DEFAULT_LEARNING_RATE,
+) -> tuple[float, float]:
+    """Apply the opponent Go/NoGo three-factor learning rule for one trace.
+
+    Returns the (new_w_go, new_w_nogo) values after the update.
+    """
+    # Ensure the (action, context) row exists with default weights
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO bg_striatal_weights (action_id, context_hash)
+        VALUES (?, ?)
+        """,
+        (action_id, context_hash),
+    )
+    row = conn.execute(
+        "SELECT w_go, w_nogo FROM bg_striatal_weights WHERE action_id = ? AND context_hash = ?",
+        (action_id, context_hash),
+    ).fetchone()
+    w_go = float(row[0])
+    w_nogo = float(row[1])
+
+    abs_delta = abs(delta)
+    if delta > 0:
+        d_go = learning_rate * trace_strength * delta
+        d_nogo = -learning_rate * trace_strength * delta * 0.5
+    else:
+        d_go = -learning_rate * trace_strength * abs_delta * 0.5
+        d_nogo = learning_rate * trace_strength * abs_delta
+
+    new_w_go = max(0.0, min(1.0, w_go + d_go))
+    new_w_nogo = max(0.0, min(1.0, w_nogo + d_nogo))
+
+    conn.execute(
+        """
+        UPDATE bg_striatal_weights
+        SET w_go = ?, w_nogo = ?, n_updates = n_updates + 1,
+            last_updated = strftime('%Y-%m-%dT%H:%M:%S', 'now')
+        WHERE action_id = ? AND context_hash = ?
+        """,
+        (new_w_go, new_w_nogo, action_id, context_hash),
+    )
+    return (new_w_go, new_w_nogo)
+
+
+def _consume_eligibility_traces(
+    conn: sqlite3.Connection,
+    *,
+    delta: float,
+    learning_rate: float = _DEFAULT_LEARNING_RATE,
+) -> dict[str, Any]:
+    """Apply δ across all active traces, update striatal weights, decay
+    traces. Returns a stats summary.
+    """
+    try:
+        traces = conn.execute(
+            """
+            SELECT id, action_id, context_hash, trace_strength, decay_constant
+            FROM bg_eligibility_traces
+            WHERE (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+              AND trace_strength >= ?
+            """,
+            (_TRACE_PRUNE_STRENGTH,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"traces_consumed": 0, "weight_updates": 0}
+
+    updated = 0
+    for trace_id, action_id, ctx, strength, decay in traces:
+        _apply_three_factor_update(
+            conn,
+            action_id=int(action_id),
+            context_hash=str(ctx),
+            trace_strength=float(strength),
+            delta=delta,
+            learning_rate=learning_rate,
+        )
+        # Decay the trace for next consumption
+        conn.execute(
+            "UPDATE bg_eligibility_traces SET trace_strength = trace_strength * ? WHERE id = ?",
+            (float(decay), trace_id),
+        )
+        updated += 1
+    return {"traces_consumed": len(traces), "weight_updates": updated}
+
+
+def sweep_eligibility_traces(db_path: Optional[str] = None) -> dict[str, Any]:
+    """Remove expired or weak traces. Safe to call periodically (cron or
+    after large δ broadcasts). Never raises.
+    """
+    conn = _connect(db_path)
+    if conn is None:
+        return {"ok": False, "error": "db unavailable"}
+    try:
+        try:
+            cur = conn.execute(
+                """
+                DELETE FROM bg_eligibility_traces
+                WHERE trace_strength < ?
+                   OR (expires_at IS NOT NULL AND expires_at < strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+                """,
+                (_TRACE_PRUNE_STRENGTH,),
+            )
+            conn.commit()
+            removed = cur.rowcount or 0
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM bg_eligibility_traces"
+            ).fetchone()[0]
+            return {"ok": True, "removed": removed, "remaining": remaining}
+        except sqlite3.OperationalError as exc:
+            return {"ok": False, "error": str(exc)}
     finally:
         try:
             conn.close()
@@ -221,11 +383,27 @@ def broadcast_td_error(
                 """,
                 (task_id, agent_id, utility_f, v_c, v_n, gamma_f, delta, source),
             )
-            conn.commit()
-            return {"event_id": cursor.lastrowid, "delta": delta, "utility": utility_f}
+            event_id = cursor.lastrowid
         except sqlite3.OperationalError as exc:
             logger.debug("bg_shadow: bg_td_events table missing: %s", exc)
             return None
+
+        # Phase 3: consume eligibility traces. Apply opponent Go/NoGo update
+        # rule across all active (action, context) traces.
+        trace_stats = _consume_eligibility_traces(conn, delta=delta)
+        if trace_stats["weight_updates"] > 0:
+            conn.execute(
+                "UPDATE bg_td_events SET consumed_count = ? WHERE id = ?",
+                (trace_stats["weight_updates"], event_id),
+            )
+        conn.commit()
+        return {
+            "event_id": event_id,
+            "delta": delta,
+            "utility": utility_f,
+            "traces_consumed": trace_stats["traces_consumed"],
+            "weight_updates": trace_stats["weight_updates"],
+        }
     finally:
         try:
             conn.close()
