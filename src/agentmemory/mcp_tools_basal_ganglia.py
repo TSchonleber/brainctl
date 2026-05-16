@@ -275,6 +275,73 @@ def tool_bg_modulator_set(
         db.close()
 
 
+def tool_bg_sweep_traces(**kw: Any) -> dict[str, Any]:
+    """Phase 3 maintenance: prune expired or weak eligibility traces.
+
+    Safe to call periodically (e.g., from cron or after large outcome
+    cycles). Returns counts of removed and remaining traces.
+    """
+    from agentmemory.bg_shadow import sweep_eligibility_traces
+    return sweep_eligibility_traces()
+
+
+def tool_bg_weights_show(
+    action_key: str | None = None,
+    loop: str | None = None,
+    top_n: int = 20,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Phase 3 inspection: show striatal weights (Go / NoGo / distributional
+    value) per (action, context). Filter by action_key and/or loop.
+    """
+    if loop and loop not in VALID_LOOPS:
+        return {"ok": False, "error": f"loop must be one of {sorted(VALID_LOOPS)}"}
+    try:
+        top_n_int = max(1, min(int(top_n), 100))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "top_n must be an integer"}
+
+    db = _db()
+    try:
+        schema_error = _require_schema(db)
+        if schema_error:
+            return {"ok": False, "error": schema_error}
+        clauses = []
+        params: list[Any] = []
+        if action_key:
+            clauses.append("a.action_key = ?")
+            params.append(action_key if action_key.startswith("tool:") else f"tool:{action_key}")
+        if loop:
+            clauses.append("a.loop = ?")
+            params.append(loop)
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = db.execute(
+            f"""
+            SELECT a.loop, a.action_key, w.context_hash, w.w_go, w.w_nogo,
+                   ROUND(w.w_go - w.w_nogo, 4) AS net_signal,
+                   w.v_q10, w.v_q30, w.v_q50, w.v_q70, w.v_q90,
+                   w.n_updates, w.last_updated
+            FROM bg_striatal_weights w
+            JOIN bg_actions a ON a.id = w.action_id
+            {where_sql}
+            ORDER BY ABS(w.w_go - w.w_nogo) DESC, w.n_updates DESC
+            LIMIT ?
+            """,  # nosec B608
+            params + [top_n_int],
+        ).fetchall()
+        return {
+            "ok": True,
+            "action_filter": action_key,
+            "loop_filter": loop,
+            "weight_count": len(rows),
+            "weights": _rows_to_list(rows),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
 def tool_bg_td_emit(
     task_id: str | None = None,
     agent_id: str | None = None,
@@ -460,6 +527,29 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="bg_sweep_traces",
+        description=(
+            "Phase 3 maintenance: prune eligibility traces below strength 0.05 or past "
+            "their TTL (1h default). Safe to call from cron or after large outcome cycles."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="bg_weights_show",
+        description=(
+            "Phase 3 inspection: show striatal weights (Go / NoGo / distributional value) "
+            "per (action, context). Filter by action_key or loop. Sorted by |net signal|."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action_key": {"type": "string"},
+                "loop": {"type": "string", "enum": sorted(VALID_LOOPS)},
+                "top_n": {"type": "integer", "default": 20},
+            },
+        },
+    ),
+    Tool(
         name="bg_modulator_set",
         description=(
             "Update the three independent BG neuromodulator dials (tonic_da, lc_ne, "
@@ -484,6 +574,8 @@ _BG_TOOLS = {
     "bg_modulator_set": tool_bg_modulator_set,
     "bg_td_emit": tool_bg_td_emit,
     "bg_shadow_stats": tool_bg_shadow_stats,
+    "bg_sweep_traces": tool_bg_sweep_traces,
+    "bg_weights_show": tool_bg_weights_show,
 }
 
 DISPATCH: dict[str, Any] = {
