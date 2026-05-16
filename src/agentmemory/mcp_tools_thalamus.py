@@ -26,6 +26,19 @@ VALID_SECTORS = {
 VALID_TRANSPORTS = {"first_order", "higher_order"}
 VALID_DEFAULT_MODES = {"tonic", "burst"}
 
+# Thalamus sector → cerebellum partner mapping for Phase 3 precision lookup.
+# memory_recall is the oculomotor (retrieval) channel; belief & pii_sensitive
+# both flow through acc (conflict monitoring); efferent / external traffic
+# are motor; consolidation is dlpfc (deliberative).
+_SECTOR_TO_CEREBELLUM_PARTNER = {
+    "memory_recall": "oculomotor_partner",
+    "belief": "acc_partner",
+    "pii_sensitive": "acc_partner",
+    "sensory_external": "motor_partner",
+    "agent_efferent": "motor_partner",
+    "consolidation": "dlpfc_partner",
+}
+
 
 def _db() -> sqlite3.Connection:
     return open_db(str(DB_PATH))
@@ -314,6 +327,19 @@ def tool_thalamus_salience(
     db = _db()
     try:
         suppression = _sector_suppression(db)
+
+        # Phase 3: cerebellum partner precision (one query per partner,
+        # cached for the duration of this salience call). Never raises;
+        # returns 0.5 (neutral) when the cerebellum schema is missing or
+        # has no learned weights yet.
+        partner_precision_cache: dict[str, float] = {}
+        try:
+            from agentmemory.mcp_tools_cerebellum import cerebellum_partner_precision
+            for partner_name in set(_SECTOR_TO_CEREBELLUM_PARTNER.values()):
+                partner_precision_cache[partner_name] = cerebellum_partner_precision(partner_name)
+        except Exception:
+            partner_precision_cache = {}
+
         scored: list[dict[str, Any]] = []
         for idx, raw in enumerate(candidates):
             candidate = raw if isinstance(raw, dict) else {"content": str(raw)}
@@ -331,7 +357,16 @@ def tool_thalamus_salience(
             )
             precision = _clamp(candidate.get("precision", candidate.get("confidence", candidate.get("trust_score", 1.0))), default=1.0)
             sector_gain = 1.0 - 0.5 * suppression.get(sector, 0.0)
-            integrated = _clamp((0.55 * bottomup_score + 0.45 * topdown_score) * precision * sector_gain, default=0.0)
+            # Phase 3: cerebellum precision multiplier — boost candidates
+            # whose partner the cerebellum predicts confidently. Maps to
+            # [0.7, 1.3] so it nudges ranking without dominating it.
+            partner = _SECTOR_TO_CEREBELLUM_PARTNER.get(sector)
+            cerebellum_confidence = partner_precision_cache.get(partner, 0.5) if partner else 0.5
+            cerebellum_multiplier = 0.7 + 0.6 * cerebellum_confidence
+            integrated = _clamp(
+                (0.55 * bottomup_score + 0.45 * topdown_score) * precision * sector_gain * cerebellum_multiplier,
+                default=0.0,
+            )
             row = {
                 "candidate_id": candidate_id,
                 "candidate_type": candidate_type,
@@ -339,6 +374,8 @@ def tool_thalamus_salience(
                 "bottomup_score": round(bottomup_score, 4),
                 "topdown_score": round(topdown_score, 4),
                 "precision": round(precision, 4),
+                "cerebellum_confidence": round(cerebellum_confidence, 4),
+                "cerebellum_multiplier": round(cerebellum_multiplier, 4),
                 "integrated": round(integrated, 4),
             }
             scored.append(row)
