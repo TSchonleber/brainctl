@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (238)
+## Available Tools (260)
 
 | Tool | Description |
 |------|-------------|
@@ -158,6 +158,12 @@ server over stdio.
 | Cerebellum (Phase 1+2+3, predict/observe + auto-wire) | `cerebellum_status`, `cerebellum_module_register`, `cerebellum_predict`, `cerebellum_observe` | Forward-model layer per cortical partner (motor/oculomotor/dlpfc/lofc/acc) × 3 prediction kinds. Marr-Albus sparse expansion + supervised LTD update. Boundary markers fire on \|δ_forward\|≥0.5 → workspace broadcasts + BG TD-error bus. Auto-wired into MCP dispatch. Confidence → thalamus salience precision (see `docs/proposals/cerebellum.md`) |
 | Amygdala (Phase 1, valence tagging) | `amygdala_status`, `amygdala_tag`, `amygdala_query_valence`, `amygdala_extinguish` | Rapid one-shot valence/threat tagging per entity/agent/context. Saturating tanh update caps single-event movement at ±0.5 (anti-PTSD). Reconsolidation: query opens 1h labile window where next tag uses 4× learning rate. Extinction = context-keyed inhibitory overlay (ITC-analog), not erasure (see `docs/proposals/amygdala.md`) |
 | Hippocampal subfields (Phase 1, DG/CA3 audit) | `hippocampus_dg_separate`, `hippocampus_dg_check`, `hippocampus_ca3_complete`, `hippocampus_subfields_status` | DG pattern-separation at write time + CA3 pattern-completion at retrieval, audit-only in Phase 1. Decisions: deduplicate (sim≥0.97), separate (sim≥0.85), passthrough (sim<0.85) |
+| ACC (Phase 1, in-flight conflict) | `acc_evaluate`, `acc_status`, `acc_predict`, `acc_resolve` | Real-time conflict + surprise + EVC scoring for write ops. Botvinick co-activation + Brown/PRO prediction-error + Shenhav cost-of-control. Fires BG holds on high EVC |
+| DMN (Phase 1, offline simulation) | `dmn_simulate`, `dmn_validate`, `dmn_speculative_list`, `dmn_schedule_status` | Counterfactual rollouts (Schacter constructive simulation). Speculative memories quarantined from default retrieval; graduate to `memories` only when validated against real events |
+| Drives / Hypothalamus (Phase 1, homeostatic) | `drive_sample`, `drive_status`, `drive_recommend_mode`, `drive_register` | 5 named drives (consolidation_debt, staleness, belief_coverage, pii_pressure, entity_freshness) with set-points. `pii_pressure` is a PAG-style safety drive |
+| Insula (Phase 1, interoception) | `insula_sample`, `insula_state`, `insula_subscribe`, `insula_check_triggers` | Self-state vector (write_pressure, retrieval_strain, consolidation_debt, embedding_health, attention_load, certainty) with EMA baseline + deviation. Subscriber registry routes signals to subsystems |
+| PFC sub-regions (Phase 1, named slots) | `pfc_slot_set`, `pfc_slot_get`, `pfc_status` | 4 named slots per agent: dlPFC (active task), vmPFC (outcome-utility), OFC (realized-outcome log), frontopolar (meta-monitor). Mostly aggregation |
+| Entorhinal grid (Phase 1, conceptual indexing) | `entorhinal_activate`, `entorhinal_lookup`, `entorhinal_status` | 48 grid cells across 3 scales (fine/medium/coarse). Deterministic hash maps content → cell activations; sub-linear pattern lookup |
 
 ### Tier 3: Specialist (~150 tools)
 
