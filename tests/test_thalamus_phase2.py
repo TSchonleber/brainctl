@@ -33,8 +33,8 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
     for migration in (
-        "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql",
-        "/Users/r4vager/agentmemory/db/migrations/053_thalamus_shadow.sql",
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql"),
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "053_thalamus_shadow.sql"),
     ):
         with open(migration) as f:
             conn.executescript(f.read())

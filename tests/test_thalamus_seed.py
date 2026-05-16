@@ -20,7 +20,7 @@ def _apply_migration_to_memory_db(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)

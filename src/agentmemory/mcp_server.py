@@ -40,6 +40,7 @@ try:
     from agentmemory import (
         mcp_tools_agents,
         mcp_tools_allostatic,
+        mcp_tools_amygdala,
         mcp_tools_analytics,
         mcp_tools_dmem,
         mcp_tools_basal_ganglia,
@@ -75,6 +76,7 @@ try:
     _EXT_MODULES = [
         mcp_tools_agents,
         mcp_tools_allostatic,
+        mcp_tools_amygdala,
         mcp_tools_analytics,
         mcp_tools_dmem,
         mcp_tools_basal_ganglia,

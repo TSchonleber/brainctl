@@ -28,10 +28,10 @@ def _setup_tempdb_with_both_subsystems() -> str:
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
     for migration in (
-        "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql",
-        "/Users/r4vager/agentmemory/db/migrations/053_thalamus_shadow.sql",
-        "/Users/r4vager/agentmemory/db/migrations/054_basal_ganglia.sql",
-        "/Users/r4vager/agentmemory/db/migrations/055_basal_ganglia_shadow.sql",
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql"),
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "053_thalamus_shadow.sql"),
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "054_basal_ganglia.sql"),
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "055_basal_ganglia_shadow.sql"),
     ):
         with open(migration) as f:
             conn.executescript(f.read())

@@ -1,3 +1,4 @@
+from pathlib import Path
 """Tests for thalamus Phase 1 schema (migration 050)."""
 import sqlite3
 import pytest
@@ -13,7 +14,7 @@ def test_migration_050_creates_all_tables(tmp_path):
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)
@@ -40,7 +41,7 @@ def test_thalamic_mode_seed_row_exists(tmp_path):
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)
@@ -61,7 +62,7 @@ def test_key_indexes_exist(tmp_path):
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)
@@ -85,7 +86,7 @@ def test_foreign_key_constraint_on_gate(tmp_path):
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)
@@ -109,7 +110,7 @@ def test_check_constraints_on_mode(tmp_path):
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    migration_path = "/Users/r4vager/agentmemory/db/migrations/050_thalamus.sql"
+    migration_path = str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "050_thalamus.sql")
     with open(migration_path) as f:
         migration_sql = f.read()
     conn.executescript(migration_sql)

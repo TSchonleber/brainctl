@@ -33,7 +33,7 @@ def _setup_tempdb() -> str:
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    with open("/Users/r4vager/agentmemory/db/migrations/056_cerebellum.sql") as f:
+    with open(str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "056_cerebellum.sql")) as f:
         conn.executescript(f.read())
     conn.close()
     return tmpf.name

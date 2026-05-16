@@ -29,7 +29,7 @@ def _apply_migration(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS schema_version "
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
-    with open("/Users/r4vager/agentmemory/db/migrations/054_basal_ganglia.sql") as f:
+    with open(str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "054_basal_ganglia.sql")) as f:
         conn.executescript(f.read())
 
 
