@@ -484,6 +484,298 @@ def tool_thalamus_relay_create(
         db.close()
 
 
+VALID_MODES = {
+    "wake_focused",
+    "wake_exploratory",
+    "drowsy",
+    "consolidate",
+    "offline",
+}
+VALID_BURST_REASONS = {"novelty", "high_pe", "distractor_break_through", "manual"}
+
+
+def tool_thalamus_gate_set(
+    channel_id: str,
+    suppression: float | None = None,
+    topdown_bias: float | None = None,
+    bottomup_drive: float | None = None,
+    armed_for_burst: bool | None = None,
+    bias_source: str | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Write top-down attention bias / suppression onto a thalamic gate row.
+
+    Phase 2 write tool. Updates `thalamic_gate` for an existing relay channel.
+    All numeric fields are clamped to [0, 1]. The corresponding relay must
+    already exist (created via thalamus_relay_create).
+    """
+    if not channel_id or not isinstance(channel_id, str):
+        return {"ok": False, "error": "channel_id is required"}
+    if (
+        suppression is None
+        and topdown_bias is None
+        and bottomup_drive is None
+        and armed_for_burst is None
+    ):
+        return {"ok": False, "error": "at least one of suppression/topdown_bias/bottomup_drive/armed_for_burst is required"}
+
+    db = _db()
+    try:
+        schema_error = _require_schema(db)
+        if schema_error:
+            return {"ok": False, "error": schema_error}
+        gate_row = db.execute(
+            "SELECT channel_id, sector FROM thalamic_gate WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        if not gate_row:
+            return {"ok": False, "error": f"no thalamic_gate row for channel_id={channel_id} (create the relay first)"}
+
+        sets: list[str] = []
+        params: list[Any] = []
+        if suppression is not None:
+            sets.append("suppression = ?")
+            params.append(_clamp(suppression, default=0.0))
+        if topdown_bias is not None:
+            sets.append("topdown_bias = ?")
+            params.append(_clamp(topdown_bias, default=0.0))
+        if bottomup_drive is not None:
+            sets.append("bottomup_drive = ?")
+            params.append(_clamp(bottomup_drive, default=0.0))
+        if armed_for_burst is not None:
+            sets.append("armed_for_burst = ?")
+            params.append(1 if armed_for_burst else 0)
+        if bias_source is not None:
+            sets.append("bias_source = ?")
+            params.append(str(bias_source))
+        sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')")
+
+        sql = f"UPDATE thalamic_gate SET {', '.join(sets)} WHERE channel_id = ?"  # nosec B608
+        params.append(channel_id)
+        db.execute(sql, params)
+        db.commit()
+
+        updated = db.execute(
+            "SELECT * FROM thalamic_gate WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        return {"ok": True, "gate": dict(updated) if updated else None}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_thalamus_burst(
+    channel_id: str,
+    payload_ref: str | None = None,
+    reason: str = "novelty",
+    salience: float | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Fire a sparse high-salience burst event on a thalamic channel.
+
+    Phase 2 write tool. Normally invoked by the gate when an armed channel
+    sees a high-prediction-error write; exposed here for tooling and tests.
+    """
+    if not channel_id or not isinstance(channel_id, str):
+        return {"ok": False, "error": "channel_id is required"}
+    if reason not in VALID_BURST_REASONS:
+        return {"ok": False, "error": f"reason must be one of {sorted(VALID_BURST_REASONS)}"}
+    salience_val = _clamp(salience if salience is not None else 1.0, default=1.0)
+
+    db = _db()
+    try:
+        schema_error = _require_schema(db)
+        if schema_error:
+            return {"ok": False, "error": schema_error}
+        gate = db.execute(
+            "SELECT sector FROM thalamic_gate WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+        if not gate:
+            return {"ok": False, "error": f"no thalamic_gate row for channel_id={channel_id}"}
+        sector = gate["sector"]
+        cursor = db.execute(
+            """
+            INSERT INTO thalamic_bursts (channel_id, sector, reason, payload_ref, salience)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (channel_id, sector, reason, payload_ref, salience_val),
+        )
+        db.execute(
+            """
+            UPDATE thalamic_gate
+            SET last_burst_at = strftime('%Y-%m-%dT%H:%M:%S', 'now'),
+                armed_for_burst = 0,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')
+            WHERE channel_id = ?
+            """,
+            (channel_id,),
+        )
+        db.commit()
+        burst = db.execute(
+            "SELECT * FROM thalamic_bursts WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return {"ok": True, "burst": dict(burst) if burst else None}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_thalamus_shadow_stats(
+    days: int = 7,
+    sector: str | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Summarize shadow-mode gate decisions logged by the W(m) hookpoint.
+
+    Phase 2 observability tool. Returns per-decision counts, per-sector
+    breakdown, and the rate at which the thalamic gate *would have*
+    diverged from current W(m) behavior. Use to validate the gate before
+    flipping shadow mode off in a future phase.
+    """
+    try:
+        days_int = max(1, int(days))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "days must be an integer"}
+
+    db = _db()
+    try:
+        if not _table_exists(db, "thalamic_shadow_decisions"):
+            return {"ok": False, "error": "thalamic_shadow_decisions table missing (apply migration 053)"}
+
+        where_clauses = [f"decision_at >= datetime('now', '-{days_int} days')"]
+        params: list[Any] = []
+        if sector:
+            where_clauses.append("sector = ?")
+            params.append(sector)
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+        total = db.execute(
+            f"SELECT COUNT(*) FROM thalamic_shadow_decisions {where_sql}",  # nosec B608
+            params,
+        ).fetchone()[0]
+
+        by_decision = db.execute(
+            f"""
+            SELECT decision, COUNT(*) AS n
+            FROM thalamic_shadow_decisions
+            {where_sql}
+            GROUP BY decision
+            ORDER BY n DESC
+            """,  # nosec B608
+            params,
+        ).fetchall()
+
+        by_sector = db.execute(
+            f"""
+            SELECT sector, decision, COUNT(*) AS n
+            FROM thalamic_shadow_decisions
+            {where_sql}
+            GROUP BY sector, decision
+            ORDER BY sector, n DESC
+            """,  # nosec B608
+            params,
+        ).fetchall()
+
+        recent_divergent = db.execute(
+            f"""
+            SELECT decision_at, sector, decision, reason, suppression, surprise_score
+            FROM thalamic_shadow_decisions
+            {where_sql} AND decision != 'pass'
+            ORDER BY decision_at DESC
+            LIMIT 20
+            """,  # nosec B608
+            params,
+        ).fetchall()
+
+        return {
+            "ok": True,
+            "window_days": days_int,
+            "sector_filter": sector,
+            "total_decisions": total,
+            "by_decision": [dict(r) for r in by_decision],
+            "by_sector": [dict(r) for r in by_sector],
+            "divergence_rate": (
+                round(1 - (next((r["n"] for r in by_decision if r["decision"] == "pass"), 0) / total), 4)
+                if total > 0
+                else 0.0
+            ),
+            "recent_divergent": [dict(r) for r in recent_divergent],
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
+def tool_thalamus_mode_set(
+    mode: str,
+    set_by: str | None = None,
+    arousal: float | None = None,
+    acetylcholine: float | None = None,
+    norepinephrine: float | None = None,
+    retrieval_breadth_multiplier: float | None = None,
+    similarity_threshold_delta: float | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Update the global thalamic_mode row (id=1).
+
+    Phase 2 write tool. Switches the global operating mode and optionally
+    the neuromodulator dials. Mode must be one of the canonical enum values.
+    """
+    if mode not in VALID_MODES:
+        return {"ok": False, "error": f"mode must be one of {sorted(VALID_MODES)}"}
+    db = _db()
+    try:
+        schema_error = _require_schema(db)
+        if schema_error:
+            return {"ok": False, "error": schema_error}
+        sets = ["mode = ?"]
+        params: list[Any] = [mode]
+        if arousal is not None:
+            sets.append("arousal = ?")
+            params.append(_clamp(arousal, default=0.5))
+        if acetylcholine is not None:
+            sets.append("acetylcholine = ?")
+            params.append(_clamp(acetylcholine, default=0.5))
+        if norepinephrine is not None:
+            sets.append("norepinephrine = ?")
+            params.append(_clamp(norepinephrine, default=0.5))
+        if retrieval_breadth_multiplier is not None:
+            try:
+                rbm = float(retrieval_breadth_multiplier)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "retrieval_breadth_multiplier must be numeric"}
+            if rbm < 0:
+                return {"ok": False, "error": "retrieval_breadth_multiplier must be >= 0"}
+            sets.append("retrieval_breadth_multiplier = ?")
+            params.append(rbm)
+        if similarity_threshold_delta is not None:
+            try:
+                std = float(similarity_threshold_delta)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "similarity_threshold_delta must be numeric"}
+            sets.append("similarity_threshold_delta = ?")
+            params.append(std)
+        if set_by is not None:
+            sets.append("set_by = ?")
+            params.append(str(set_by))
+        sets.append("set_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')")
+        sql = f"UPDATE thalamic_mode SET {', '.join(sets)} WHERE id = 1"  # nosec B608
+        db.execute(sql, params)
+        db.commit()
+        row = db.execute("SELECT * FROM thalamic_mode WHERE id = 1").fetchone()
+        return {"ok": True, "mode": dict(row) if row else None}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
 TOOLS: list[Tool] = [
     Tool(
         name="thalamus_status",
@@ -553,12 +845,88 @@ TOOLS: list[Tool] = [
             "required": ["channel_id", "sector", "driver_source", "target", "transport"],
         },
     ),
+    Tool(
+        name="thalamus_gate_set",
+        description=(
+            "Phase 2 write tool. Update a thalamic_gate row's suppression, top-down bias, "
+            "bottom-up drive, or burst armed flag. Channel must already exist."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "channel_id": {"type": "string"},
+                "suppression": {"type": "number", "description": "0.0 (open) to 1.0 (fully suppressed)"},
+                "topdown_bias": {"type": "number", "description": "0.0 to 1.0; PFC-equivalent task-context weight"},
+                "bottomup_drive": {"type": "number", "description": "0.0 to 1.0; traffic-driven drive"},
+                "armed_for_burst": {"type": "boolean"},
+                "bias_source": {"type": "string", "description": "Agent or system that set this bias (for audit)"},
+            },
+            "required": ["channel_id"],
+        },
+    ),
+    Tool(
+        name="thalamus_burst",
+        description=(
+            "Phase 2 write tool. Fire a sparse high-salience burst event on a channel. "
+            "Normally fired automatically when armed channels see high prediction-error; "
+            "exposed for tooling/tests."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "channel_id": {"type": "string"},
+                "payload_ref": {"type": "string", "description": "Optional reference like 'memory:1879' or 'event:20377'"},
+                "reason": {"type": "string", "enum": sorted(VALID_BURST_REASONS), "default": "novelty"},
+                "salience": {"type": "number", "description": "0.0 to 1.0"},
+            },
+            "required": ["channel_id"],
+        },
+    ),
+    Tool(
+        name="thalamus_shadow_stats",
+        description=(
+            "Phase 2 observability. Summarize shadow-mode gate decisions from the W(m) "
+            "hookpoint: by-decision counts, by-sector breakdown, divergence rate, and recent "
+            "non-pass examples. Use to validate the gate before enforcement mode."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7, "description": "Window in days (>= 1)"},
+                "sector": {"type": "string", "description": "Optional sector filter"},
+            },
+        },
+    ),
+    Tool(
+        name="thalamus_mode_set",
+        description=(
+            "Phase 2 write tool. Switch the global thalamic mode (id=1) and optionally tune "
+            "neuromodulator dials. Mode change is logged via set_by/set_at."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": sorted(VALID_MODES)},
+                "set_by": {"type": "string"},
+                "arousal": {"type": "number"},
+                "acetylcholine": {"type": "number"},
+                "norepinephrine": {"type": "number"},
+                "retrieval_breadth_multiplier": {"type": "number"},
+                "similarity_threshold_delta": {"type": "number"},
+            },
+            "required": ["mode"],
+        },
+    ),
 ]
 
 _THALAMUS_TOOLS = {
     "thalamus_status": tool_thalamus_status,
     "thalamus_salience": tool_thalamus_salience,
     "thalamus_relay_create": tool_thalamus_relay_create,
+    "thalamus_gate_set": tool_thalamus_gate_set,
+    "thalamus_burst": tool_thalamus_burst,
+    "thalamus_shadow_stats": tool_thalamus_shadow_stats,
+    "thalamus_mode_set": tool_thalamus_mode_set,
 }
 
 DISPATCH: dict[str, Any] = {
