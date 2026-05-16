@@ -2483,3 +2483,263 @@ CREATE TABLE IF NOT EXISTS hippocampus_completion_traces (
 );
 CREATE INDEX IF NOT EXISTS idx_hs_completion_recent ON hippocampus_completion_traces(completed_at);
 CREATE INDEX IF NOT EXISTS idx_hs_completion_memory ON hippocampus_completion_traces(completed_to_memory_id);
+
+-- ---- 060_acc.sql ----
+-- Migration 060: ACC — in-flight conflict / error monitor
+-- Watches LIVE operations (memory_add, belief_set, entity_observe, workspace_broadcast)
+-- and emits a scalar control-demand signal. Distinct from reflexion (after-fact lessons)
+-- and from belief_conflicts (static contradictions in the DB).
+-- Phase 1 is audit-only.
+CREATE TABLE IF NOT EXISTS acc_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    agent_id TEXT,
+    op_kind TEXT NOT NULL,
+    op_scope TEXT,
+    conflict_score REAL NOT NULL DEFAULT 0.0,
+    surprise_score REAL NOT NULL DEFAULT 0.0,
+    evc_score REAL NOT NULL DEFAULT 0.0,
+    action TEXT NOT NULL DEFAULT 'log' CHECK(action IN ('log','warn','hold_fired','ignore')),
+    fired_hold_id INTEGER,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_acc_events_recent ON acc_events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_acc_events_scope ON acc_events(op_scope, occurred_at DESC);
+
+-- 5-second co-activation window: in-flight operations registered before commit.
+CREATE TABLE IF NOT EXISTS acc_inflight (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    expires_at TEXT NOT NULL,
+    agent_id TEXT,
+    op_kind TEXT NOT NULL,
+    op_scope TEXT NOT NULL,
+    op_hash TEXT,
+    intent_payload TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_acc_inflight_scope ON acc_inflight(op_scope, expires_at);
+
+-- Learned outcome predictions per (op_kind, op_scope) — RVPM-style.
+CREATE TABLE IF NOT EXISTS acc_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    op_kind TEXT NOT NULL,
+    op_scope TEXT NOT NULL,
+    n_trials INTEGER NOT NULL DEFAULT 0,
+    n_conflicts INTEGER NOT NULL DEFAULT 0,
+    p_conflict REAL NOT NULL DEFAULT 0.5,
+    volatility REAL NOT NULL DEFAULT 0.5,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    UNIQUE(op_kind, op_scope)
+);
+
+-- ---- 061_dmn.sql ----
+-- Migration 061: DMN — offline simulation / counterfactual rollouts
+-- Schacter's "constructive episodic simulation" — recombine memories+entities
+-- into plausible futures. Speculative memories live in a QUARANTINED table
+-- (no FTS5, no vector index) so they never poison default retrieval.
+
+CREATE TABLE IF NOT EXISTS dmn_simulations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    seed_type TEXT NOT NULL CHECK(seed_type IN ('entity','memory','event')),
+    seed_id INTEGER NOT NULL,
+    scope TEXT,
+    scenario TEXT NOT NULL,
+    plausibility REAL NOT NULL DEFAULT 0.5,
+    novelty REAL NOT NULL DEFAULT 0.5,
+    utility REAL NOT NULL DEFAULT 0.5,
+    composite_score REAL NOT NULL DEFAULT 0.5,
+    triggered_by TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    retired_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dmn_sims_agent ON dmn_simulations(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_dmn_sims_score ON dmn_simulations(composite_score DESC);
+
+-- QUARANTINED — no FTS5/vec triggers, no default retrieval visibility.
+CREATE TABLE IF NOT EXISTS dmn_speculative_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    simulation_id INTEGER NOT NULL REFERENCES dmn_simulations(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT,
+    scope TEXT,
+    confidence REAL NOT NULL DEFAULT 0.3,
+    validation_state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(validation_state IN ('pending','corroborated','falsified','expired')),
+    validated_against_event_id INTEGER,
+    promoted_memory_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dmn_spec_state ON dmn_speculative_memories(validation_state, expires_at);
+
+CREATE TABLE IF NOT EXISTS dmn_schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    next_run_at TEXT,
+    last_run_at TEXT,
+    idle_threshold_s INTEGER NOT NULL DEFAULT 600,
+    new_mem_threshold INTEGER NOT NULL DEFAULT 100,
+    max_sims_per_run INTEGER NOT NULL DEFAULT 5,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(agent_id)
+);
+
+-- ---- 062_drives.sql ----
+-- Migration 062: Drives / hypothalamus — homeostatic set-points
+-- Named needs (consolidation_debt, staleness, belief_coverage, pii_pressure,
+-- entity_freshness) with set-points; current levels produce drive magnitudes
+-- that BIAS — but never directly override — downstream gating.
+
+CREATE TABLE IF NOT EXISTS drive_definitions (
+    name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    set_point REAL NOT NULL,
+    hard_threshold REAL,
+    sample_query TEXT NOT NULL,
+    recommended_mode TEXT,
+    is_safety_drive INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+
+CREATE TABLE IF NOT EXISTS drive_current_state (
+    name TEXT PRIMARY KEY REFERENCES drive_definitions(name) ON DELETE CASCADE,
+    current_level REAL NOT NULL DEFAULT 0.0,
+    error REAL NOT NULL DEFAULT 0.0,
+    magnitude REAL NOT NULL DEFAULT 0.0,
+    in_hard_state INTEGER NOT NULL DEFAULT 0,
+    sampled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+
+CREATE TABLE IF NOT EXISTS drive_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    current_level REAL NOT NULL,
+    error REAL NOT NULL,
+    magnitude REAL NOT NULL,
+    sampled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_drive_history_name_time ON drive_history(name, sampled_at DESC);
+
+-- Seed the five canonical brainctl drives.
+INSERT OR IGNORE INTO drive_definitions (name, description, set_point, hard_threshold, sample_query, recommended_mode, is_safety_drive) VALUES
+  ('consolidation_debt', 'Memories with low replay_priority and stale last_recalled_at', 0.0, NULL, 'SELECT 0.0', 'incident', 0),
+  ('staleness',          'Time since last event in active project scope (hours)', 6.0, NULL, 'SELECT 0.0', 'wake_exploratory', 0),
+  ('belief_coverage',    'Fraction of entities with NULL compiled_truth', 0.7, NULL, 'SELECT 0.0', NULL, 0),
+  ('pii_pressure',       'Unprocessed PII recency queue depth', 0.0, 10.0, 'SELECT 0.0', NULL, 1),
+  ('entity_freshness',   'Fraction of entities without recent entity_observe (14d)', 0.6, NULL, 'SELECT 0.0', 'focused_work', 0);
+
+-- ---- 063_insula.sql ----
+-- Migration 063: Insula — interoception / self-state subsystem
+-- Maps brainctl's internal state (queue depths, error rates, retrieval
+-- latency, write pressure, certainty) into a unified felt-state vector
+-- that other subsystems subscribe to. Predicted baseline + deviation —
+-- consumers react to PREDICTION ERROR on interoceptive signals.
+
+CREATE TABLE IF NOT EXISTS insula_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_name TEXT NOT NULL,
+    raw_value REAL NOT NULL,
+    normalized_value REAL NOT NULL CHECK(normalized_value >= 0.0 AND normalized_value <= 1.0),
+    baseline_ema REAL,
+    deviation REAL,
+    source TEXT,
+    sampled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_insula_signals_name_time ON insula_signals(signal_name, sampled_at DESC);
+
+-- Singleton aggregate — the current felt state.
+CREATE TABLE IF NOT EXISTS insula_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    write_pressure REAL NOT NULL DEFAULT 0.0,
+    retrieval_strain REAL NOT NULL DEFAULT 0.0,
+    consolidation_debt REAL NOT NULL DEFAULT 0.0,
+    embedding_health REAL NOT NULL DEFAULT 1.0,
+    attention_load REAL NOT NULL DEFAULT 0.0,
+    certainty REAL NOT NULL DEFAULT 0.5,
+    felt_state_label TEXT NOT NULL DEFAULT 'calm',
+    urgency_score REAL NOT NULL DEFAULT 0.0,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+);
+INSERT OR IGNORE INTO insula_state (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS insula_subscribers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subsystem TEXT NOT NULL,
+    signal_name TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    comparator TEXT NOT NULL DEFAULT 'gt' CHECK(comparator IN ('gt','lt','abs_gt')),
+    action_hint TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_fired_at TEXT,
+    UNIQUE(subsystem, signal_name, action_hint)
+);
+
+-- ---- 064_pfc_slots.sql ----
+-- Migration 064: PFC sub-regions — named slots
+-- dlPFC = active task / WM, vmPFC = outcome-utility, OFC = realized-outcome,
+-- frontopolar = meta-monitor. The substrate already exists scattered across
+-- mcp_tools_consolidation/trust/reflexion/agents. This subsystem is mostly
+-- AGGREGATION + ROUTING — one small table for named-slot state that agents
+-- can fill and reread.
+
+CREATE TABLE IF NOT EXISTS pfc_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK(slot IN ('dlpfc','vmpfc','ofc','frontopolar')),
+    content TEXT NOT NULL,         -- JSON payload
+    confidence REAL NOT NULL DEFAULT 0.5,
+    last_updated TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    UNIQUE(agent_id, slot)
+);
+CREATE INDEX IF NOT EXISTS idx_pfc_slots_agent ON pfc_slots(agent_id);
+
+-- ---- 065_entorhinal_grid.sql ----
+-- Migration 065: Entorhinal cortex — conceptual grid indexing
+-- brainctl has temporal grid (epochs) but no conceptual grid. Grid cells in
+-- EC tile concept-space with periodic basis functions; each memory activates
+-- a small subset of cells, giving cheap pattern-indexed lookup.
+-- Phase 1: schema + audit. Phase 2: wire into retrieval.
+
+CREATE TABLE IF NOT EXISTS entorhinal_grid_cells (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scale INTEGER NOT NULL,         -- grid scale (1=fine, 2=medium, 3=coarse...)
+    cell_index INTEGER NOT NULL,    -- index within the scale
+    basis_hash TEXT NOT NULL,       -- hash of the periodic basis function used
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    UNIQUE(scale, cell_index)
+);
+
+-- Per-memory grid activations: which cells fire for this memory.
+CREATE TABLE IF NOT EXISTS entorhinal_memory_activations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id INTEGER NOT NULL,
+    cell_id INTEGER NOT NULL REFERENCES entorhinal_grid_cells(id) ON DELETE CASCADE,
+    activation REAL NOT NULL DEFAULT 1.0,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+    UNIQUE(memory_id, cell_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eg_activations_memory ON entorhinal_memory_activations(memory_id);
+CREATE INDEX IF NOT EXISTS idx_eg_activations_cell ON entorhinal_memory_activations(cell_id, activation DESC);
+
+-- Seed canonical 3-scale grid cells (16 cells per scale = 48 total).
+INSERT OR IGNORE INTO entorhinal_grid_cells (scale, cell_index, basis_hash, description)
+SELECT 1, n, 'fine:' || n, 'fine-grained grid cell ' || n FROM (
+    SELECT 0 AS n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3
+    UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7
+    UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11
+    UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15);
+INSERT OR IGNORE INTO entorhinal_grid_cells (scale, cell_index, basis_hash, description)
+SELECT 2, n, 'medium:' || n, 'medium-grained grid cell ' || n FROM (
+    SELECT 0 AS n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3
+    UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7
+    UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11
+    UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15);
+INSERT OR IGNORE INTO entorhinal_grid_cells (scale, cell_index, basis_hash, description)
+SELECT 3, n, 'coarse:' || n, 'coarse-grained grid cell ' || n FROM (
+    SELECT 0 AS n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3
+    UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7
+    UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11
+    UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15);
