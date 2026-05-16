@@ -228,11 +228,64 @@ def tool_bg_action_register(
         db.close()
 
 
+def _cascade_to_thalamus(
+    tonic_da: float | None,
+    lc_ne: float | None,
+    set_by: str | None,
+) -> dict[str, Any] | None:
+    """Mirror BG modulator changes into thalamic_mode where biologically
+    plausible. Tonic DA biases the exploit/explore axis (=> wake_focused vs
+    wake_exploratory); LC-NE drives thalamic norepinephrine and overall
+    arousal; serotonin has no direct thalamic dial (skip).
+
+    Never raises. Returns the thalamus update result on success, None if
+    the cascade did not fire (no relevant inputs / schema not applied).
+    """
+    if tonic_da is None and lc_ne is None:
+        return None
+    try:
+        # Resolve the canonical thalamic mode if tonic DA was supplied
+        mode: str | None = None
+        if tonic_da is not None:
+            if tonic_da >= 0.7:
+                mode = "wake_focused"
+            elif tonic_da <= 0.3:
+                mode = "wake_exploratory"
+            # else: mid range — leave the existing mode alone
+        # Build kwargs for thalamus_mode_set
+        thal_kwargs: dict[str, Any] = {"set_by": f"bg_cascade:{set_by or 'unknown'}"}
+        if lc_ne is not None:
+            thal_kwargs["norepinephrine"] = _clamp(lc_ne, default=0.5)
+            # Arousal blends both BG dials
+            if tonic_da is not None:
+                thal_kwargs["arousal"] = _clamp((float(tonic_da) + float(lc_ne)) / 2.0, default=0.5)
+            else:
+                thal_kwargs["arousal"] = _clamp(lc_ne, default=0.5)
+        elif tonic_da is not None:
+            thal_kwargs["arousal"] = _clamp(tonic_da, default=0.5)
+
+        if mode is None:
+            # No mode flip but dial-only update — read current mode and reuse.
+            db = _db()
+            try:
+                row = db.execute("SELECT mode FROM thalamic_mode WHERE id=1").fetchone()
+                mode = row[0] if row else "wake_focused"
+            finally:
+                db.close()
+        thal_kwargs["mode"] = mode
+
+        from agentmemory.mcp_tools_thalamus import tool_thalamus_mode_set
+        return tool_thalamus_mode_set(**thal_kwargs)
+    except Exception:
+        return None
+
+
 def tool_bg_modulator_set(
     tonic_da: float | None = None,
     lc_ne: float | None = None,
     serotonin: float | None = None,
     set_by: str | None = None,
+    cascade_to_thalamus: bool = True,
     **kw: Any,
 ) -> dict[str, Any]:
     """Update the three independent neuromodulator dials.
@@ -240,6 +293,12 @@ def tool_bg_modulator_set(
     tonic_da   = policy vigor / search breadth (exploit vs explore)
     lc_ne      = arousal / surprise gain (broaden eligibility under high)
     serotonin  = time horizon / γ scaling (myopic vs patient)
+
+    When `cascade_to_thalamus` is True (default), biologically plausible
+    knock-on effects propagate to thalamic_mode: tonic_da ≥ 0.7 selects
+    wake_focused, ≤ 0.3 selects wake_exploratory; LC-NE cascades to
+    thalamic norepinephrine; arousal is the blended mean. Serotonin has
+    no direct thalamic analog. The cascade is silent on failure.
     """
     if tonic_da is None and lc_ne is None and serotonin is None:
         return {"ok": False, "error": "at least one of tonic_da/lc_ne/serotonin is required"}
@@ -268,7 +327,14 @@ def tool_bg_modulator_set(
         db.execute(sql, params)
         db.commit()
         row = db.execute("SELECT * FROM bg_modulators WHERE id = 1").fetchone()
-        return {"ok": True, "modulators": dict(row) if row else None}
+        response: dict[str, Any] = {"ok": True, "modulators": dict(row) if row else None}
+
+        if cascade_to_thalamus:
+            cascade = _cascade_to_thalamus(tonic_da=tonic_da, lc_ne=lc_ne, set_by=set_by)
+            if cascade is not None:
+                response["thalamus_cascade"] = cascade
+
+        return response
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     finally:
