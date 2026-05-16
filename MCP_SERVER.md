@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (234)
+## Available Tools (238)
 
 | Tool | Description |
 |------|-------------|
@@ -157,6 +157,7 @@ server over stdio.
 | Basal Ganglia (Phase 1+2+3 + holds + cascade) | `bg_status`, `bg_action_register`, `bg_modulator_set`, `bg_td_emit`, `bg_shadow_stats`, `bg_sweep_traces`, `bg_weights_show`, `bg_hold_trigger`, `bg_hold_release`, `bg_holds_active` | Five parallel loops + opponent Go/NoGo learning from real outcomes (three-factor rule) + dispatch shadow + outcome→δ wired into `outcome_annotate` + hyperdirect holds + cascade to thalamus (see `docs/proposals/basal_ganglia.md`) |
 | Cerebellum (Phase 1+2+3, predict/observe + auto-wire) | `cerebellum_status`, `cerebellum_module_register`, `cerebellum_predict`, `cerebellum_observe` | Forward-model layer per cortical partner (motor/oculomotor/dlpfc/lofc/acc) × 3 prediction kinds. Marr-Albus sparse expansion + supervised LTD update. Boundary markers fire on \|δ_forward\|≥0.5 → workspace broadcasts + BG TD-error bus. Auto-wired into MCP dispatch. Confidence → thalamus salience precision (see `docs/proposals/cerebellum.md`) |
 | Amygdala (Phase 1, valence tagging) | `amygdala_status`, `amygdala_tag`, `amygdala_query_valence`, `amygdala_extinguish` | Rapid one-shot valence/threat tagging per entity/agent/context. Saturating tanh update caps single-event movement at ±0.5 (anti-PTSD). Reconsolidation: query opens 1h labile window where next tag uses 4× learning rate. Extinction = context-keyed inhibitory overlay (ITC-analog), not erasure (see `docs/proposals/amygdala.md`) |
+| Hippocampal subfields (Phase 1, DG/CA3 audit) | `hippocampus_dg_separate`, `hippocampus_dg_check`, `hippocampus_ca3_complete`, `hippocampus_subfields_status` | DG pattern-separation at write time + CA3 pattern-completion at retrieval, audit-only in Phase 1. Decisions: deduplicate (sim≥0.97), separate (sim≥0.85), passthrough (sim<0.85) |
 
 ### Tier 3: Specialist (~150 tools)
 
