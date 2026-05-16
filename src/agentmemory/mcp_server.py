@@ -3251,6 +3251,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     except Exception as _bg_exc:  # pragma: no cover — defensive
         logger.debug("bg shadow consult skipped: %s", _bg_exc)
 
+    # Cerebellum Phase 2 forward-prediction. Issues 3 predictions
+    # (success_probability, expected_latency_ms, expected_outcome_class) and
+    # returns a handle the post-dispatch path uses to close the loop.
+    _cb_consult = None
+    try:
+        from agentmemory.cerebellum_shadow import consult_for_dispatch as _cb_shadow_consult
+        _cb_consult = _cb_shadow_consult(
+            action_key=name, agent_id=agent_id, arguments=arguments,
+        )
+    except Exception as _cb_exc:  # pragma: no cover — defensive
+        logger.debug("cerebellum consult skipped: %s", _cb_exc)
+
+    _cb_error = None
     try:
         if name == "stats":
             result = fn()
@@ -3258,6 +3271,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _invoke_dispatch_fn(fn, agent_id, arguments)
     except Exception as e:
         result = {"error": str(e)}
+        _cb_error = e
+
+    # Close the cerebellum predict→observe loop with measured latency +
+    # success/error. Never blocks; silent on schema missing.
+    try:
+        from agentmemory.cerebellum_shadow import observe_dispatch as _cb_shadow_observe
+        _cb_shadow_observe(_cb_consult, error=_cb_error)
+    except Exception as _cb_exc:  # pragma: no cover
+        logger.debug("cerebellum observe skipped: %s", _cb_exc)
 
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
