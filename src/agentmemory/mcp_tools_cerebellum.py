@@ -1,5 +1,15 @@
 """brainctl MCP tools — cerebellum forward-model inspection and learning loop.
 
+Phase 3 wires the cerebellum's two output channels into the existing
+substrate:
+- Boundary markers (|δ_forward| ≥ 0.5) fire a workspace_broadcasts row
+  with elevated salience, surfacing prediction-error events into the
+  global neuronal workspace.
+- Cerebellum confidence is exposed via `cerebellum_partner_precision()`
+  for the thalamus to consume as a precision multiplier when computing
+  integrated salience.
+
+
 Phase 1 of the cerebellum subsystem per docs/proposals/cerebellum.md.
 Read + minimal idempotent writes. The full predict-observe loop is exposed
 here so callers can use it directly; Phase 2 will wire it into the dispatch
@@ -16,10 +26,13 @@ Learning rule is supervised LTD: weight -= lr × eligibility × δ_forward.
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from mcp.types import Tool
 
@@ -41,6 +54,20 @@ _DEFAULT_TRACE_DECAY = 0.95
 _TRACE_TTL_SECONDS = 3600
 _BOUNDARY_THRESHOLD = 0.5
 _CONFIDENCE_EMA_ALPHA = 0.1
+
+# Phase 3 workspace bridge — looked up once per call. workspace_broadcasts
+# requires a NOT NULL FK to memories(id); we route boundary-fired broadcasts
+# through a sentinel memory created by migration 057.
+def _resolve_sentinel_memory_id(conn: sqlite3.Connection) -> int | None:
+    try:
+        row = conn.execute(
+            "SELECT id FROM memories "
+            "WHERE agent_id = 'cerebellum-system' AND scope = 'system' "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+        return int(row[0]) if row else None
+    except sqlite3.OperationalError:
+        return None
 
 
 def _db() -> sqlite3.Connection:
@@ -87,6 +114,47 @@ def _clamp(value: Any, default: float = 0.0) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return default
+
+
+def cerebellum_partner_precision(
+    partner: str,
+    db_path: str | None = None,
+) -> float:
+    """Phase 3 cross-subsystem helper. Returns the mean recent confidence
+    across all `(module, context)` weights for a given partner — used by
+    thalamus_salience as a precision multiplier. Range [0, 1]; defaults
+    to 0.5 (neutral) when no learning has happened yet.
+
+    Safe on missing schema. Never raises.
+    """
+    if partner not in VALID_PARTNERS:
+        return 0.5
+    try:
+        path = db_path or str(DB_PATH)
+        conn = sqlite3.connect(path, timeout=2.0)
+    except Exception:
+        return 0.5
+    try:
+        try:
+            row = conn.execute(
+                """
+                SELECT AVG(w.confidence)
+                FROM cerebellum_weights w
+                JOIN cerebellum_modules m ON m.id = w.module_id
+                WHERE m.partner = ? AND w.n_updates > 0
+                """,
+                (partner,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0.5
+        if not row or row[0] is None:
+            return 0.5
+        return float(row[0])
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def tool_cerebellum_status(
@@ -447,6 +515,7 @@ def tool_cerebellum_observe(
 
         # Boundary marker (complex-spike analog) on large |delta_forward|
         boundary_id: int | None = None
+        workspace_broadcast_id: int | None = None
         if abs(delta_forward) >= _BOUNDARY_THRESHOLD:
             cur = db.execute(
                 """
@@ -458,6 +527,37 @@ def tool_cerebellum_observe(
                 (partner, delta_forward, ctx_hash, pid, min(1.0, abs(delta_forward))),
             )
             boundary_id = cur.lastrowid
+
+            # Phase 3 wire: fire a workspace broadcast for the surprise event.
+            # High-PE events warrant global attention — this is the
+            # cerebellum's signal to the "global neuronal workspace" that
+            # something violated prediction strongly enough to bring it into
+            # focal awareness. Salience scales with |δ_forward|, capped at 1.
+            sentinel_id = _resolve_sentinel_memory_id(db)
+            if sentinel_id is not None:
+                try:
+                    wb_cur = db.execute(
+                        """
+                        INSERT INTO workspace_broadcasts (
+                            memory_id, agent_id, salience, summary, target_scope,
+                            triggered_by
+                        )
+                        VALUES (?, 'cerebellum-system', ?, ?, 'global', ?)
+                        """,
+                        (
+                            sentinel_id,
+                            min(1.0, abs(delta_forward)),
+                            f"cerebellum surprise: partner={partner} kind={pred[6]} "
+                            f"predicted={predicted:.4f} observed={observed:.4f} "
+                            f"δ_forward={delta_forward:+.4f}",
+                            f"cerebellum_boundary:{boundary_id}",
+                        ),
+                    )
+                    workspace_broadcast_id = wb_cur.lastrowid
+                except sqlite3.OperationalError as exc:
+                    logger.debug("cerebellum boundary → workspace broadcast skipped: %s", exc)
+                except sqlite3.IntegrityError as exc:
+                    logger.debug("cerebellum boundary → workspace broadcast integrity skipped: %s", exc)
 
         db.commit()
 
@@ -485,6 +585,7 @@ def tool_cerebellum_observe(
             "weight_after": new_weight,
             "confidence": new_conf,
             "boundary_id": boundary_id,
+            "workspace_broadcast_id": workspace_broadcast_id,
             "bg_td_event": td_event,
         }
     except Exception as exc:
