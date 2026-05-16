@@ -60,17 +60,34 @@ def run_write_gate(blob, confidence, category, scope, get_vec_db_fn, force=False
         return (None, "", {})
 
     try:
-        return wd.gate_write(
-            candidate_blob=blob,
-            confidence=confidence,
-            temporal_class=None,
-            category=category,
-            scope=scope,
-            db_vec=vdb,
-            force=False,
-        )
-    except Exception as exc:
-        logger.debug("Write gate execution failed: %s", exc)
-        return (None, "", {})
+        try:
+            result = wd.gate_write(
+                candidate_blob=blob,
+                confidence=confidence,
+                temporal_class=None,
+                category=category,
+                scope=scope,
+                db_vec=vdb,
+                force=False,
+            )
+        except Exception as exc:
+            logger.debug("Write gate execution failed: %s", exc)
+            result = (None, "", {})
     finally:
         vdb.close()
+
+    # Shadow-consult the thalamic gate (Phase 2 of the thalamus subsystem).
+    # Records what the thalamic gate would have done; never alters the W(m)
+    # result. Silent if migration 050/053 not applied yet.
+    try:
+        from agentmemory.thalamus_shadow import consult_for_write as _thalamus_shadow_consult
+        w_score = result[0] if isinstance(result, tuple) and len(result) > 0 else None
+        _thalamus_shadow_consult(
+            scope=scope,
+            category=category,
+            surprise_score=float(w_score) if w_score is not None else 0.0,
+        )
+    except Exception as exc:
+        logger.debug("thalamus shadow consult skipped: %s", exc)
+
+    return result
