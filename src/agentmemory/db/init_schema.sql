@@ -1882,3 +1882,468 @@ CREATE INDEX IF NOT EXISTS idx_code_ingest_cache_scope
     ON code_ingest_cache(scope);
 CREATE INDEX IF NOT EXISTS idx_code_ingest_cache_language
     ON code_ingest_cache(language);
+
+-- ============================================================
+-- Migrations 050, 053–057: thalamus + basal ganglia + cerebellum subsystems
+-- (2026-05-15 evening cookoff). Mirrored here so fresh installs
+-- match upgrade-path schemas — see tests/test_schema_parity.py.
+-- ============================================================
+
+-- ---- 050_thalamus.sql ----
+-- Migration 050: thalamus Phase 1 schema
+--
+-- Adds an additive thalamus subsystem skeleton: typed relay catalog,
+-- TRN-style gate sidecar, global mode row, salience cache, and sparse burst
+-- log. Phase 1 is inspection-only: no existing tool behavior changes.
+--
+-- Rollback, if needed before live adoption:
+--   DROP TABLE IF EXISTS thalamic_bursts;
+--   DROP TABLE IF EXISTS thalamic_salience;
+--   DROP TABLE IF EXISTS thalamic_mode;
+--   DROP TABLE IF EXISTS thalamic_gate;
+--   DROP TABLE IF EXISTS thalamic_relays;
+--   DELETE FROM schema_version WHERE version = 50;
+--   DELETE FROM schema_versions WHERE version = 50;
+--
+-- IDEMPOTENT: IF NOT EXISTS guards object creation; the seed rows use
+-- INSERT OR IGNORE so repeated application does not duplicate state.
+
+CREATE TABLE IF NOT EXISTS thalamic_relays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL UNIQUE,
+    sector TEXT NOT NULL,
+    driver_source TEXT NOT NULL,
+    modulator_sources_json TEXT,
+    target TEXT NOT NULL,
+    transport TEXT NOT NULL CHECK(transport IN ('first_order', 'higher_order')),
+    default_mode TEXT NOT NULL DEFAULT 'tonic' CHECK(default_mode IN ('tonic', 'burst')),
+    default_gain REAL NOT NULL DEFAULT 1.0,
+    topographic_key TEXT,
+    efference_copy_target TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_relays_sector
+    ON thalamic_relays(sector);
+
+CREATE INDEX IF NOT EXISTS idx_relays_target
+    ON thalamic_relays(target);
+
+CREATE INDEX IF NOT EXISTS idx_relays_transport
+    ON thalamic_relays(transport);
+
+CREATE TABLE IF NOT EXISTS thalamic_gate (
+    channel_id TEXT PRIMARY KEY,
+    suppression REAL NOT NULL DEFAULT 0.0 CHECK(suppression >= 0.0 AND suppression <= 1.0),
+    topdown_bias REAL NOT NULL DEFAULT 0.0 CHECK(topdown_bias >= 0.0 AND topdown_bias <= 1.0),
+    bottomup_drive REAL NOT NULL DEFAULT 0.0 CHECK(bottomup_drive >= 0.0 AND bottomup_drive <= 1.0),
+    sector TEXT NOT NULL,
+    armed_for_burst INTEGER NOT NULL DEFAULT 0 CHECK(armed_for_burst IN (0, 1)),
+    last_burst_at TEXT,
+    bias_source TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    FOREIGN KEY (channel_id) REFERENCES thalamic_relays(channel_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_gate_sector
+    ON thalamic_gate(sector);
+
+CREATE INDEX IF NOT EXISTS idx_gate_armed
+    ON thalamic_gate(armed_for_burst)
+    WHERE armed_for_burst = 1;
+
+CREATE TABLE IF NOT EXISTS thalamic_mode (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    mode TEXT NOT NULL DEFAULT 'wake_focused'
+        CHECK(mode IN ('wake_focused', 'wake_exploratory', 'drowsy', 'consolidate', 'offline')),
+    arousal REAL NOT NULL DEFAULT 0.5 CHECK(arousal >= 0.0 AND arousal <= 1.0),
+    acetylcholine REAL NOT NULL DEFAULT 0.5 CHECK(acetylcholine >= 0.0 AND acetylcholine <= 1.0),
+    norepinephrine REAL NOT NULL DEFAULT 0.5 CHECK(norepinephrine >= 0.0 AND norepinephrine <= 1.0),
+    retrieval_breadth_multiplier REAL NOT NULL DEFAULT 1.0,
+    similarity_threshold_delta REAL NOT NULL DEFAULT 0.0,
+    set_by TEXT,
+    set_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+INSERT OR IGNORE INTO thalamic_mode (id, mode)
+VALUES (1, 'wake_focused');
+
+CREATE TABLE IF NOT EXISTS thalamic_salience (
+    candidate_id TEXT NOT NULL,
+    candidate_type TEXT NOT NULL CHECK(candidate_type IN ('memory', 'event', 'belief', 'entity', 'relay')),
+    bottomup_score REAL,
+    topdown_score REAL,
+    precision REAL NOT NULL DEFAULT 1.0,
+    integrated REAL,
+    sector TEXT,
+    computed_for_agent TEXT NOT NULL,
+    computed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    PRIMARY KEY (candidate_id, candidate_type, computed_for_agent)
+);
+
+CREATE INDEX IF NOT EXISTS idx_salience_recent
+    ON thalamic_salience(computed_at);
+
+CREATE INDEX IF NOT EXISTS idx_salience_integrated
+    ON thalamic_salience(integrated DESC);
+
+CREATE INDEX IF NOT EXISTS idx_salience_agent
+    ON thalamic_salience(computed_for_agent, integrated DESC);
+
+CREATE TABLE IF NOT EXISTS thalamic_bursts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    sector TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    payload_ref TEXT,
+    salience REAL NOT NULL,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    consumed_by TEXT,
+    consumed_at TEXT,
+    FOREIGN KEY (channel_id) REFERENCES thalamic_relays(channel_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bursts_unconsumed
+    ON thalamic_bursts(consumed_at)
+    WHERE consumed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_bursts_channel_time
+    ON thalamic_bursts(channel_id, fired_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_bursts_sector_time
+    ON thalamic_bursts(sector, fired_at DESC);
+
+-- ---- 053_thalamus_shadow.sql ----
+-- Migration 053: thalamus Phase 2 shadow-mode decision log
+--
+-- Phase 2 of the thalamus subsystem (per docs/proposals/thalamus.md) adds
+-- writeable gate / burst / mode tools and a shadow consult at the W(m) write
+-- gate. The hookpoint never alters production behavior; it records what the
+-- thalamic gate WOULD have done so we can compare against actual outcomes
+-- before flipping to enforcement mode in a future phase.
+--
+-- This migration adds the append-only audit table that the shadow consult
+-- writes to.
+--
+-- Rollback, if needed before live adoption:
+--   DROP TABLE IF EXISTS thalamic_shadow_decisions;
+--   DELETE FROM schema_version WHERE version = 53;
+--
+-- IDEMPOTENT: IF NOT EXISTS guards object creation.
+
+CREATE TABLE IF NOT EXISTS thalamic_shadow_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id TEXT,
+    source_call TEXT NOT NULL,
+    sector TEXT,
+    channel_id TEXT,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    suppression REAL,
+    bottomup_drive REAL,
+    surprise_score REAL,
+    actual_outcome TEXT,
+    payload_hash TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_recent
+    ON thalamic_shadow_decisions(decision_at);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_sector_recent
+    ON thalamic_shadow_decisions(sector, decision_at);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_decision_recent
+    ON thalamic_shadow_decisions(decision, decision_at);
+
+-- ---- 054_basal_ganglia.sql ----
+-- Migration 054: basal ganglia subsystem — Phase 1 schema
+--
+-- Implements Phase 1 of the BG proposal at docs/proposals/basal_ganglia.md.
+-- The BG sits upstream of the thalamus in the call path:
+--   agent request → BG (action selection, outcome-driven RL) → thalamus
+--   (typed routing, gating) → substrate
+--
+-- Phase 1 is inspection-only / additive: schema + read-and-CRUD tools.
+-- No existing tool behavior changes. The TD-error broadcast bus and
+-- eligibility-trace updates exist as tables but aren't wired into
+-- mcp_server.py:tool_call_handler yet — that's Phase 2 (shadow gate).
+--
+-- Five biological invariants encoded here (see proposal):
+--   1. Five parallel topographic loops (motor/oculomotor/dlpfc/lofc/acc)
+--   2. Opponent Go/NoGo weights per (action, context)
+--   3. Distributional value as 5 expectile estimates per row
+--   4. Eligibility traces with decay constants
+--   5. Single-row global modulator state (tonic DA / LC-NE / 5-HT)
+--
+-- Rollback, if needed before live adoption:
+--   DROP TABLE IF EXISTS bg_chunks;
+--   DROP TABLE IF EXISTS bg_holds;
+--   DROP TABLE IF EXISTS bg_modulators;
+--   DROP TABLE IF EXISTS bg_td_events;
+--   DROP TABLE IF EXISTS bg_eligibility_traces;
+--   DROP TABLE IF EXISTS bg_striatal_weights;
+--   DROP TABLE IF EXISTS bg_actions;
+--   DELETE FROM schema_version WHERE version = 54;
+--
+-- IDEMPOTENT: IF NOT EXISTS guards object creation; seed rows use
+-- INSERT OR IGNORE so repeated application does not duplicate state.
+
+-- Candidate action catalog: one row per "thing the BG can gate"
+CREATE TABLE IF NOT EXISTS bg_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop TEXT NOT NULL CHECK(loop IN ('motor','oculomotor','dlpfc','lofc','acc')),
+    action_key TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    UNIQUE (loop, action_key)
+);
+CREATE INDEX IF NOT EXISTS idx_bg_actions_loop ON bg_actions(loop);
+
+-- Striatal weights: opponent Go / NoGo + 5-expectile distributional value
+-- keyed by (action, context). context_hash is a stable hash of relevant
+-- state features (project, agent, recent outcomes, neurostate mode).
+CREATE TABLE IF NOT EXISTS bg_striatal_weights (
+    action_id INTEGER NOT NULL,
+    context_hash TEXT NOT NULL,
+    w_go REAL NOT NULL DEFAULT 0.0,
+    w_nogo REAL NOT NULL DEFAULT 0.0,
+    v_q10 REAL NOT NULL DEFAULT 0.0,
+    v_q30 REAL NOT NULL DEFAULT 0.0,
+    v_q50 REAL NOT NULL DEFAULT 0.0,
+    v_q70 REAL NOT NULL DEFAULT 0.0,
+    v_q90 REAL NOT NULL DEFAULT 0.0,
+    n_updates INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    PRIMARY KEY (action_id, context_hash),
+    FOREIGN KEY (action_id) REFERENCES bg_actions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_bg_weights_action ON bg_striatal_weights(action_id);
+CREATE INDEX IF NOT EXISTS idx_bg_weights_ctx ON bg_striatal_weights(context_hash);
+
+-- Eligibility traces: transient tags deposited by gating decisions, decayed
+-- and swept periodically by bg_sweep_traces.
+CREATE TABLE IF NOT EXISTS bg_eligibility_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id INTEGER NOT NULL,
+    context_hash TEXT NOT NULL,
+    trace_strength REAL NOT NULL DEFAULT 1.0,
+    decay_constant REAL NOT NULL DEFAULT 0.95,
+    decision_event_id INTEGER,
+    deposited_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    expires_at TEXT,
+    FOREIGN KEY (action_id) REFERENCES bg_actions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_bg_traces_active ON bg_eligibility_traces(expires_at);
+CREATE INDEX IF NOT EXISTS idx_bg_traces_ctx ON bg_eligibility_traces(action_id, context_hash);
+
+-- TD-error event log: the dopamine broadcast bus.
+-- δ = utility(outcome) + γ·V(s') − V(s)
+CREATE TABLE IF NOT EXISTS bg_td_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    agent_id TEXT,
+    utility REAL NOT NULL,
+    v_current REAL NOT NULL DEFAULT 0.0,
+    v_next REAL NOT NULL DEFAULT 0.0,
+    gamma REAL NOT NULL DEFAULT 0.95,
+    delta REAL NOT NULL,
+    source TEXT NOT NULL,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    consumed_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_bg_td_recent ON bg_td_events(fired_at);
+CREATE INDEX IF NOT EXISTS idx_bg_td_agent ON bg_td_events(agent_id, fired_at);
+
+-- Hyperdirect "hold" events: global pauses triggered by conflict, surprise,
+-- or explicit stop signals.
+CREATE TABLE IF NOT EXISTS bg_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('conflict','surprise','explicit_stop')),
+    trigger_score_gap REAL,
+    ticks INTEGER NOT NULL DEFAULT 1,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    released_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bg_holds_active ON bg_holds(released_at);
+CREATE INDEX IF NOT EXISTS idx_bg_holds_loop ON bg_holds(loop, fired_at);
+
+-- Neuromodulator dials (single row, broadcast). Three independent knobs,
+-- NOT one temperature scalar (per BG research swarm finding):
+--   tonic_da: policy vigor / search breadth (exploit vs explore)
+--   lc_ne:    arousal / surprise gain (broaden eligibility under high)
+--   serotonin: time horizon, γ scaling (myopic vs patient)
+CREATE TABLE IF NOT EXISTS bg_modulators (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    tonic_da REAL NOT NULL DEFAULT 0.5,
+    lc_ne REAL NOT NULL DEFAULT 0.5,
+    serotonin REAL NOT NULL DEFAULT 0.5,
+    set_by TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+INSERT OR IGNORE INTO bg_modulators (id) VALUES (1);
+
+-- Action-chunk catalog (Graybiel task-bracketing): durable start/stop
+-- markers around opaque action sequences. Atomic from the selector's
+-- perspective once formed.
+CREATE TABLE IF NOT EXISTS bg_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loop TEXT NOT NULL,
+    name TEXT NOT NULL,
+    start_marker TEXT NOT NULL,
+    end_marker TEXT NOT NULL,
+    body_actions_json TEXT,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    UNIQUE (loop, name)
+);
+CREATE INDEX IF NOT EXISTS idx_bg_chunks_loop ON bg_chunks(loop);
+
+-- ---- 055_basal_ganglia_shadow.sql ----
+-- Migration 055: basal ganglia Phase 2 — shadow-mode dispatch decision log
+--
+-- Phase 2 of the BG subsystem wires the TD-error broadcast bus into
+-- outcome_annotate and adds a shadow consult at the tool-dispatch entry
+-- point (mcp_server.py:3247). The shadow consult never alters dispatch
+-- behavior; it records what the BG would have decided (approve / block /
+-- delay / delegate) so we can validate the policy against actual outcomes
+-- before flipping to enforcement mode.
+--
+-- Rollback, if needed:
+--   DROP TABLE IF EXISTS bg_shadow_decisions;
+--   DELETE FROM schema_version WHERE version = 55;
+--
+-- IDEMPOTENT.
+
+CREATE TABLE IF NOT EXISTS bg_shadow_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id TEXT,
+    action_key TEXT NOT NULL,
+    loop TEXT,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    net_signal REAL,
+    w_go REAL,
+    w_nogo REAL,
+    context_hash TEXT,
+    arguments_hash TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bg_shadow_recent
+    ON bg_shadow_decisions(decision_at);
+
+CREATE INDEX IF NOT EXISTS idx_bg_shadow_decision
+    ON bg_shadow_decisions(decision, decision_at);
+
+CREATE INDEX IF NOT EXISTS idx_bg_shadow_action
+    ON bg_shadow_decisions(action_key, decision_at);
+
+-- ---- 056_cerebellum.sql ----
+-- Migration 056: cerebellum subsystem — Phase 1 schema
+--
+-- Third brain-inspired subsystem after thalamus and basal ganglia. Implements
+-- a forward-model layer that issues predictions before actions commit and
+-- learns from observed errors (Marr-Albus + Kawato MPFIM/MOSAIC).
+--
+-- Five cortical partner modules mirror BG's five loops:
+--   motor_partner       — predicts outcomes of state-mutating actions
+--   oculomotor_partner  — predicts retrieval relevance
+--   dlpfc_partner       — predicts plan-step completion / result shape
+--   lofc_partner        — predicts expected utility / outcome class
+--   acc_partner         — predicts conflict probability
+--
+-- Each (partner, prediction_kind) pair is a module; weights are a sparse
+-- linear readout over hashed context features (granule-cell expansion).
+--
+-- Phase 1 is inspection + manual setup only. Phase 2 wires the predict /
+-- observe loop into the dispatch shadow consult; Phase 3 modulates thalamic
+-- precision; Phase 4 enforces.
+--
+-- Rollback, if needed:
+--   DROP TABLE IF EXISTS cerebellum_boundaries;
+--   DROP TABLE IF EXISTS cerebellum_traces;
+--   DROP TABLE IF EXISTS cerebellum_predictions;
+--   DROP TABLE IF EXISTS cerebellum_weights;
+--   DROP TABLE IF EXISTS cerebellum_modules;
+--   DELETE FROM schema_version WHERE version = 56;
+--
+-- IDEMPOTENT: IF NOT EXISTS + INSERT OR IGNORE.
+
+CREATE TABLE IF NOT EXISTS cerebellum_modules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner TEXT NOT NULL CHECK(partner IN (
+        'motor_partner', 'oculomotor_partner', 'dlpfc_partner',
+        'lofc_partner', 'acc_partner'
+    )),
+    prediction_kind TEXT NOT NULL CHECK(prediction_kind IN (
+        'success_probability', 'expected_latency_ms', 'expected_outcome_class'
+    )),
+    description TEXT,
+    n_predictions INTEGER NOT NULL DEFAULT 0,
+    mean_abs_error REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    UNIQUE (partner, prediction_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_cb_modules_partner ON cerebellum_modules(partner);
+
+CREATE TABLE IF NOT EXISTS cerebellum_weights (
+    module_id INTEGER NOT NULL,
+    context_hash TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 0.0,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    n_updates INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    PRIMARY KEY (module_id, context_hash),
+    FOREIGN KEY (module_id) REFERENCES cerebellum_modules(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cb_weights_module ON cerebellum_weights(module_id);
+
+CREATE TABLE IF NOT EXISTS cerebellum_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    context_hash TEXT NOT NULL,
+    predicted_value REAL NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    decision_event_id INTEGER,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    observed_value REAL,
+    observed_at TEXT,
+    delta_forward REAL,
+    FOREIGN KEY (module_id) REFERENCES cerebellum_modules(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cb_pred_recent ON cerebellum_predictions(fired_at);
+CREATE INDEX IF NOT EXISTS idx_cb_pred_module ON cerebellum_predictions(module_id, fired_at);
+CREATE INDEX IF NOT EXISTS idx_cb_pred_pending
+    ON cerebellum_predictions(observed_at) WHERE observed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS cerebellum_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    context_hash TEXT NOT NULL,
+    prediction_id INTEGER,
+    trace_strength REAL NOT NULL DEFAULT 1.0,
+    decay_constant REAL NOT NULL DEFAULT 0.95,
+    deposited_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    expires_at TEXT,
+    FOREIGN KEY (module_id) REFERENCES cerebellum_modules(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cb_traces_active ON cerebellum_traces(expires_at);
+
+CREATE TABLE IF NOT EXISTS cerebellum_boundaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner TEXT NOT NULL,
+    delta_forward REAL NOT NULL,
+    context_hash TEXT NOT NULL,
+    prediction_id INTEGER,
+    salience REAL NOT NULL,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    consumed_by TEXT,
+    consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cb_boundaries_recent ON cerebellum_boundaries(fired_at);
+CREATE INDEX IF NOT EXISTS idx_cb_boundaries_unconsumed
+    ON cerebellum_boundaries(consumed_at) WHERE consumed_at IS NULL;

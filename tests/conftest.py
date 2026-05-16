@@ -1,4 +1,5 @@
 """Shared fixtures for brainctl test suite."""
+import importlib
 import sys
 import os
 import sqlite3
@@ -14,6 +15,44 @@ if str(SRC) not in sys.path:
 PROD_DB = Path(__file__).resolve().parent.parent / "db" / "brain.db"
 
 from agentmemory.brain import Brain
+
+
+# --- Auto-restore monkey-patched module-level helpers --------------------
+# Several brain-inspired subsystem tests monkey-patch `open_db` and `DB_PATH`
+# on their respective `mcp_tools_*` modules to redirect DB access to an
+# in-memory or temp-file connection. Those patches don't restore themselves,
+# which causes test-order-dependent failures when a downstream test calls
+# the production helper expecting the real DB. This fixture snapshots the
+# originals before each test and restores them after, regardless of how
+# the test exits.
+_LEAKY_MODULES = (
+    "agentmemory.mcp_tools_thalamus",
+    "agentmemory.mcp_tools_basal_ganglia",
+    "agentmemory.mcp_tools_cerebellum",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_module_helpers():
+    saved = {}
+    for mod_name in _LEAKY_MODULES:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        saved[mod_name] = {
+            "open_db": getattr(mod, "open_db", None),
+            "DB_PATH": getattr(mod, "DB_PATH", None),
+        }
+    yield
+    for mod_name, snapshot in saved.items():
+        try:
+            mod = sys.modules.get(mod_name) or importlib.import_module(mod_name)
+        except Exception:
+            continue
+        for attr, value in snapshot.items():
+            if value is not None:
+                setattr(mod, attr, value)
 
 
 @pytest.fixture
