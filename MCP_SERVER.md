@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (212)
+## Available Tools (219)
 
 | Tool | Description |
 |------|-------------|
@@ -153,7 +153,8 @@ server over stdio.
 | D-MEM | `memory_promote`, `tier_stats` | Write-tier management |
 | Metacognition | `memory_calibration`, `attention_snapshot`, `free_energy_check` | Self-monitoring |
 | Affect | `affect_classify`, `affect_log`, `affect_check`, `affect_monitor` | Emotional state tracking |
-| Thalamus (Phase 1, inspection-only) | `thalamus_status`, `thalamus_salience`, `thalamus_relay_create` | Inspect typed routing layer + integrated salience scoring (see `docs/proposals/thalamus.md`) |
+| Thalamus (Phase 1+2, shadow gate) | `thalamus_status`, `thalamus_salience`, `thalamus_relay_create`, `thalamus_gate_set`, `thalamus_burst`, `thalamus_mode_set`, `thalamus_shadow_stats` | Typed routing layer + integrated salience scoring + shadow-mode gate consult on every W(m) write (see `docs/proposals/thalamus.md`) |
+| Basal Ganglia (Phase 1, inspection) | `bg_status`, `bg_action_register`, `bg_modulator_set` | Action-selection catalog + 3 neuromodulator dials (tonic DA / LC-NE / 5-HT); pairs with thalamus, completes the cortex → BG → thalamus loop (see `docs/proposals/basal_ganglia.md`) |
 
 ### Tier 3: Specialist (~150 tools)
 
