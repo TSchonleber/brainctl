@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (209)
+## Available Tools (212)
 
 | Tool | Description |
 |------|-------------|
@@ -153,6 +153,7 @@ server over stdio.
 | D-MEM | `memory_promote`, `tier_stats` | Write-tier management |
 | Metacognition | `memory_calibration`, `attention_snapshot`, `free_energy_check` | Self-monitoring |
 | Affect | `affect_classify`, `affect_log`, `affect_check`, `affect_monitor` | Emotional state tracking |
+| Thalamus (Phase 1, inspection-only) | `thalamus_status`, `thalamus_salience`, `thalamus_relay_create` | Inspect typed routing layer + integrated salience scoring (see `docs/proposals/thalamus.md`) |
 
 ### Tier 3: Specialist (~150 tools)
 
