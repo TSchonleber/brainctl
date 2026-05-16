@@ -25,8 +25,8 @@ def _setup_tempdb() -> str:
         "(version INTEGER PRIMARY KEY, description TEXT, applied_at TEXT)"
     )
     for migration in (
-        "/Users/r4vager/agentmemory/db/migrations/054_basal_ganglia.sql",
-        "/Users/r4vager/agentmemory/db/migrations/055_basal_ganglia_shadow.sql",
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "054_basal_ganglia.sql"),
+        str(Path(__file__).resolve().parent.parent / "db" / "migrations" / "055_basal_ganglia_shadow.sql"),
     ):
         with open(migration) as f:
             conn.executescript(f.read())
