@@ -3240,6 +3240,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if not fn:
         return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
+    # BG Phase 2 shadow consult — records what the basal ganglia subsystem
+    # would have decided for this dispatch. No-op when the tool is not
+    # registered in bg_actions. Never raises, never alters dispatch.
+    try:
+        from agentmemory.bg_shadow import consult_for_dispatch as _bg_shadow_consult
+        _bg_shadow_consult(action_key=name, agent_id=agent_id, arguments=arguments)
+    except Exception as _bg_exc:  # pragma: no cover — defensive
+        logger.debug("bg shadow consult skipped: %s", _bg_exc)
+
     try:
         if name == "stats":
             result = fn()
