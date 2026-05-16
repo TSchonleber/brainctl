@@ -473,9 +473,33 @@ def handle_outcome_annotate(arguments: dict) -> dict:
 
     try:
         n = annotate_task_retrieval(task_id, agent_id, outcome)
-        return {"ok": True, "task_id": task_id, "outcome": outcome, "agent_id": agent_id, "rows_annotated": n}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+    # BG Phase 2: broadcast a TD-error onto bg_td_events. Never blocks the
+    # annotation response; silent if BG schema not yet applied.
+    td_event = None
+    try:
+        from agentmemory.bg_shadow import broadcast_td_error
+        td_event = broadcast_td_error(
+            task_id=task_id,
+            agent_id=agent_id,
+            outcome=outcome,
+            source="outcome_annotate",
+        )
+    except Exception:
+        pass
+
+    response = {
+        "ok": True,
+        "task_id": task_id,
+        "outcome": outcome,
+        "agent_id": agent_id,
+        "rows_annotated": n,
+    }
+    if td_event is not None:
+        response["bg_td_event"] = td_event
+    return response
 
 
 def handle_outcome_report(arguments: dict) -> dict:

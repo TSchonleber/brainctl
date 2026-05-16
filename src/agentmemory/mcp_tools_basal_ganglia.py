@@ -275,6 +275,118 @@ def tool_bg_modulator_set(
         db.close()
 
 
+def tool_bg_td_emit(
+    task_id: str | None = None,
+    agent_id: str | None = None,
+    outcome: str | None = None,
+    utility: float | None = None,
+    v_current: float = 0.0,
+    v_next: float = 0.0,
+    gamma: float = 0.95,
+    source: str = "manual",
+    **kw: Any,
+) -> dict[str, Any]:
+    """Compute δ = utility(outcome) + γ·V(s') − V(s) and broadcast onto
+    bg_td_events. Phase 2: explicit broadcast; eligibility-trace updates are
+    deferred to Phase 3.
+    """
+    from agentmemory.bg_shadow import broadcast_td_error
+    row = broadcast_td_error(
+        task_id=task_id,
+        agent_id=agent_id,
+        outcome=outcome,
+        utility=utility,
+        v_current=v_current,
+        v_next=v_next,
+        gamma=gamma,
+        source=source,
+    )
+    if row is None:
+        return {"ok": False, "error": "td broadcast failed (missing schema or invalid input)"}
+    return {"ok": True, **row}
+
+
+def tool_bg_shadow_stats(
+    days: int = 7,
+    loop: str | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Summarize Phase 2 shadow-mode dispatch decisions: by-decision and
+    by-action breakdown plus divergence rate (non-approve fraction).
+    """
+    try:
+        days_int = max(1, int(days))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "days must be an integer"}
+    if loop and loop not in VALID_LOOPS:
+        return {"ok": False, "error": f"loop must be one of {sorted(VALID_LOOPS)}"}
+
+    db = _db()
+    try:
+        if not _table_exists(db, "bg_shadow_decisions"):
+            return {"ok": False, "error": "bg_shadow_decisions table missing (apply migration 055)"}
+
+        where = [f"decision_at >= datetime('now', '-{days_int} days')"]
+        params: list[Any] = []
+        if loop:
+            where.append("loop = ?")
+            params.append(loop)
+        where_sql = "WHERE " + " AND ".join(where)
+
+        total = db.execute(
+            f"SELECT COUNT(*) FROM bg_shadow_decisions {where_sql}",  # nosec B608
+            params,
+        ).fetchone()[0]
+        by_decision = db.execute(
+            f"""
+            SELECT decision, COUNT(*) AS n
+            FROM bg_shadow_decisions
+            {where_sql}
+            GROUP BY decision
+            ORDER BY n DESC
+            """,  # nosec B608
+            params,
+        ).fetchall()
+        by_action = db.execute(
+            f"""
+            SELECT action_key, loop, COUNT(*) AS n,
+                   ROUND(AVG(net_signal), 4) AS mean_net
+            FROM bg_shadow_decisions
+            {where_sql}
+            GROUP BY action_key, loop
+            ORDER BY n DESC
+            LIMIT 20
+            """,  # nosec B608
+            params,
+        ).fetchall()
+        recent_blocks = db.execute(
+            f"""
+            SELECT decision_at, action_key, loop, net_signal, reason
+            FROM bg_shadow_decisions
+            {where_sql} AND decision != 'approve'
+            ORDER BY decision_at DESC
+            LIMIT 20
+            """,  # nosec B608
+            params,
+        ).fetchall()
+
+        approve_count = next((r["n"] for r in by_decision if r["decision"] == "approve"), 0)
+        return {
+            "ok": True,
+            "window_days": days_int,
+            "loop_filter": loop,
+            "total_decisions": total,
+            "by_decision": _rows_to_list(by_decision),
+            "by_action": _rows_to_list(by_action),
+            "divergence_rate": round(1 - (approve_count / total), 4) if total > 0 else 0.0,
+            "recent_non_approve": _rows_to_list(recent_blocks),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
 TOOLS: list[Tool] = [
     Tool(
         name="bg_status",
@@ -310,6 +422,44 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="bg_td_emit",
+        description=(
+            "Phase 2 broadcast: compute δ = utility(outcome) + γ·V(s') − V(s) and insert "
+            "a row onto the bg_td_events bus. Outcome maps to utility via a fixed table "
+            "(success=1.0, failure=-1.0, partial=0.3, etc.); pass `utility` directly to "
+            "override. v_current and v_next default to 0 in Phase 2 (state-value learning "
+            "is Phase 3)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "outcome": {"type": "string", "description": "e.g. 'success', 'failure', 'partial', 'blocked'"},
+                "utility": {"type": "number", "description": "Override outcome-to-utility mapping"},
+                "v_current": {"type": "number", "default": 0.0},
+                "v_next": {"type": "number", "default": 0.0},
+                "gamma": {"type": "number", "default": 0.95},
+                "source": {"type": "string", "default": "manual"},
+            },
+        },
+    ),
+    Tool(
+        name="bg_shadow_stats",
+        description=(
+            "Phase 2 observability. Summarize shadow-mode dispatch decisions: counts by "
+            "decision, top actions by hit count + mean net signal, recent non-approve "
+            "examples, divergence rate (fraction non-approve)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7},
+                "loop": {"type": "string", "enum": sorted(VALID_LOOPS)},
+            },
+        },
+    ),
+    Tool(
         name="bg_modulator_set",
         description=(
             "Update the three independent BG neuromodulator dials (tonic_da, lc_ne, "
@@ -332,6 +482,8 @@ _BG_TOOLS = {
     "bg_status": tool_bg_status,
     "bg_action_register": tool_bg_action_register,
     "bg_modulator_set": tool_bg_modulator_set,
+    "bg_td_emit": tool_bg_td_emit,
+    "bg_shadow_stats": tool_bg_shadow_stats,
 }
 
 DISPATCH: dict[str, Any] = {
