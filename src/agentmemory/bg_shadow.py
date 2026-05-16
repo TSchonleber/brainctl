@@ -65,6 +65,12 @@ _DEFAULT_TRACE_DECAY = 0.95
 _TRACE_PRUNE_STRENGTH = 0.05
 _TRACE_TTL_SECONDS = 3600  # 1 hour
 
+# Hyperdirect-pathway hold thresholds. When recent |δ| exceeds this, the
+# system fires a global surprise-hold. Conflict threshold compares parallel
+# dispatches in different loops within a tight time window.
+_HOLD_SURPRISE_DELTA = 0.8
+_HOLD_CONFLICT_WINDOW_SECONDS = 5
+
 
 def _connect(db_path: Optional[str] = None) -> sqlite3.Connection | None:
     try:
@@ -197,14 +203,30 @@ def consult_for_dispatch(
         except sqlite3.OperationalError as exc:
             logger.debug("bg_shadow: bg_eligibility_traces missing: %s", exc)
 
-        return {
+        # Phase 3.5: hyperdirect-pathway hold detection. Fires a bg_holds
+        # row if recent traffic shows conflict (cross-loop) or surprise
+        # (large recent |δ|). Holds are reported in the response so future
+        # Phase 4 enforcement can branch on active holds. Shadow-only for now.
+        fired_hold = _maybe_fire_hold(
+            conn,
+            action_loop=str(loop),
+            action_key=action_lookup_key,
+            agent_id=agent_id,
+        )
+        active_holds = _check_active_holds(conn)
+
+        result: dict[str, Any] = {
             "action_key": action_lookup_key,
             "loop": loop,
             "decision": decision,
             "reason": reason,
             "net_signal": net,
             "context_hash": ctx_hash,
+            "active_holds": active_holds,
         }
+        if fired_hold is not None:
+            result["fired_hold"] = fired_hold
+        return result
     finally:
         try:
             conn.close()
@@ -302,6 +324,177 @@ def _consume_eligibility_traces(
         )
         updated += 1
     return {"traces_consumed": len(traces), "weight_updates": updated}
+
+
+def _check_active_holds(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return currently-active (un-released) holds. Safe on missing table."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, loop, reason, trigger_score_gap, ticks, fired_at
+            FROM bg_holds
+            WHERE released_at IS NULL
+              AND fired_at > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-60 seconds')
+            ORDER BY fired_at DESC
+            LIMIT 10
+            """
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "loop": r[1], "reason": r[2],
+                "trigger_score_gap": r[3], "ticks": r[4], "fired_at": r[5],
+            }
+            for r in rows
+        ]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _maybe_fire_hold(
+    conn: sqlite3.Connection,
+    *,
+    action_loop: str,
+    action_key: str,
+    agent_id: str | None,
+) -> dict[str, Any] | None:
+    """Detect conflict and surprise triggers; fire a bg_holds row if either
+    condition holds. Returns the fired hold descriptor or None.
+
+    Triggers (Phase 3 detector):
+      - SURPRISE: a bg_td_events row in the last 60s with |δ| > 0.8.
+      - CONFLICT: a different loop dispatched a registered action for the
+        same agent within the last _HOLD_CONFLICT_WINDOW_SECONDS.
+    """
+    fired: dict[str, Any] | None = None
+    # SURPRISE
+    try:
+        row = conn.execute(
+            """
+            SELECT MAX(ABS(delta)) FROM bg_td_events
+            WHERE fired_at > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-60 seconds')
+            """
+        ).fetchone()
+        max_abs_delta = float(row[0]) if row and row[0] is not None else 0.0
+    except sqlite3.OperationalError:
+        max_abs_delta = 0.0
+
+    if max_abs_delta > _HOLD_SURPRISE_DELTA:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO bg_holds (loop, reason, trigger_score_gap, ticks)
+                VALUES (?, 'surprise', ?, 1)
+                """,
+                (action_loop, max_abs_delta),
+            )
+            conn.commit()
+            fired = {
+                "id": cur.lastrowid, "loop": action_loop, "reason": "surprise",
+                "trigger_score_gap": max_abs_delta, "ticks": 1,
+            }
+            return fired
+        except sqlite3.OperationalError:
+            pass
+
+    # CONFLICT: any other registered loop hit by the same agent recently?
+    try:
+        row = conn.execute(
+            f"""
+            SELECT loop, COUNT(*) FROM bg_shadow_decisions
+            WHERE agent_id = ?
+              AND loop != ?
+              AND decision_at > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-{_HOLD_CONFLICT_WINDOW_SECONDS} seconds')
+            GROUP BY loop
+            ORDER BY 2 DESC
+            LIMIT 1
+            """,  # nosec B608 — interpolated int constant
+            (agent_id or "", action_loop),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+
+    if row:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO bg_holds (loop, reason, trigger_score_gap, ticks)
+                VALUES (?, 'conflict', ?, 1)
+                """,
+                (action_loop, float(row[1])),
+            )
+            conn.commit()
+            fired = {
+                "id": cur.lastrowid, "loop": action_loop, "reason": "conflict",
+                "trigger_score_gap": float(row[1]), "ticks": 1,
+            }
+        except sqlite3.OperationalError:
+            pass
+    return fired
+
+
+def fire_hold(
+    *,
+    loop: str,
+    reason: str = "explicit_stop",
+    trigger_score_gap: float | None = None,
+    ticks: int = 1,
+    db_path: Optional[str] = None,
+) -> dict[str, Any] | None:
+    """Manually fire a hyperdirect hold. Used by `tool_bg_hold_trigger` and
+    can be called directly by callers that detect their own conflict signal.
+    """
+    if reason not in {"conflict", "surprise", "explicit_stop"}:
+        return None
+    conn = _connect(db_path)
+    if conn is None:
+        return None
+    try:
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO bg_holds (loop, reason, trigger_score_gap, ticks)
+                VALUES (?, ?, ?, ?)
+                """,
+                (loop, reason, trigger_score_gap, max(1, int(ticks))),
+            )
+            conn.commit()
+            return {
+                "id": cur.lastrowid, "loop": loop, "reason": reason,
+                "trigger_score_gap": trigger_score_gap, "ticks": ticks,
+            }
+        except sqlite3.OperationalError:
+            return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def release_hold(hold_id: int, db_path: Optional[str] = None) -> dict[str, Any] | None:
+    """Mark a hold as released. Idempotent on already-released holds."""
+    conn = _connect(db_path)
+    if conn is None:
+        return None
+    try:
+        try:
+            cur = conn.execute(
+                """
+                UPDATE bg_holds
+                SET released_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')
+                WHERE id = ? AND released_at IS NULL
+                """,
+                (int(hold_id),),
+            )
+            conn.commit()
+            return {"id": hold_id, "released": cur.rowcount > 0}
+        except sqlite3.OperationalError:
+            return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def sweep_eligibility_traces(db_path: Optional[str] = None) -> dict[str, Any]:

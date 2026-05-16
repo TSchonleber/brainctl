@@ -341,6 +341,82 @@ def tool_bg_modulator_set(
         db.close()
 
 
+def tool_bg_hold_trigger(
+    loop: str,
+    reason: str = "explicit_stop",
+    trigger_score_gap: float | None = None,
+    ticks: int = 1,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Manually fire a hyperdirect hold on a loop. Bypasses the scoring
+    pathway with a fast global "pause and re-evaluate" signal — analogous
+    to STN's cortex → STN → GPi/SNr fast brake.
+    """
+    if loop not in VALID_LOOPS:
+        return {"ok": False, "error": f"loop must be one of {sorted(VALID_LOOPS)}"}
+    from agentmemory.bg_shadow import fire_hold
+    h = fire_hold(loop=loop, reason=reason, trigger_score_gap=trigger_score_gap, ticks=ticks)
+    if h is None:
+        return {"ok": False, "error": "failed to fire hold (invalid reason or schema missing)"}
+    return {"ok": True, "hold": h}
+
+
+def tool_bg_hold_release(hold_id: int, **kw: Any) -> dict[str, Any]:
+    """Mark a hold as released. Idempotent on already-released holds."""
+    try:
+        hid = int(hold_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "hold_id must be an integer"}
+    from agentmemory.bg_shadow import release_hold
+    r = release_hold(hid)
+    if r is None:
+        return {"ok": False, "error": "release failed"}
+    return {"ok": True, **r}
+
+
+def tool_bg_holds_active(
+    loop: str | None = None,
+    window_seconds: int = 60,
+    **kw: Any,
+) -> dict[str, Any]:
+    """List currently-active (un-released) holds within the time window."""
+    if loop and loop not in VALID_LOOPS:
+        return {"ok": False, "error": f"loop must be one of {sorted(VALID_LOOPS)}"}
+    try:
+        window_int = max(1, int(window_seconds))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "window_seconds must be an integer"}
+
+    db = _db()
+    try:
+        schema_error = _require_schema(db)
+        if schema_error:
+            return {"ok": False, "error": schema_error}
+        clauses = [
+            f"fired_at > strftime('%Y-%m-%dT%H:%M:%S', 'now', '-{window_int} seconds')",
+            "released_at IS NULL",
+        ]
+        params: list[Any] = []
+        if loop:
+            clauses.append("loop = ?")
+            params.append(loop)
+        where_sql = "WHERE " + " AND ".join(clauses)
+        rows = db.execute(
+            f"""
+            SELECT id, loop, reason, trigger_score_gap, ticks, fired_at
+            FROM bg_holds
+            {where_sql}
+            ORDER BY fired_at DESC
+            """,  # nosec B608
+            params,
+        ).fetchall()
+        return {"ok": True, "active_holds": _rows_to_list(rows), "window_seconds": window_int}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        db.close()
+
+
 def tool_bg_sweep_traces(**kw: Any) -> dict[str, Any]:
     """Phase 3 maintenance: prune expired or weak eligibility traces.
 
@@ -593,6 +669,45 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="bg_hold_trigger",
+        description=(
+            "Fire a hyperdirect hold (global brake) on a loop. Analogous to STN's "
+            "cortex → STN → GPi/SNr fast pause path. reason ∈ {conflict, surprise, "
+            "explicit_stop}. Holds are also auto-fired by consult_for_dispatch on "
+            "high |δ| (surprise) or cross-loop traffic from the same agent (conflict)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop": {"type": "string", "enum": sorted(VALID_LOOPS)},
+                "reason": {"type": "string", "enum": ["conflict", "surprise", "explicit_stop"]},
+                "trigger_score_gap": {"type": "number"},
+                "ticks": {"type": "integer", "default": 1},
+            },
+            "required": ["loop"],
+        },
+    ),
+    Tool(
+        name="bg_hold_release",
+        description="Mark a hold as released. Idempotent on already-released holds.",
+        inputSchema={
+            "type": "object",
+            "properties": {"hold_id": {"type": "integer"}},
+            "required": ["hold_id"],
+        },
+    ),
+    Tool(
+        name="bg_holds_active",
+        description="List active (un-released) holds within the recent time window.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop": {"type": "string", "enum": sorted(VALID_LOOPS)},
+                "window_seconds": {"type": "integer", "default": 60},
+            },
+        },
+    ),
+    Tool(
         name="bg_sweep_traces",
         description=(
             "Phase 3 maintenance: prune eligibility traces below strength 0.05 or past "
@@ -642,6 +757,9 @@ _BG_TOOLS = {
     "bg_shadow_stats": tool_bg_shadow_stats,
     "bg_sweep_traces": tool_bg_sweep_traces,
     "bg_weights_show": tool_bg_weights_show,
+    "bg_hold_trigger": tool_bg_hold_trigger,
+    "bg_hold_release": tool_bg_hold_release,
+    "bg_holds_active": tool_bg_holds_active,
 }
 
 DISPATCH: dict[str, Any] = {
