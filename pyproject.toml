@@ -121,7 +121,7 @@ code = [
 # Pins are PyPI-verified as of 2026-04-16. See
 # tests/bench/competitor_runs/setup.sh and tests/bench/COMPETITOR_RESULTS.md.
 competitor-bench = [
-    "openai==2.34.0",
+    "openai==2.37.0",
     "mem0ai==2.0.1",
     "letta-client==1.10.3",
     "zep-cloud==3.20.0",
