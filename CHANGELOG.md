@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Connectome Graph Phase 1 (research Avenue 5)
+
+First-class representation of the inter-subsystem communication graph.
+Walked the existing code base + design proposals for the seed edges.
+Operationalizes Avenue 5 from `research/autonomous-research-avenues-2026-05-20.md`.
+
+- **Migration 073** — `connectome_nodes` (22 seeded: 16 subsystems +
+  3 tables + 1 dial + 2 event_buses) + `connectome_edges` (18 seeded
+  edges across writes_to / reads_from / modulates / gates / depends_on
+  / broadcasts_to).
+- **Top-degree hub:** `bg_modulators` with 5 connections — matches
+  biological intuition that the neuromod dial cluster is the central
+  integrator.
+- **`agentmemory.mcp_tools_connectome`** — 5 MCP tools:
+  - `connectome_status` — counts + breakdowns + top-10 by degree
+  - `connectome_node_get` — node + all incoming/outgoing edges
+  - `connectome_register_node` — idempotent UPSERT
+  - `connectome_register_edge` — idempotent UPSERT keyed by (source, target, edge_type)
+  - `connectome_neighbors` — BFS-walk in 'in'/'out'/'both' direction up to depth 6
+- **11 tests** covering seed topology, status, node-get, registration
+  idempotency, validation, BFS neighbor traversal.
+
+Phase 2 adds path-finding + cycle detection + reachability tools.
+Phase 3 auto-updates the connectome from runtime observations (which
+subsystem actually called which, with last_observed_at timestamps
+moving as evidence accumulates).
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
