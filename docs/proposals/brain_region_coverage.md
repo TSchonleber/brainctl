@@ -19,7 +19,7 @@ Verdict per region: ✅ well-modelled · 🟡 partial / under-wired · 🟥 miss
 
 | Region | What it does (bio) | brainctl state | Gap |
 |---|---|---|---|
-| **Brainstem / Ascending Reticular Activating System** | global arousal broadcast via diffuse fan-out | `neuromodulation_state` table holds org-level arousal/focus | Not wired into retrieval/admission. The proposed thalamus mode-broadcast layer is the missing fan-out. |
+| **Brainstem / Ascending Reticular Activating System — Phase 1** | global arousal broadcast via diffuse fan-out | `aras_state`, `aras_transitions`, `aras_triggers` tables + `aras_*` MCP tools. Phase 1 is manual/read+CRUD; Phase 2 wires shadow consult; Phase 3 modulates LC/NB response (see `docs/proposals/aras.md`). |
 | **Locus Coeruleus (NE)** | global surprise / reset signal | `neurostate.norepinephrine` in proposed schema | No concrete LC-analog signal currently *fires* on prediction-error to reset attention. |
 | **Nucleus Basalis (ACh)** | broaden receptive fields, raise responsiveness | Same — `neurostate.acetylcholine` proposed, not yet emitting | No actual cholinergic-mode admission-loosening tied to attended sectors. |
 | **Hypothalamus / allostasis** | homeostatic set-points + drives | `mcp_tools_allostatic.py` — demand_forecast, allostatic_prime | Has *prediction*; has no set-points (need-states) that *generate drives*. The system can't "feel hungry for data" or "need consolidation." |

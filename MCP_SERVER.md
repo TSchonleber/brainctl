@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (260)
+## Available Tools (265)
 
 | Tool | Description |
 |------|-------------|
@@ -164,6 +164,7 @@ server over stdio.
 | Insula (Phase 1, interoception) | `insula_sample`, `insula_state`, `insula_subscribe`, `insula_check_triggers` | Self-state vector (write_pressure, retrieval_strain, consolidation_debt, embedding_health, attention_load, certainty) with EMA baseline + deviation. Subscriber registry routes signals to subsystems |
 | PFC sub-regions (Phase 1, named slots) | `pfc_slot_set`, `pfc_slot_get`, `pfc_status` | 4 named slots per agent: dlPFC (active task), vmPFC (outcome-utility), OFC (realized-outcome log), frontopolar (meta-monitor). Mostly aggregation |
 | Entorhinal grid (Phase 1, conceptual indexing) | `entorhinal_activate`, `entorhinal_lookup`, `entorhinal_status` | 48 grid cells across 3 scales (fine/medium/coarse). Deterministic hash maps content → cell activations; sub-linear pattern lookup |
+| ARAS (Phase 1, global arousal) | `aras_status`, `aras_transition`, `aras_drive`, `aras_register_trigger`, `aras_history` | Brainstem-level sleep/wake gate sitting above LC + NB. `aras_state` tracks sleep_wake_mode + arousal_level + tonic/phasic; `aras_drive` fires phasic pulses with auto-transition on large delta. Phase 1 is inspection-only; Phase 3 modulates LC/NB response (see `docs/proposals/aras.md`) |
 
 ### Tier 3: Specialist (~150 tools)
 

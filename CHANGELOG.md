@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — ARAS (Ascending Reticular Activating System) Phase 1
+
+Brainstem-level global arousal broadcast. Sits **above** LC + NB —
+ARAS gates whether the rest of the neuromod surface is responsive
+at all. The May 15 brain_region_coverage.md audit flagged it on the
+🟡 partial list: "`neuromodulation_state` table holds org-level
+arousal/focus. Not wired into retrieval/admission."
+
+Phase 1 is inspection-only / additive. No behavior change to LC, NB,
+retrieval, or any existing subsystem.
+
+- **Migration 069** — 3 tables (`aras_triggers`, `aras_state`,
+  `aras_transitions`). Single-row `aras_state` seeded with
+  `sleep_wake_mode='awake_relaxed'`, `arousal_level=0.5`. 5 trigger
+  classes seeded.
+- **`agentmemory.mcp_tools_aras`** — 5 MCP tools (`aras_status`,
+  `aras_transition`, `aras_drive`, `aras_register_trigger`,
+  `aras_history`).
+- **9 tests** covering migration seeds, empty state, transitions,
+  drive deltas, auto-transition on large delta, idempotent
+  registration, history filters.
+
+Phase 2 (separate PR) wires ARAS into the dispatch shadow consult to
+log would-be mode transitions from event patterns. Phase 3 lets ARAS
+modulate the downstream LC/NB response. Phase 4 enforces.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
