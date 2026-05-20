@@ -5,6 +5,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Nucleus Basalis Phase 1 (schema + read+CRUD tools)
+
+Pairs with the Locus Coeruleus subsystem (sibling PR on
+`brain-regions-lc-phase-1`). NB-ACh complements LC-NE as the dual
+gain/attention control axes the May 15 brain-region coverage audit
+flagged as missing. LC fires on surprise (broadly, indiscriminately);
+NB fires on attention shifts (target-locked, narrow). NE widens the
+aperture; ACh sharpens the focus inside it.
+
+Phase 1 is **inspection-only / additive** per the established Phase
+pattern (Phase 1 schema → Phase 2 shadow → Phase 3 closed-loop → Phase
+4 enforcement). No behavior change to retrieval, write gates, or any
+existing subsystem.
+
+- **Migration 068 — `db/migrations/068_nucleus_basalis.sql`** adds 3
+  tables (`nb_attention_targets`, `nb_firings`, `nb_state`) plus an
+  `acetylcholine REAL DEFAULT 0.5` column on `bg_modulators` (the 4th
+  neuromod dial; mirrors `tonic_da`, `lc_ne`, `serotonin`). 4 thalamic
+  sectors seeded as targets (cognitive, episodic, semantic,
+  pii_sensitive). Single-row `nb_state` seed (id=1, mode='tonic_mid',
+  ach_reservoir=0.5). Idempotent; rollback DDL in header.
+
+- **`agentmemory.mcp_tools_nucleus_basalis`** — 5 MCP tools:
+  - `nb_status(agent_id=None)` — current state + 24h firing summary +
+    last 5 firings
+  - `nb_register_target(name, channel_kind, default_ach_gain, ...)` —
+    idempotent UPSERT on `nb_attention_targets`
+  - `nb_fire(target_name, attention_magnitude, mode='phasic', ...)` —
+    record cholinergic broadcast; updates `nb_firings` + `nb_state`.
+    Does NOT yet write `bg_modulators.acetylcholine` (Phase 2).
+  - `nb_attend_sector(sector_name, attention_magnitude, ...)` —
+    convenience wrapper resolving sector → target
+  - `nb_signal_history(limit, since, agent_id, target_id)` — paginated
+    firing log
+
+- **Tests** — `tests/test_mcp_tools_nucleus_basalis.py`. 10 tests
+  covering migration seeds, empty-state defaults, idempotent target
+  registration, fire round-trip + state update, sector wrapper
+  resolution, mode/channel-kind validation, and history
+  filtering/pagination.
+
+- **Design proposal** — `docs/proposals/nucleus_basalis.md` lays out
+  the 4 biological invariants, architectural placement diagram, and
+  Phase 2/3/4 sketch (NOT in this PR).
+
+- **Coverage tracker** — `docs/proposals/brain_region_coverage.md`
+  updated: NB row gains a "Phase 1 shipped" footnote.
+
+Phase 2 (separate PR, daytime) wires NB into the shadow consult at
+`mcp_server.py:3265` to fire on `thalamic_salience` activations above
+threshold and broadcast ACh delta. Phase 3 closes the loop. Phase 4
+enforces.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
