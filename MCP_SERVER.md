@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (260)
+## Available Tools (265)
 
 | Tool | Description |
 |------|-------------|
@@ -164,6 +164,7 @@ server over stdio.
 | Insula (Phase 1, interoception) | `insula_sample`, `insula_state`, `insula_subscribe`, `insula_check_triggers` | Self-state vector (write_pressure, retrieval_strain, consolidation_debt, embedding_health, attention_load, certainty) with EMA baseline + deviation. Subscriber registry routes signals to subsystems |
 | PFC sub-regions (Phase 1, named slots) | `pfc_slot_set`, `pfc_slot_get`, `pfc_status` | 4 named slots per agent: dlPFC (active task), vmPFC (outcome-utility), OFC (realized-outcome log), frontopolar (meta-monitor). Mostly aggregation |
 | Entorhinal grid (Phase 1, conceptual indexing) | `entorhinal_activate`, `entorhinal_lookup`, `entorhinal_status` | 48 grid cells across 3 scales (fine/medium/coarse). Deterministic hash maps content → cell activations; sub-linear pattern lookup |
+| Habenula (Phase 1, anti-reward) | `habenula_status`, `habenula_fire`, `habenula_register_trigger`, `habenula_history`, `habenula_reset` | Lateral habenula — negative-RPE source. Pairs antisymmetrically with LC. Records reward-omission / aversive / repeated-failure events; computes `suggested_da_damp` for Phase 3 DA suppression (see `docs/proposals/habenula.md`) |
 
 ### Tier 3: Specialist (~150 tools)
 
