@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Habenula Phase 1 (anti-reward / negative-RPE)
+
+Lateral habenula subsystem. Records negative-reward-prediction-error
+events as a dedicated channel separate from `bg_td_events`. Fires on
+reward omission, aversive valences, repeated failures. Pairs
+antisymmetrically with LC (PR #121): LC fires on +surprise, Hb fires
+on −surprise / omission.
+
+Phase 1 is inspection-only / additive. Does NOT yet damp
+`bg_modulators.tonic_da`. That's Phase 3.
+
+- **Migration 070** — 3 tables (`habenula_triggers`, `habenula_firings`,
+  `habenula_state`). 5 seed triggers (reward_omission, retrieval_failure,
+  repeated_low_utility, aversive_valence, task_abandoned). Single-row
+  state seed.
+- **`agentmemory.mcp_tools_habenula`** — 5 MCP tools (`habenula_status`,
+  `habenula_fire`, `habenula_register_trigger`, `habenula_history`,
+  `habenula_reset`).
+- **10 tests** covering migration, empty state, fire-via-trigger,
+  explicit-pe fire, positive-PE rejection, missing-args rejection,
+  unknown-trigger rejection, idempotent registration, history filters,
+  reset semantics.
+- **Design proposal** at `docs/proposals/habenula.md`.
+
+Phase 2 wires `habenula_fire` into outcome_annotate's negative path.
+Phase 3 lets `suggested_da_damp` actually subtract from
+`bg_modulators.tonic_da`. Phase 4 enforces.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
