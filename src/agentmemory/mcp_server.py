@@ -78,6 +78,7 @@ try:
         mcp_tools_trust,
         mcp_tools_usage,
         mcp_tools_workspace,
+        mcp_tools_workspace_bandwidth,
         mcp_tools_world,
     )
     _EXT_MODULES = [
@@ -121,6 +122,7 @@ try:
         mcp_tools_trust,
         mcp_tools_usage,
         mcp_tools_workspace,
+        mcp_tools_workspace_bandwidth,
         mcp_tools_world,
     ]
 except ImportError as _e:

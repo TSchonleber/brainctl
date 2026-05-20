@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Workspace Bandwidth Limit Phase 1 (top-K-per-epoch)
+
+Closes the second half of the May 15 audit's workspace partial entry.
+Thalamus mode-broadcast closed the first half (org_state coupling);
+this closes the bandwidth-limit half. Biology: Dehaene-Changeux global
+neuronal workspace has a hard ~4-chunk ignition bandwidth.
+
+- **Migration 072** — 2 tables (`workspace_bandwidth_state` single
+  row + `workspace_bandwidth_epochs` history). Defaults: limit=4,
+  epoch_duration=60s, enforcement_mode='shadow'.
+- **`agentmemory.mcp_tools_workspace_bandwidth`** — 4 MCP tools:
+  `workspace_bandwidth_status`, `workspace_bandwidth_set`,
+  `workspace_bandwidth_admit`, `workspace_bandwidth_epochs_history`.
+- **Shadow / enforce / disabled modes.** In shadow, all admits go
+  through and `saturated=True` is informational. In enforce, admits
+  past the limit are rejected with `rejected=True`. In disabled,
+  behaves like shadow.
+- **Auto-rotation.** `workspace_bandwidth_status` and `_admit` both
+  check epoch expiry and roll the live counters into the historical
+  table.
+- **9 tests** covering defaults, status, admit-increment, saturation
+  detection, enforce-mode rejection, set validation, rotation,
+  history filters.
+
+Phase 2 wires `workspace_bandwidth_admit` into `workspace_ingest` so
+every real broadcast goes through the limit. Phase 3 lets ARAS
+mode-modulate the bandwidth (high arousal → wider; consolidation →
+narrower). Phase 4 enforces.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
