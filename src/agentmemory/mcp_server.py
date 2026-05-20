@@ -60,6 +60,7 @@ try:
         mcp_tools_insula,
         mcp_tools_knowledge,
         mcp_tools_lifecycle,
+        mcp_tools_locus_coeruleus,
         mcp_tools_meb,
         mcp_tools_merge,
         mcp_tools_neuro,
@@ -103,6 +104,7 @@ try:
         mcp_tools_insula,
         mcp_tools_knowledge,
         mcp_tools_lifecycle,
+        mcp_tools_locus_coeruleus,
         mcp_tools_meb,
         mcp_tools_merge,
         mcp_tools_neuro,
@@ -3185,6 +3187,18 @@ def _resolve_allowed_tools() -> frozenset[str] | None:
 
 
 _ALLOWED_TOOLS: frozenset[str] | None = _resolve_allowed_tools()
+
+
+def _build_dispatch() -> dict[str, Any]:
+    """Build a tool dispatch map for smoke tests and introspection."""
+    dispatch: dict[str, Any] = {}
+    for tool in TOOLS:
+        fn = globals().get(f"tool_{tool.name}")
+        if callable(fn):
+            dispatch[tool.name] = fn
+    for _m in _EXT_MODULES:
+        dispatch.update(_m.DISPATCH)
+    return dispatch
 
 
 @app.list_tools()

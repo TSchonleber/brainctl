@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Locus Coeruleus Phase 1 (schema + read+CRUD tools)
+
+Adds the LC norepinephrine-readiness layer that the brain-region
+coverage audit had flagged as missing: a concrete place for surprise,
+novelty, and explicit alert events to become phasic LC activations
+before Phase 2 wires them into `bg_modulators.lc_ne`.
+
+- **Migration 067** — `lc_triggers`, `lc_firings`, and `lc_state`.
+  The trigger catalog is seeded with cerebellum high prediction error,
+  BG large TD error, novel entity sighting, and explicit user alert
+  rows. `lc_state` is a single broadcast row seeded to `tonic_mid`
+  with `ne_reservoir=0.5`. Indexes cover recent firings, agent
+  history, trigger history, and source-table trigger lookup.
+
+- **`agentmemory.mcp_tools_locus_coeruleus`** — five Phase 1 tools:
+  `lc_status`, `lc_fire`, `lc_register_trigger`, `lc_signal_history`,
+  and `lc_set_mode`. `lc_status` reads the existing
+  `bg_modulators.lc_ne` dial when present, but no LC tool writes that
+  BG modulator in Phase 1.
+
+- **Docs/tests** — proposal at `docs/proposals/locus_coeruleus.md`,
+  MCP category entry, coverage-tracker update, and focused pytest
+  coverage for migration seeds, empty status, idempotent trigger
+  registration, manual firing, mode validation, and history filters.
+
+Phase 2 remains explicitly out of scope: no cerebellum/BG/novelty
+auto-fire hookpoints and no NE broadcast writes to `bg_modulators.lc_ne`
+land in this change.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and

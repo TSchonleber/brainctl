@@ -2743,3 +2743,97 @@ SELECT 3, n, 'coarse:' || n, 'coarse-grained grid cell ' || n FROM (
     UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7
     UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11
     UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15);
+
+-- ---- 066_retrieval_pathway_log.sql ----
+-- Sidecar observation log for memory_search dispatches. Records the
+-- pathway fingerprint (mode, table_distribution, intent, profile,
+-- candidate counts, latency) per retrieval. Independent of bg_td_events
+-- by design.
+CREATE TABLE IF NOT EXISTS retrieval_pathway_log (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id                 TEXT,
+    project                  TEXT,
+    query                    TEXT,
+    query_hash               TEXT,
+    mode                     TEXT,
+    table_distribution       TEXT,
+    tables_searched          TEXT,
+    candidate_count_pre      INTEGER,
+    candidate_count_post     INTEGER,
+    rrf_contribution_ratio   REAL,
+    intent_label             TEXT,
+    active_profile           TEXT,
+    suppressed_strategies    TEXT,
+    embedding_model_version  TEXT,
+    latency_ms               INTEGER,
+    benchmark_mode           INTEGER NOT NULL DEFAULT 0,
+    linked_td_event_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_rpl_recent
+    ON retrieval_pathway_log(fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_agent
+    ON retrieval_pathway_log(agent_id, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_mode
+    ON retrieval_pathway_log(mode, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_intent
+    ON retrieval_pathway_log(intent_label, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_unlinked
+    ON retrieval_pathway_log(linked_td_event_id) WHERE linked_td_event_id IS NULL;
+
+-- ---- 067_locus_coeruleus.sql ----
+-- Locus coeruleus Phase 1: surprise / novelty trigger catalog, activation
+-- log, and single-row tonic/phasic state. Phase 1 reads but does not write
+-- bg_modulators.lc_ne.
+CREATE TABLE IF NOT EXISTS lc_triggers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    source_table TEXT NOT NULL CHECK(source_table IN ('cerebellum_predictions','bg_td_events','memory_events','other')),
+    threshold_field TEXT,
+    threshold_value REAL,
+    default_ne_delta REAL NOT NULL DEFAULT 0.0,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lc_triggers_source_table ON lc_triggers(source_table);
+
+CREATE TABLE IF NOT EXISTS lc_firings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id TEXT,
+    trigger_id INTEGER,
+    trigger_source_event_id INTEGER,
+    surprise_magnitude REAL NOT NULL DEFAULT 0.0,
+    ne_delta_applied REAL NOT NULL DEFAULT 0.0,
+    mode TEXT NOT NULL CHECK(mode IN ('phasic','tonic_shift')),
+    context_hash TEXT,
+    notes TEXT,
+    FOREIGN KEY (trigger_id) REFERENCES lc_triggers(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lc_firings_fired_at ON lc_firings(fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lc_firings_agent_fired ON lc_firings(agent_id, fired_at);
+CREATE INDEX IF NOT EXISTS idx_lc_firings_trigger_fired ON lc_firings(trigger_id, fired_at);
+
+CREATE TABLE IF NOT EXISTS lc_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL CHECK(mode IN ('phasic_ready','tonic_high','tonic_mid','tonic_low')),
+    ne_reservoir REAL NOT NULL DEFAULT 0.5,
+    last_phasic_at TEXT,
+    last_tonic_shift_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+);
+
+INSERT OR IGNORE INTO lc_triggers
+    (name, source_table, threshold_field, threshold_value, default_ne_delta, description)
+VALUES
+    ('cerebellum_high_pe', 'cerebellum_predictions', 'delta_forward', 0.5, 0.15,
+     'Cerebellum prediction error above threshold; surprise source for phasic LC.'),
+    ('bg_large_td_error', 'bg_td_events', 'delta', 0.6, 0.10,
+     'Basal-ganglia TD error above threshold; value surprise source for LC.'),
+    ('novel_entity_sighting', 'memory_events', 'event_type', NULL, 0.05,
+     'Novel observation event, especially new entity sightings.'),
+    ('explicit_user_alert', 'other', NULL, NULL, 0.20,
+     'Manual or user-declared alert that should raise global NE readiness.');
+
+INSERT OR IGNORE INTO lc_state (id, mode, ne_reservoir)
+VALUES (1, 'tonic_mid', 0.5);

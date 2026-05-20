@@ -14,13 +14,13 @@ Verdict per region: ✅ well-modelled · 🟡 partial / under-wired · 🟥 miss
 | **Theory-of-Mind / TPJ-mPFC** | model other minds | `mcp_tools_tom.py`, perspective tables, belief_conflicts |
 | **Belief system / dlPFC inference** | hold and revise probabilistic beliefs | `belief_*` tools, AGM-style credibility-weighted merge |
 | **Reflexion / posterior parietal lesson-learning** | failure-driven self-correction | `reflexion_*` tools, CONTEXT_LOSS / HALLUCINATION / TOOL_MISUSE categories |
+| **Locus Coeruleus (NE) — Phase 1** | global surprise / reset signal, tonic/phasic norepinephrine readiness | `lc_triggers`, `lc_firings`, `lc_state`, and `lc_*` MCP tools. Phase 1 is manual/read+CRUD; automatic cerebellum/BG/novelty wiring is Phase 2. |
 
 ## 🟡 Partial — substrate exists but not wired or only one half present
 
 | Region | What it does (bio) | brainctl state | Gap |
 |---|---|---|---|
 | **Brainstem / Ascending Reticular Activating System** | global arousal broadcast via diffuse fan-out | `neuromodulation_state` table holds org-level arousal/focus | Not wired into retrieval/admission. The proposed thalamus mode-broadcast layer is the missing fan-out. |
-| **Locus Coeruleus (NE)** | global surprise / reset signal | `neurostate.norepinephrine` in proposed schema | No concrete LC-analog signal currently *fires* on prediction-error to reset attention. |
 | **Nucleus Basalis (ACh)** | broaden receptive fields, raise responsiveness | Same — `neurostate.acetylcholine` proposed, not yet emitting | No actual cholinergic-mode admission-loosening tied to attended sectors. |
 | **Hypothalamus / allostasis** | homeostatic set-points + drives | `mcp_tools_allostatic.py` — demand_forecast, allostatic_prime | Has *prediction*; has no set-points (need-states) that *generate drives*. The system can't "feel hungry for data" or "need consolidation." |
 | **Amygdala** | rapid valence tagging, fear conditioning, one-shot threat learning | `affect_*` tools classify valence/arousal lexically | Affect is a classifier, not a memory modulator. No "this kind of input previously caused a problem → preemptively bias suppression on that channel" loop. No fast-track fear learning that bypasses W(m). |
