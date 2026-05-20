@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Hippocampus CA1 + Subiculum Phase 1 (trisynaptic loop completion)
+
+Completes the hippocampal trisynaptic loop. Migration 059 shipped DG +
+CA3; this adds **CA1** (match/mismatch detector) + **Subiculum**
+(hippocampal output bridge to cortex).
+
+- **Migration 071** — 3 tables (`hippocampus_ca1_comparisons`,
+  `hippocampus_ca1_state` single row, `hippocampus_subiculum_outputs`).
+- **`agentmemory.mcp_tools_hippocampus_ca1`** — 4 MCP tools.
+- **9 tests**.
+- **Design proposal** at `docs/proposals/hippocampus_ca1_subiculum.md`.
+
 ### Added — issue #116 Phase 1-A: retrieval pathway log
 
 External architecture memo (issue #116, "Thalamus, Basal Ganglia, and
