@@ -2182,7 +2182,7 @@ CREATE TABLE IF NOT EXISTS bg_modulators (
     serotonin REAL NOT NULL DEFAULT 0.5,
     set_by TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
-);
+, acetylcholine REAL NOT NULL DEFAULT 0.5);
 INSERT OR IGNORE INTO bg_modulators (id) VALUES (1);
 
 -- Action-chunk catalog (Graybiel task-bracketing): durable start/stop
@@ -2743,3 +2743,94 @@ SELECT 3, n, 'coarse:' || n, 'coarse-grained grid cell ' || n FROM (
     UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7
     UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11
     UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15);
+
+-- ---- 066_retrieval_pathway_log.sql ----
+-- Sidecar observation log for memory_search dispatches. Records the
+-- pathway fingerprint (mode, table_distribution, intent, profile,
+-- candidate counts, latency) per retrieval. Independent of bg_td_events
+-- by design.
+CREATE TABLE IF NOT EXISTS retrieval_pathway_log (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id                 TEXT,
+    project                  TEXT,
+    query                    TEXT,
+    query_hash               TEXT,
+    mode                     TEXT,
+    table_distribution       TEXT,
+    tables_searched          TEXT,
+    candidate_count_pre      INTEGER,
+    candidate_count_post     INTEGER,
+    rrf_contribution_ratio   REAL,
+    intent_label             TEXT,
+    active_profile           TEXT,
+    suppressed_strategies    TEXT,
+    embedding_model_version  TEXT,
+    latency_ms               INTEGER,
+    benchmark_mode           INTEGER NOT NULL DEFAULT 0,
+    linked_td_event_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_rpl_recent
+    ON retrieval_pathway_log(fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_agent
+    ON retrieval_pathway_log(agent_id, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_mode
+    ON retrieval_pathway_log(mode, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_intent
+    ON retrieval_pathway_log(intent_label, fired_at);
+CREATE INDEX IF NOT EXISTS idx_rpl_unlinked
+    ON retrieval_pathway_log(linked_td_event_id) WHERE linked_td_event_id IS NULL;
+
+-- ---- 068_nucleus_basalis.sql ----
+-- Nucleus basalis Phase 1: cholinergic attention broadcaster. Pairs with
+-- locus coeruleus (migration 067, sibling PR). NB writes the
+-- bg_modulators.acetylcholine column (added in-line above).
+CREATE TABLE IF NOT EXISTS nb_attention_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    channel_kind TEXT NOT NULL CHECK(channel_kind IN (
+        'thalamic_sector', 'agent_scope', 'intent_class', 'entity_type', 'other'
+    )),
+    default_ach_gain REAL NOT NULL DEFAULT 0.10 CHECK(default_ach_gain BETWEEN 0.0 AND 1.0),
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    last_attended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nb_targets_kind ON nb_attention_targets(channel_kind);
+
+CREATE TABLE IF NOT EXISTS nb_firings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fired_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    agent_id TEXT,
+    target_id INTEGER NOT NULL,
+    target_source_event_id INTEGER,
+    attention_magnitude REAL NOT NULL,
+    ach_delta_applied REAL NOT NULL,
+    mode TEXT NOT NULL CHECK(mode IN ('phasic', 'tonic_shift')),
+    context_hash TEXT,
+    notes TEXT,
+    FOREIGN KEY (target_id) REFERENCES nb_attention_targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_nb_firings_recent ON nb_firings(fired_at);
+CREATE INDEX IF NOT EXISTS idx_nb_firings_agent ON nb_firings(agent_id, fired_at);
+CREATE INDEX IF NOT EXISTS idx_nb_firings_target ON nb_firings(target_id, fired_at);
+
+CREATE TABLE IF NOT EXISTS nb_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'tonic_mid' CHECK(mode IN (
+        'phasic_locked', 'tonic_high', 'tonic_mid', 'tonic_low'
+    )),
+    ach_reservoir REAL NOT NULL DEFAULT 0.5 CHECK(ach_reservoir BETWEEN 0.0 AND 1.0),
+    last_attended_target_id INTEGER,
+    last_phasic_at TEXT,
+    last_tonic_shift_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now')),
+    FOREIGN KEY (last_attended_target_id) REFERENCES nb_attention_targets(id)
+);
+INSERT OR IGNORE INTO nb_state (id, mode, ach_reservoir) VALUES (1, 'tonic_mid', 0.5);
+
+INSERT OR IGNORE INTO nb_attention_targets (name, channel_kind, default_ach_gain, description) VALUES
+    ('cognitive', 'thalamic_sector', 0.15, 'planning, reasoning, deliberation'),
+    ('episodic', 'thalamic_sector', 0.10, 'event recall and timeline'),
+    ('semantic', 'thalamic_sector', 0.08, 'concept / fact retrieval'),
+    ('pii_sensitive', 'thalamic_sector', 0.20, 'PII / credential / wallet — high attention so W(m) sees it');
