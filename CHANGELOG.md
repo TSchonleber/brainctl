@@ -112,6 +112,48 @@ least one table — the gate never starves retrieval of all candidates.
 Phase 1-C (smooth sigmoid read-gate threshold) is the remaining
 planned follow-up before the Phase 4 enforcement readiness review.
 
+### Added — issue #116 Phase 1-C: smooth sigmoid read-gate (observability slice)
+
+The memo (§1.4 Stage 2) argues that a hard `--limit N` truncation of
+results is both noise-sensitive (an item whose relevance score
+fluctuates slightly around the cutoff flips in and out
+unpredictably) and non-learnable (zero gradient at the boundary
+gives a feedback loop nothing to update against). The memo's
+recommendation is a smooth sigmoid threshold with learnable slope
+and midpoint, calibrated from operational data.
+
+This release ships the **observability slice** of that
+recommendation — the math module + a `_sigmoid_rank_weight` field
+attached to every result item. Purely additive: rank order is
+unchanged, no items are dropped, the bench harness sees identical
+output structure modulo the new per-item field. Learning the slope
+and midpoint from accumulating outcomes is Phase 4 territory and is
+not implemented here.
+
+- **`agentmemory.sigmoid_gate`** — new module exposing
+  `SigmoidParams`, `sigmoid(x, slope, midpoint)`,
+  `normalize_rank(rank, total)`, `weight_for_rank(rank, total)`,
+  `weights_for_results(total)`, `annotate_with_weights(items)`.
+  Pure math, no DB access. Conservative defaults
+  (`slope=6.0, midpoint=0.5`) chosen per memo §1.4 Stage 2 ("Start
+  with a shallow slope and a conservative midpoint, then tighten
+  as data accumulates").
+
+- **`cmd_search` hookpoint** — annotates each surfaced result item
+  with `_sigmoid_rank_weight` derived from its 1-based rank in the
+  bucket. Failures swallow so a bad gate cannot break search.
+
+- **Tests** — `tests/test_sigmoid_gate.py`. 14 tests covering
+  endpoint behavior, midpoint crossing, monotonicity, extreme
+  overflow handling, SigmoidParams validation, rank normalization,
+  bucket annotation, idempotence (does not overwrite existing
+  weights), and graceful handling of non-dict items.
+
+Phase 4 enforcement readiness review remains the next planned step,
+gated on accumulating 4+ weeks of pathway-log data before deciding
+whether the BG/cerebellum learning loops are calibrated enough to
+flip from shadow to enforcement.
+
 ## [2.7.0] — 2026-05-13 — *Procedural memory layer (Velamj, PR #94)*
 
 The third memory type. brainctl now treats Tulving's 1972 tripartite

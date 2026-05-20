@@ -7553,6 +7553,25 @@ def cmd_search(args, *, db=None, db_path: Optional[str] = None):
     elif _debug_mode:
         _out["_debug"] = {"all_signals_informative": True}
 
+    # Issue #116 Phase 1-C: smooth sigmoid read-gate (observability slice).
+    # Annotate each surfaced result item with a sigmoid-weighted
+    # confidence-in-relevance score derived from its 1-based rank
+    # position. Purely additive — does NOT change rank order, does NOT
+    # drop any items. Downstream consumers (BG/cerebellum learning
+    # loops, agents, future sigmoid-aware rerankers) can decide what
+    # to do with the weight. Failures swallow so a bad gate cannot
+    # break search.
+    try:
+        from agentmemory.sigmoid_gate import (
+            annotate_with_weights as _sg_annotate,
+            DEFAULT_PARAMS as _SG_DEFAULTS,
+        )
+        for _bucket_key, _bucket_rows in results.items():
+            if isinstance(_bucket_rows, list) and _bucket_rows:
+                _sg_annotate(_bucket_rows, params=_SG_DEFAULTS)
+    except Exception:  # pragma: no cover — defensive
+        pass
+
     # Issue #116 Phase 1-A: emit one row to retrieval_pathway_log capturing the
     # pathway fingerprint of this retrieval. Best-effort; never blocks the
     # return path. Gated behind BRAINCTL_PATHWAY_LOG env var. See
