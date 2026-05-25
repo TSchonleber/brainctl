@@ -29,7 +29,7 @@ jobs:
         run: ./scripts/build_mcp_bundle.sh
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: brainctl-mcp-${{ matrix.target }}
           path: dist/brainctl-mcp-${{ matrix.target }}
