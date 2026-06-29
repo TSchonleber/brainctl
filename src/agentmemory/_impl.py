@@ -8090,10 +8090,20 @@ def cmd_vsearch(args):
 
     def _vsearch_table(vec_table, src_table, text_col, extra_cols, fts_table):
         fetch_n = limit * 3
-        vec_rows = db.execute(
-            f"SELECT rowid, distance FROM {vec_table} WHERE embedding MATCH ? AND k=?",
-            (q_blob, fetch_n),
-        ).fetchall()
+        try:
+            vec_rows = db.execute(
+                f"SELECT rowid, distance FROM {vec_table} WHERE embedding MATCH ? AND k=?",
+                (q_blob, fetch_n),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            # A brain.db that was never vector-indexed for this source won't
+            # have the vec table — vec_events / vec_context in particular are
+            # not created until something indexes them. Skip this source so
+            # the search still returns hits from the tables that DO exist,
+            # instead of aborting the whole vsearch on the first gap.
+            if "no such table" in str(exc).lower():
+                return []
+            raise
         if not vec_rows:
             return []
 
