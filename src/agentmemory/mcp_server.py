@@ -33,7 +33,24 @@ from agentmemory.paths import get_db_path
 # below at the former _surprise_score_mcp callsite.
 from agentmemory._impl import _surprise_score
 logger = logging.getLogger(__name__)
-from mcp.server import Server
+try:
+    from mcp.server import Server
+except ModuleNotFoundError as _mcp_import_err:
+    # The MCP SDK ships via the optional `[mcp]` extra. A plain
+    # `pip install brainctl` (or `pipx install brainctl`) doesn't pull it,
+    # so without this guard `brainctl-mcp` dies with a bare traceback and
+    # the MCP client only sees "failed to connect". Surface the actual fix.
+    if (_mcp_import_err.name or "").split(".")[0] != "mcp":
+        raise
+    sys.stderr.write(
+        "brainctl-mcp requires the MCP server extra, which is not installed.\n"
+        "Install it with:\n\n"
+        "    pip install 'brainctl[mcp]'\n\n"
+        "Or, if you installed brainctl with pipx:\n\n"
+        "    pipx inject brainctl 'mcp>=1.27.0' starlette 'uvicorn[standard]' "
+        "python-json-logger\n"
+    )
+    raise SystemExit(1)
 
 # Extension tool modules — each exports TOOLS: list[Tool] and DISPATCH: dict
 try:

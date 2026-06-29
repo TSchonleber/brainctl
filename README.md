@@ -24,11 +24,16 @@ pip install brainctl
 
 Requires Python 3.11+. SQLite is built-in. No other mandatory dependencies.
 
+Optional features are pulled in via [extras](https://peps.python.org/pep-0508/#extras). Put them in the **same** install command (they are part of the `brainctl` package, not a separate step) — e.g. `pip install 'brainctl[mcp]'`. **To run the `brainctl-mcp` server you must install the `[mcp]` extra**; a plain `pip install brainctl` does not include it.
+
 ```bash
-pip install brainctl[mcp]     # MCP server — 100 visible tools for Claude Desktop, Cursor, VS Code
-pip install brainctl[vec]     # vector similarity search (sqlite-vec + Ollama)
-pip install brainctl[signing] # Ed25519-signed memory exports + optional Solana on-chain pinning
-pip install brainctl[all]     # everything
+pip install 'brainctl[mcp]'     # MCP server — 100 visible tools for Claude Desktop, Cursor, VS Code
+pip install 'brainctl[vec]'     # vector similarity search (sqlite-vec + Ollama)
+pip install 'brainctl[signing]' # Ed25519-signed memory exports + optional Solana on-chain pinning
+pip install 'brainctl[all]'     # everything
+
+# combine extras in one install:
+pip install 'brainctl[mcp,vec]'
 ```
 
 ## 5-line example
