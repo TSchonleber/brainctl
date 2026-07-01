@@ -132,19 +132,15 @@ CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories WHEN new.indexed = 1
     INSERT INTO memories_fts(rowid, content, category, tags) VALUES (new.id, new.content, new.category, new.tags);
 END;
 
--- Split into two triggers so 0→1 promotion correctly adds to FTS without double-delete.
--- Added `NEW.retired_at IS NULL` guard on the INSERT leg so retire UPDATEs
--- (retired_at NULL → non-NULL) do not re-insert the row. The companion
--- trg_memories_fts_purge_on_retire trigger near the end of this file does
--- the actual DELETE at the retire transition; without this guard, the
--- 'delete' command issued there is silently no-op'd by FTS5 statement-level
--- batching against the pending INSERT.
-CREATE TRIGGER memories_fts_update_delete AFTER UPDATE ON memories WHEN old.indexed = 1 BEGIN
+-- Update triggers scoped to FTS columns (plus indexed, retired_at) so
+-- metadata-only updates don't churn the index (issue #152). The
+-- retired_at IS NULL guard drops the re-insert at the retire transition.
+CREATE TRIGGER memories_fts_update_delete AFTER UPDATE OF content, category, tags, indexed, retired_at ON memories WHEN old.indexed = 1 BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content, category, tags)
     VALUES ('delete', old.id, old.content, old.category, old.tags);
 END;
 
-CREATE TRIGGER memories_fts_update_insert AFTER UPDATE ON memories WHEN new.indexed = 1 AND new.retired_at IS NULL BEGIN
+CREATE TRIGGER memories_fts_update_insert AFTER UPDATE OF content, category, tags, indexed, retired_at ON memories WHEN new.indexed = 1 AND new.retired_at IS NULL BEGIN
     INSERT INTO memories_fts(rowid, content, category, tags)
     VALUES (new.id, new.content, new.category, new.tags);
 END;
