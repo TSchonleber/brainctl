@@ -72,7 +72,7 @@ class TestInitThenUse:
         data = json.loads(out)
         assert data.get("ok") is True or data.get("memory_id") is not None
 
-    @pytest.mark.xfail(reason="FTS5 content-external table index-build timing issue on some SQLite versions — known issue, does not affect production (Brain.search works)")
+    @pytest.mark.xfail(reason="CLI cold-start add->search needs BOTH the init FTS seed (#151) AND the scoped memories_fts update triggers (#152/PR #166): unscoped triggers erode the fresh entry via post-insert metadata UPDATEs. Passes once #166 also lands.")
     def test_search_after_add(self, fresh_db):
         run_brainctl("-a", "tester", "memory", "add", "searchable content here",
                      "-c", "lesson", "--force", db_path=fresh_db)

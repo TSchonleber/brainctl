@@ -331,6 +331,28 @@ def _ensure_fts_index_consistent(conn) -> bool:
     if not active:
         return False
 
+    # Cold-start / under-populated case (issue #151): an external-content
+    # FTS5 index that was never seeded is *empty*, not *corrupt*, so
+    # 'integrity-check' below passes and the rows stay unfindable. The
+    # ``memories_fts_docsize`` shadow table holds one row per indexed
+    # document; when it lags the active-indexed count, the inverted index
+    # is missing documents and must be rebuilt.
+    try:
+        indexed_docs = conn.execute(
+            "SELECT count(*) FROM memories_fts_docsize"
+        ).fetchone()[0]
+    except sqlite3.Error:
+        indexed_docs = None
+    if indexed_docs is not None and indexed_docs < active:
+        try:
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
     try:
         conn.execute(
             "INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')"

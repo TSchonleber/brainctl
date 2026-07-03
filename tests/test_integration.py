@@ -334,7 +334,6 @@ def test_decision_with_entity(mcp_db):
 # Scenario 8: MCP tool dispatch round-trip (memory add → search)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="FTS5 content-external table index-build timing issue on some SQLite versions — known issue, does not affect production (Brain.search works)")
 def test_mcp_memory_add_and_search(mcp_db):
     """Use MCP tools for the full add → search cycle via FTS."""
     db_file, brain = mcp_db

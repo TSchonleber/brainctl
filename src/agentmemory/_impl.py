@@ -9720,6 +9720,15 @@ def cmd_init(args):
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall()]
+        # Seed the external-content FTS5 inverted index (issue #151). A fresh
+        # memories_fts starts empty; without this rebuild the index is never
+        # primed, and subsequent adds + searches on the CLI path return
+        # nothing until a manual rebuild.
+        try:
+            conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+            conn.commit()
+        except sqlite3.Error:
+            pass  # memories_fts may be absent in a minimal/partial schema
         conn.close()
 
         json_out({
