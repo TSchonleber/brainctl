@@ -50,7 +50,7 @@ docker run -v ~/.agentmemory:/data -e BRAIN_DB=/data/brain.db brainctl
 The `CMD` defaults to `brainctl-mcp`, so the container runs the MCP
 server over stdio.
 
-## Available Tools (100)
+## Available Tools (98)
 
 brainctl exposes **100 tools** in v2 — a consolidation that cut the
 surface from 370 named tools to ~100 by routing through action-
@@ -142,7 +142,6 @@ These are the daily-use surfaces. Call them by their exact name.
 | `telemetry` | Server telemetry snapshot |
 | `write_gate_stats` | W(m) write-gate metrics |
 | `budget_set` / `budget_status` | Per-agent token-budget controls |
-| `wallet_create` / `wallet_show` | Solana wallet management for signed exports |
 | `resolve_conflict` | AGM credibility-weighted belief conflict resolution |
 | `merge_status` / `merge_execute` | Cross-store merge |
 | `abstract_summarize` / `zoom_in` / `zoom_out` | Temporal abstraction |

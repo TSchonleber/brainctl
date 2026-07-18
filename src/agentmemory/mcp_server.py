@@ -2949,54 +2949,6 @@ TOOLS = [
             },
         },
     ),
-    # ----------------------------------------------------------------
-    # Managed Solana wallet (2.3.2+) — agent-friendly signing setup
-    # ----------------------------------------------------------------
-    Tool(
-        name="wallet_show",
-        description=(
-            "Show the brainctl-managed Solana wallet (used for signing memory "
-            "exports). Returns address, SOL balance, keystore path, file perms, "
-            "mtime, and exists/missing status. SAFETY: this tool only READS "
-            "the wallet — it does not transmit, copy, or back up the private "
-            "key. The keystore stays on the user's disk. Run this before "
-            "wallet_create to check whether a wallet already exists. Set "
-            "fetch_balance=false to skip the RPC call (offline / faster)."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Override keystore path (default: $BRAINCTL_WALLET_PATH or ~/.brainctl/wallet.json)"},
-                "rpc_url": {"type": "string", "description": "Solana RPC URL (default: mainnet-beta public RPC)"},
-                "fetch_balance": {"type": "boolean", "default": True, "description": "Fetch SOL balance via JSON-RPC. Set false for offline mode."},
-            },
-        },
-    ),
-    Tool(
-        name="wallet_create",
-        description=(
-            "Create a fresh Solana wallet for the user (Ed25519 keypair, "
-            "stored at ~/.brainctl/wallet.json with chmod 0600). Used to "
-            "sign memory exports via `brainctl export --sign`. SAFETY: the "
-            "key is generated locally and NEVER transmitted, copied, or "
-            "backed up by brainctl — the user is responsible for backup "
-            "(via `brainctl wallet export <path>`). This tool will REFUSE "
-            "to overwrite an existing wallet unless force=true is explicitly "
-            "passed (a destructive operation; the previous wallet's funds "
-            "and signing identity are lost). Tell the user the address you "
-            "created and remind them to back up the keystore. Pinning bundles "
-            "on-chain costs ~$0.001 per pin and requires the user to fund "
-            "the wallet with a small amount of SOL — brainctl never spends "
-            "the user's money without their explicit consent."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Override keystore path"},
-                "force": {"type": "boolean", "default": False, "description": "Overwrite an existing wallet (DESTRUCTIVE — only pass true with explicit user consent)"},
-            },
-        },
-    ),
 ]
 
 # Merge extension module tools into the master list
@@ -3064,33 +3016,6 @@ def tool_affect_check(agent_id="mcp-client", **kw):
         "status": "critical" if any(f["severity"] == "critical" for f in flags)
                   else "warning" if flags else "healthy",
     }
-
-# ---------------------------------------------------------------------------
-# Wallet tools (managed Solana wallet for signing memory bundles)
-# ---------------------------------------------------------------------------
-
-def tool_wallet_show(agent_id="mcp-client", path=None, rpc_url=None,
-                      fetch_balance=True, **kw):
-    """Read-only view of the managed wallet. Safe to call any time.
-
-    Routes through the same impl function as the CLI so the two
-    surfaces can't drift. Never writes, never transmits the key.
-    """
-    from agentmemory.commands.wallet import wallet_show_impl
-    return wallet_show_impl(path, rpc_url=rpc_url, fetch_balance=bool(fetch_balance))
-
-
-def tool_wallet_create(agent_id="mcp-client", path=None, force=False, **kw):
-    """Create a managed wallet for the user. Refuses to overwrite without ``force=True``.
-
-    There's no interactive prompt at the MCP layer (no stdin) — the
-    impl function returns ``ok=False`` if the wallet exists and
-    ``force`` was not passed. The agent must surface this to the user
-    and re-call with ``force=True`` only after explicit consent.
-    """
-    from agentmemory.commands.wallet import wallet_new_impl
-    return wallet_new_impl(path, force=bool(force))
-
 
 def tool_affect_monitor(agent_id="mcp-client", **kw):
     from agentmemory.affect import SAFETY_PATTERNS, fleet_affect_summary
@@ -3300,9 +3225,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "affect_log": tool_affect_log,
         "affect_check": tool_affect_check,
         "affect_monitor": tool_affect_monitor,
-        # Managed Solana wallet (2.3.2+) — see TOOLS list for safety notes.
-        "wallet_show": tool_wallet_show,
-        "wallet_create": tool_wallet_create,
         # Graph analytics — tool_pagerank is implemented at line 1923 and
         # declared in TOOLS (line 2571), but was never wired into this
         # dispatch dict before 2.4.8, so `pagerank` silently 404'd.

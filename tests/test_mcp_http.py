@@ -78,7 +78,7 @@ def test_config_missing_allowlist_defaults_to_visible_v2_surface(
     monkeypatch.delenv("BRAINCTL_HTTP_ALLOWED_TOOLS", raising=False)
     cfg = HTTPConfig.from_env()
     assert cfg.allowed_tools == frozenset(_VISIBLE_TOOL_NAMES)
-    assert len(cfg.allowed_tools) >= 100  # visible v2 surface is ~100 tools
+    assert len(cfg.allowed_tools) >= 98  # visible v2 surface (offline-core: wallet tools stripped)
 
 
 def test_config_empty_allowlist_also_defaults(

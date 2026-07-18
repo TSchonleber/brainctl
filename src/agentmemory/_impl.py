@@ -9186,14 +9186,6 @@ def cmd_status(args):
     except ImportError:
         services["sqlite_vec"] = {"installed": False}
 
-    # Signing (solders)
-    services["signing"] = {"installed": _ilu.find_spec("solders") is not None}
-
-    # Managed wallet
-    wallet_path_env = os.environ.get("BRAINCTL_WALLET_PATH")
-    wallet_path = Path(wallet_path_env) if wallet_path_env else (Path.home() / ".brainctl" / "wallet.json")
-    services["wallet"] = {"configured": wallet_path.exists(), "path": str(wallet_path)}
-
     payload["services"] = services
 
     # ─── MCP tools count (best-effort) ─────────────────────────────────────
@@ -9267,12 +9259,6 @@ def cmd_status(args):
     _row("sqlite-vec", "installed" if services["sqlite_vec"]["installed"] else "not installed",
          ok=services["sqlite_vec"]["installed"],
          hint="" if services["sqlite_vec"]["installed"] else "pip install brainctl[vec]")
-    _row("signing (solders)", "installed" if services["signing"]["installed"] else "not installed",
-         ok=services["signing"]["installed"],
-         hint="" if services["signing"]["installed"] else "pip install brainctl[signing]")
-    _row("managed wallet", "configured" if services["wallet"]["configured"] else "not configured",
-         ok=services["wallet"]["configured"],
-         hint="" if services["wallet"]["configured"] else "brainctl wallet new")
     print()
     if mcp_tools is not None:
         _row("mcp tools", f"{mcp_tools}", ok=True)
@@ -9463,58 +9449,6 @@ def cmd_doctor(args):
         if not getattr(args, "json", False):
             print(info(f"  migrations: check failed ({exc})"))
 
-    # Signing wallet — needed for `brainctl export --sign` and
-    # `--pin-onchain`. Reachability of the Solana RPC (for pin verification)
-    # is optional — a missing RPC is worth an info note but not an issue.
-    # Mirrors the service-availability layer that brainctl status ships; the
-    # audit L6 finding was that doctor lagged status on these checks.
-    wallet_status: Dict[str, Any] = {"configured": False, "path": None}
-    try:
-        from agentmemory.commands.wallet import resolve_wallet_path as _resolve_wallet_path
-        wp = _resolve_wallet_path()
-        if wp and Path(wp).exists():
-            wallet_status = {"configured": True, "path": str(wp)}
-            if not getattr(args, "json", False):
-                print(ok(f"  signing wallet: configured ({wp})"))
-        else:
-            if not getattr(args, "json", False):
-                print(info(
-                    "  signing wallet: not configured "
-                    "(run `brainctl wallet new` for signed exports / --pin-onchain)"
-                ))
-    except Exception:
-        # solders/wallet helpers not installed or import path has shifted;
-        # this is a pip-extras omission, not an error worth failing doctor.
-        if not getattr(args, "json", False):
-            print(info(
-                "  signing wallet: extras not installed "
-                "(pip install 'brainctl[signing]' if you need --sign / --pin-onchain)"
-            ))
-
-    # Solana RPC reachability — only informational, even a persistent
-    # 5xx shouldn't fail doctor because sign/verify work offline.
-    rpc_status: Dict[str, Any] = {"checked": False}
-    try:
-        import urllib.request as _urlreq
-        rpc_url = os.environ.get("BRAINCTL_SOLANA_RPC") or "https://api.mainnet-beta.solana.com"
-        req = _urlreq.Request(
-            rpc_url,
-            data=b'{"jsonrpc":"2.0","id":1,"method":"getHealth"}',
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with _urlreq.urlopen(req, timeout=3) as _resp:
-            rpc_status = {"checked": True, "reachable": True, "url": rpc_url}
-            if not getattr(args, "json", False):
-                print(ok(f"  Solana RPC: reachable ({rpc_url})"))
-    except Exception:
-        rpc_status = {"checked": True, "reachable": False}
-        if not getattr(args, "json", False):
-            print(info(
-                "  Solana RPC: not reachable "
-                "(optional — only needed for --pin-onchain verification)"
-            ))
-
     # Verdict
     healthy = len(issues) == 0
     if not getattr(args, "json", False):
@@ -9540,8 +9474,6 @@ def cmd_doctor(args):
             "db_size_mb": db_size,
             "vec_available": vec_available,
             "migrations": migrations_status,
-            "wallet": wallet_status,
-            "solana_rpc": rpc_status,
         })
 
     # Non-zero exit when issues are present regardless of output mode.
@@ -17947,36 +17879,15 @@ def build_parser():
     from agentmemory.commands.obsidian import register_parser as _obs_register
     _obs_register(sub)
 
-    # --- export / verify (signed memory bundles) ---
-    from agentmemory.commands.sign import register_parser as _sign_register
-    _sign_register(sub)
-
-    # --- wallet (managed Solana wallet for signed exports, 2.3.2+) ---
-    from agentmemory.commands.wallet import register_parser as _wallet_register
-    _wallet_register(sub)
-
     # --- ingest (code-aware knowledge-graph population, 2.4.5+, optional [code] extra) ---
     from agentmemory.commands.ingest import register_parser as _ingest_register
     _ingest_register(sub)
-
-    # --- marketplace api client (2.5.x feat/cnft-mint) ---
-    # Wraps the REST API at brainctl.org/api/marketplace. Wallet-sig
-    # auth, browse, list, offer, counter, accept/reject/withdraw,
-    # settle, status. Uses signing + wallet primitives from this same
-    # package, so no extra brainctl extras required beyond [signing].
-    from agentmemory.commands.marketplace_cli import register_parser as _mkt_register
-    _mkt_register(sub)
 
     # `brainctl import <provider> <source>` — onboarding from other memory
     # providers (mem0, json, ...). Quarantine-by-default. Provider list
     # is dynamically computed from the agentmemory.importers registry.
     from agentmemory.commands.import_cmd import register_parser as _import_register
     _import_register(sub)
-
-    # `brainctl bundle decrypt <mint> --ciphertext-uri ar://...`
-    # — local-side operations on bundles you minted.
-    from agentmemory.commands.bundle import register_parser as _bundle_register
-    _bundle_register(sub)
 
     return p
 
@@ -19101,21 +19012,6 @@ def main():
             fn(args)
         else:
             parser.print_help()
-        return
-    elif args.command == "export":
-        from agentmemory.commands.sign import cmd_export as _cmd_export
-        _cmd_export(args)
-        return
-    elif args.command == "verify":
-        from agentmemory.commands.sign import cmd_verify as _cmd_verify
-        _cmd_verify(args)
-        return
-    elif args.command == "wallet":
-        # Managed wallet subcommand suite (2.3.2+). The dispatch table
-        # lives in commands/wallet.py so this branch stays a single
-        # import + call.
-        from agentmemory.commands.wallet import cmd_wallet as _cmd_wallet
-        _cmd_wallet(args)
         return
     elif args.command == "ingest":
         # Code-ingest subcommand suite (2.4.5+, optional [code] extra).
