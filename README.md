@@ -18,17 +18,33 @@ brain.wrap_up("auth module complete", project="api-v2")  # session end: logs + h
 
 ## Install
 
+Choose the install that matches how you use brainctl:
+
+Core CLI and Python library:
+
 ```bash
 pip install brainctl
 ```
 
 Requires Python 3.11+. SQLite is built-in. No other mandatory dependencies.
 
+MCP server for Claude Desktop, Cursor, or VS Code:
+
 ```bash
-pip install brainctl[mcp]     # MCP server — 100 visible tools for Claude Desktop, Cursor, VS Code
-pip install brainctl[vec]     # vector similarity search (sqlite-vec + Ollama)
-pip install brainctl[signing] # Ed25519-signed memory exports + optional Solana on-chain pinning
-pip install brainctl[all]     # everything
+pip install 'brainctl[mcp]'
+# or, for an isolated command-line install:
+pipx install 'brainctl[mcp]'
+```
+
+The `[mcp]` extra is required to run `brainctl-mcp`; it is an alternative to
+the core-only install, not a second package.
+
+Other optional capabilities:
+
+```bash
+pip install 'brainctl[vec]'     # vector similarity search (sqlite-vec + Ollama)
+pip install 'brainctl[signing]' # Ed25519-signed memory exports + optional Solana on-chain pinning
+pip install 'brainctl[all]'     # everything
 ```
 
 ## 5-line example
