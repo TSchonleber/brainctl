@@ -90,13 +90,28 @@ def parse_ts(value: str) -> datetime:
     normalized = value.strip().replace("Z", "+00:00")
     if " " in normalized and "T" not in normalized:
         normalized = normalized.replace(" ", "T", 1)
-    return datetime.fromisoformat(normalized)
+    dt = datetime.fromisoformat(normalized)
+    # Timestamps in brain.db are a mix: memory_add writes aware UTC
+    # (``_utc_now_iso`` -> trailing ``Z``) while several maintenance writers
+    # used naive local ``datetime.now()``. Normalize every parsed value to
+    # aware UTC so downstream subtraction never mixes offset-naive and
+    # offset-aware datetimes (issue #168). A naive string is assumed to be
+    # UTC — exact on UTC hosts, and at most an offset-hours skew on a "days"
+    # scale elsewhere, which is negligible for aging math and never crashes.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def days_since(now: datetime, timestamp: str) -> float:
     dt = parse_ts(timestamp)
     if dt is None:
         return 0.0
+    # ``now`` is frequently a naive ``datetime.now()`` at the call sites.
+    # Coerce it to aware UTC so it is always comparable to the aware ``dt``
+    # returned by parse_ts (issue #168).
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     seconds = (now - dt).total_seconds()
     return max(0.0, seconds / 86400.0)
 

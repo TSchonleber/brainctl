@@ -30,7 +30,12 @@ classifiers = [
 # existing extra rather than a new one keeps `pip install 'brainctl[mcp]'`
 # the canonical install for every MCP-adjacent use case (stdio and HTTP).
 mcp = [
-    "mcp>=1.27.0",
+    # Upper bound: mcp 2.0.0 removed the decorator-style low-level `Server`
+    # API (`@app.list_tools()` / `@app.call_tool()`) that mcp_server.py is
+    # built on, so an unbounded `>=1.27.0` silently resolves to 2.0.0 and
+    # breaks every `import agentmemory.mcp_server` at collection time. Keep
+    # the bound until the server is migrated to the 2.x API.
+    "mcp>=1.27.0,<2.0.0",
     "starlette>=0.37",
     "uvicorn[standard]>=0.30",
     "python-json-logger>=2.0",
@@ -136,7 +141,8 @@ bench = [
     "PyYAML>=6.0",
 ]
 all = [
-    "mcp>=1.27.0",
+    # See the `mcp` extra above for why this is bounded below 2.0.0.
+    "mcp>=1.27.0,<2.0.0",
     # HTTP transport deps (mirror of the `mcp` extra additions so
     # `pip install 'brainctl[all]'` keeps CI and release images with
     # the full MCP surface — stdio + HTTP).

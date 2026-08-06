@@ -8090,10 +8090,18 @@ def cmd_vsearch(args):
 
     def _vsearch_table(vec_table, src_table, text_col, extra_cols, fts_table):
         fetch_n = limit * 3
-        vec_rows = db.execute(
-            f"SELECT rowid, distance FROM {vec_table} WHERE embedding MATCH ? AND k=?",
-            (q_blob, fetch_n),
-        ).fetchall()
+        try:
+            vec_rows = db.execute(
+                f"SELECT rowid, distance FROM {vec_table} WHERE embedding MATCH ? AND k=?",
+                (q_blob, fetch_n),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # The vec table for this source doesn't exist (issue #161). Only
+            # vec_memories is created/populated today; vec_events / vec_context
+            # are in the default table set but never built. Skip the missing
+            # source and let vsearch still return results from the tables that
+            # do exist, instead of aborting the whole command.
+            return []
         if not vec_rows:
             return []
 

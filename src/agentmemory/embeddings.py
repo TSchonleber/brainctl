@@ -279,6 +279,104 @@ def get_db_embedding_dim(conn: sqlite3.Connection) -> Optional[int]:
         return None
 
 
+def sample_db_embedding_widths(
+    conn: sqlite3.Connection, sample_size: int = 8
+) -> dict:
+    """Probe the actual float32 width of a sample of stored embeddings.
+
+    ``cmd_vec_reindex`` cross-checks the DDL-declared dim
+    (:func:`get_db_embedding_dim`) against the real byte width of a handful of
+    rows before it does a destructive DROP+CREATE, so an interrupted prior
+    reindex or a mixed-width index refuses to be silently papered over unless
+    ``--force`` is passed (audit H4).
+
+    Each ``vec_memories`` embedding is stored as packed float32, so a vector's
+    dimensionality is ``len(blob) // 4``.
+
+    Returns a dict with keys ``ok``, ``sample_count``, ``consistent``,
+    ``declared_dim``, ``observed_dims`` (sorted), and ``message``. When the
+    table is absent/unreadable or empty, ``consistent`` is ``True`` (nothing to
+    contradict) so the reindex guard treats it as "nothing to check" and
+    proceeds to build a fresh index.
+    """
+    declared_dim = get_db_embedding_dim(conn)
+    try:
+        n = max(1, int(sample_size))
+    except (TypeError, ValueError):
+        n = 8
+    try:
+        rows = conn.execute(
+            "SELECT embedding FROM vec_memories LIMIT ?", (n,)
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return {
+            "ok": False,
+            "sample_count": 0,
+            "consistent": True,
+            "declared_dim": declared_dim,
+            "observed_dims": [],
+            "message": f"vec_memories unreadable ({exc}); nothing to probe.",
+        }
+
+    observed: set[int] = set()
+    sample_count = 0
+    for row in rows:
+        blob = row["embedding"] if isinstance(row, sqlite3.Row) else row[0]
+        if blob is None:
+            continue
+        try:
+            width = len(blob) // 4  # packed float32
+        except TypeError:
+            continue
+        if width <= 0:
+            continue
+        observed.add(width)
+        sample_count += 1
+
+    observed_dims = sorted(observed)
+    if sample_count == 0:
+        return {
+            "ok": True,
+            "sample_count": 0,
+            "consistent": True,
+            "declared_dim": declared_dim,
+            "observed_dims": [],
+            "message": "vec_memories has no embedding rows to probe.",
+        }
+
+    consistent = len(observed_dims) == 1 and (
+        declared_dim is None or observed_dims[0] == declared_dim
+    )
+    if consistent:
+        message = (
+            f"Sampled {sample_count} embedding(s); all {observed_dims[0]}-dim"
+            + (
+                f", matching the declared dim {declared_dim}."
+                if declared_dim is not None
+                else " (no declared dim to compare)."
+            )
+        )
+    elif len(observed_dims) > 1:
+        message = (
+            f"Sampled {sample_count} embedding(s) with mixed widths "
+            f"{observed_dims}; the vec index is corrupted or mid-migration."
+        )
+    else:
+        message = (
+            f"Sampled {sample_count} embedding(s) at {observed_dims[0]}-dim, "
+            f"but the DDL declares {declared_dim}-dim."
+        )
+
+    return {
+        "ok": True,
+        "sample_count": sample_count,
+        "consistent": consistent,
+        "declared_dim": declared_dim,
+        "observed_dims": observed_dims,
+        "message": message,
+    }
+
+
 class EmbeddingDimMismatchError(RuntimeError):
     """Raised when the requested embedding model's dim doesn't match the DB.
 
