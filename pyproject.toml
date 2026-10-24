@@ -126,11 +126,11 @@ code = [
 # Pins are PyPI-verified as of 2026-04-16. See
 # tests/bench/competitor_runs/setup.sh and tests/bench/COMPETITOR_RESULTS.md.
 competitor-bench = [
-    "openai==2.34.0",
-    "mem0ai==2.0.2",
-    "letta-client==1.10.3",
-    "zep-cloud==3.22.0",
-    "cognee==1.0.5",
+    "openai==2.41.0",
+    "mem0ai==2.0.4",
+    "letta-client==1.12.1",
+    "zep-cloud==3.23.0",
+    "cognee==1.1.2",
 ]
 # Core benchmark harness deps — `python -m tests.bench.run --check-strict`
 # reads per-bench tolerance YAMLs via PyYAML. The gate module falls back
