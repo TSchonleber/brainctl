@@ -207,17 +207,64 @@ def test_baseline_present(baseline):
     assert baseline["results"], "baseline results array is empty"
 
 
+def _check_row(base_row: dict, fresh_row: dict) -> str | None:
+    """Return a failure message if ``fresh_row`` regressed vs ``base_row``."""
+    op, scale = base_row["op"], base_row["scale"]
+    base_p95 = base_row["p95_ms"]
+    fresh_p95 = fresh_row["p95_ms"]
+    # Sub-millisecond ops are page-cache + connect-overhead bound. A
+    # ratio test on (0.17 -> 0.34) would flag noise as a 100% regression.
+    # Use a flat absolute budget instead -- anything beyond that IS a
+    # real signal.
+    if base_p95 < SUB_MS_BASELINE_BOUNDARY:
+        limit = base_p95 + SUB_MS_BUDGET_MS
+        if fresh_p95 > limit:
+            return (f"{op}@{scale}: baseline {base_p95:.3f}ms p95, "
+                    f"fresh {fresh_p95:.3f}ms p95 (sub-ms; "
+                    f"budget +{SUB_MS_BUDGET_MS:.1f}ms absolute)")
+        return None
+    ratio = fresh_p95 / base_p95
+    if ratio > REGRESSION_THRESHOLD:
+        pct = (ratio - 1.0) * 100.0
+        return (f"{op}@{scale}: baseline {base_p95:.2f}ms p95, "
+                f"fresh {fresh_p95:.2f}ms p95 (+{pct:.0f}%, "
+                f"threshold +{(REGRESSION_THRESHOLD - 1.0) * 100:.0f}%)")
+    return None
+
+
+def _remeasure(baseline: dict, keys: list[tuple[str, int]]) -> dict:
+    """Re-run the harness for just ``keys`` and index the results."""
+    from tests.bench.latency import run_sweep
+
+    ops = tuple(sorted({op for op, _ in keys}))
+    scales = tuple(sorted({scale for _, scale in keys}))
+    report = run_sweep(
+        scales=scales,
+        n_runs=int(baseline.get("runs_per_op", 100)),
+        n_warmup=int(baseline.get("warmup_per_op", 5)),
+        ops=ops,
+    )
+    return _index(report.as_dict())
+
+
 def test_no_p95_regression_beyond_threshold(baseline, fresh_run):
     """Per-(op, scale): fresh p95 must be within REGRESSION_THRESHOLD of baseline.
 
+    A single shared CI runner stall can push one op's p95 far past budget
+    (seen: brain_decide@100 0.19ms -> 110ms with no code change). Any
+    (op, scale) that fails is therefore re-measured once, and only fails
+    the gate if the re-measurement regresses too -- a real regression
+    reproduces, a runner hiccup does not.
+
     Reports ALL regressions in a single failure rather than failing on the
-    first — gives the developer the full picture instead of one rabbit hole
+    first -- gives the developer the full picture instead of one rabbit hole
     at a time.
     """
     base_idx = _index(baseline)
     fresh_idx = _index(fresh_run)
 
     failures: list[str] = []
+    suspects: list[tuple[str, int]] = []
     # If the fresh run is on a different platform than the baseline, the
     # CLI-subprocess ops have un-reconcilable cross-platform variance and
     # get excluded. Library-level ops still pass the ratio test because
@@ -240,29 +287,20 @@ def test_no_p95_regression_beyond_threshold(baseline, fresh_run):
         if fresh_row is None:
             failures.append(f"{op}@{scale}: missing in fresh run")
             continue
-        base_p95 = base_row["p95_ms"]
-        fresh_p95 = fresh_row["p95_ms"]
-        # Sub-millisecond ops are page-cache + connect-overhead bound. A
-        # ratio test on (0.17 → 0.34) would flag noise as a 100% regression.
-        # Use a flat +1ms absolute budget instead — anything beyond that IS
-        # a real signal.
-        if base_p95 < SUB_MS_BASELINE_BOUNDARY:
-            limit = base_p95 + SUB_MS_BUDGET_MS
-            if fresh_p95 > limit:
-                failures.append(
-                    f"{key[0]}@{key[1]}: baseline {base_p95:.3f}ms p95, "
-                    f"fresh {fresh_p95:.3f}ms p95 (sub-ms; "
-                    f"budget +{SUB_MS_BUDGET_MS:.1f}ms absolute)"
-                )
-        else:
-            ratio = fresh_p95 / base_p95
-            if ratio > REGRESSION_THRESHOLD:
-                pct = (ratio - 1.0) * 100.0
-                failures.append(
-                    f"{key[0]}@{key[1]}: baseline {base_p95:.2f}ms p95, "
-                    f"fresh {fresh_p95:.2f}ms p95 (+{pct:.0f}%, "
-                    f"threshold +{(REGRESSION_THRESHOLD - 1.0) * 100:.0f}%)"
-                )
+        if _check_row(base_row, fresh_row):
+            suspects.append(key)
+
+    if suspects:
+        retry_idx = _remeasure(baseline, suspects)
+        for key in suspects:
+            retry_row = retry_idx.get(key)
+            if retry_row is None:
+                failures.append(f"{key[0]}@{key[1]}: missing in re-measurement")
+                continue
+            msg = _check_row(base_idx[key], retry_row)
+            if msg:
+                first = fresh_idx[key]["p95_ms"]
+                failures.append(f"{msg} [first run {first:.3f}ms; regressed twice]")
 
     if failures:
         msg = (f"\n{len(failures)} latency regression(s) vs baseline:\n  "
