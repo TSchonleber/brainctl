@@ -29,6 +29,9 @@ os.environ["BRAINCTL_HOME"] = str(_TEST_HOME)
 
 from agentmemory.brain import Brain  # noqa: E402
 
+# Tests that use the module-default DB path expect a migrated brain there.
+Brain(db_path=str(_TEST_HOME / "db" / "brain.db")).close()
+
 
 # --- Auto-restore monkey-patched module-level helpers --------------------
 # Several brain-inspired subsystem tests monkey-patch `open_db` and `DB_PATH`

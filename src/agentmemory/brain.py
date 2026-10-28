@@ -36,7 +36,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -153,6 +153,15 @@ class Brain:
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
         self._closed = False
+
+        # Earlier ids this agent wrote under (e.g. Claude Code's per-folder
+        # "cc:<dir>" and per-task "claude-code-<task>" ids), as GLOB patterns.
+        # orient() treats rows under these as this agent's own history so one
+        # continuous identity survives an id change.
+        self.aliases: List[str] = [
+            a.strip() for a in os.environ.get("BRAINCTL_AGENT_ALIASES", "").split(",")
+            if a.strip()
+        ]
 
         if not self.db_path.exists():
             self._init_db()
@@ -754,13 +763,35 @@ class Brain:
         """
         now = _now_ts()
         result: Dict[str, Any] = {"agent_id": self.agent_id}
+        if self.aliases:
+            result["aliases"] = list(self.aliases)
+        # "This agent" = its id plus any alias patterns (see __init__).
+        own_sql = "(agent_id = ?" + " OR agent_id GLOB ?" * len(self.aliases) + ")"
+        own_params: list[str] = [self.agent_id, *self.aliases]
         with self._lock:
             db = self._get_conn()
 
+            # Publish aliases on this agent's row so peers can fold our legacy
+            # ids into one entry (see _orient_peers).
+            if self.aliases:
+                try:
+                    db.execute(
+                        "UPDATE agents SET adapter_info = json_set("
+                        "  CASE WHEN json_valid(adapter_info) THEN adapter_info ELSE '{}' END,"
+                        "  '$.aliases', json(?)) WHERE id = ?",
+                        (json.dumps(self.aliases), self.agent_id),
+                    )
+                    db.commit()
+                except sqlite3.OperationalError:
+                    pass
+
             # 1. Check for pending handoff (don't consume yet — agent decides)
             try:
-                hq = "SELECT id, goal, current_state, open_loops, next_step, project, title, created_at FROM handoff_packets WHERE agent_id = ? AND status = 'pending'"
-                hp: list[str] = [self.agent_id]
+                hq = (
+                    "SELECT id, agent_id, goal, current_state, open_loops, next_step, project, title, created_at "
+                    f"FROM handoff_packets WHERE {own_sql} AND status = 'pending'"
+                )
+                hp: list[str] = list(own_params)
                 if project:
                     hq += " AND project = ?"
                     hp.append(project)
@@ -770,10 +801,19 @@ class Brain:
             except sqlite3.OperationalError:
                 result["handoff"] = None
 
+            # 1b. Identity: who this agent is and who it works for. Returned
+            # whole on every orient — not gated on a search query — so an
+            # agent starts each session as the same self.
+            result["identity"] = self._orient_identity(db, own_sql, own_params)
+
+            # 1c. Peers: the other agents sharing this brain and their latest
+            # pending handoff, so agents see each other's work.
+            result["peers"] = self._orient_peers(db, own_sql, own_params)
+
             # 2. Recent events (last 10)
             try:
-                eq = "SELECT id, event_type, summary, project, created_at FROM events WHERE agent_id = ?"
-                ep: list[str] = [self.agent_id]
+                eq = f"SELECT id, event_type, summary, project, created_at FROM events WHERE {own_sql}"
+                ep: list[str] = list(own_params)
                 if project:
                     eq += " AND project = ?"
                     ep.append(project)
@@ -877,6 +917,91 @@ class Brain:
             self.log("Session started", event_type="session_start", project=project)
 
         return result
+
+    def _orient_identity(self, db: sqlite3.Connection, own_sql: str,
+                         own_params: List[str]) -> Dict[str, Any]:
+        """Self-identity and user-profile memories for orient().
+
+        ``self``: this agent's ``identity`` memories (written by it, under an
+        alias, or scoped ``agent:<id>``). ``user``: the newest global
+        ``user`` / ``preference`` memories, which every agent shares.
+        """
+        out: Dict[str, Any] = {"self": [], "user": []}
+        cols = "id, agent_id, category, content, confidence, created_at"
+        try:
+            out["self"] = [dict(r) for r in db.execute(
+                f"SELECT {cols} FROM memories WHERE retired_at IS NULL "
+                f"AND category = 'identity' AND ({own_sql} OR scope = ?) "
+                "ORDER BY created_at DESC LIMIT 10",
+                [*own_params, f"agent:{self.agent_id}"],
+            ).fetchall()]
+            out["user"] = [dict(r) for r in db.execute(
+                f"SELECT {cols} FROM memories WHERE retired_at IS NULL "
+                "AND category IN ('user', 'preference') "
+                "AND COALESCE(scope, 'global') = 'global' "
+                "ORDER BY created_at DESC LIMIT 12"
+            ).fetchall()]
+        except sqlite3.OperationalError:
+            pass
+        return out
+
+    def _orient_peers(self, db: sqlite3.Connection, own_sql: str,
+                      own_params: List[str], days: int = 30,
+                      limit: int = 5) -> List[Dict[str, Any]]:
+        """Latest pending handoff per other agent, newest first.
+
+        Rows under an id that another agent lists in its published aliases
+        (``agents.adapter_info.aliases``) are folded into that agent, so one
+        peer with many legacy ids shows up once.
+        """
+        import fnmatch
+
+        # Date-only cutoff: created_at mixes "T…Z" and " …" timestamp styles,
+        # but both sort correctly against a bare YYYY-MM-DD prefix.
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+        try:
+            rows = db.execute(
+                "SELECT agent_id, goal, next_step, project, created_at FROM ("
+                "  SELECT agent_id, goal, next_step, project, created_at,"
+                "         ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC) AS rn"
+                "  FROM handoff_packets"
+                f"  WHERE status = 'pending' AND created_at >= ? AND NOT {own_sql}"
+                ") WHERE rn = 1 ORDER BY created_at DESC",
+                [cutoff, *own_params],
+            ).fetchall()
+            published = db.execute(
+                "SELECT id, json_extract(adapter_info, '$.aliases') FROM agents "
+                "WHERE json_valid(adapter_info) AND json_extract(adapter_info, '$.aliases') IS NOT NULL"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        alias_map: List[Tuple[str, List[str]]] = []
+        for agent, raw in published:
+            try:
+                alias_map.append((agent, list(json.loads(raw))))
+            except (TypeError, ValueError):
+                continue
+
+        peers: List[Dict[str, Any]] = []
+        seen: set = set()
+        for row in rows:  # newest first, so the first row per peer wins
+            peer = dict(row)
+            canonical = next(
+                (agent for agent, pats in alias_map
+                 if any(fnmatch.fnmatchcase(peer["agent_id"], p) for p in pats)),
+                peer["agent_id"],
+            )
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            if canonical != peer["agent_id"]:
+                peer["via"] = peer["agent_id"]
+                peer["agent_id"] = canonical
+            peers.append(peer)
+            if len(peers) >= limit:
+                break
+        return peers
 
     def wrap_up(self, summary: str, goal: Optional[str] = None,
                 open_loops: Optional[str] = None, next_step: Optional[str] = None,
