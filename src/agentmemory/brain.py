@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from agentmemory.affect import classify_affect
+from agentmemory.lib import pattern_separation as _ps
 from agentmemory.paths import get_db_path
 
 try:
@@ -359,8 +360,16 @@ class Brain:
         memory_type: str = "episodic",
         scope: str = "global",
         procedure: Optional[Dict[str, Any]] = None,
+        force: bool = False,
     ) -> int:
-        """Add a memory. Returns memory ID."""
+        """Add a memory. Returns memory ID.
+
+        Runs the same DG pattern-separation check as ``brainctl memory add``
+        and the MCP ``memory_add`` tool: a near-identical memory in the same
+        agent / scope / category is reinforced instead of duplicated (its id
+        is returned), and a similar one that differs on a key token is
+        written and linked ``distinct_from``. ``force=True`` skips the check.
+        """
         tags_json = json.dumps(tags.split(",")) if isinstance(tags, str) else (json.dumps(tags) if tags else None)
         now = _now_ts()
         with self._lock:
@@ -383,6 +392,12 @@ class Brain:
                 )
                 mid = int(result["memory_id"])
             else:
+                dg = _ps.Decision(_ps.NOVEL)
+                if not force and memory_type != "procedural":
+                    dg = _ps.evaluate(db, content, self.agent_id, scope, category)
+                if dg.action == _ps.REINFORCE and dg.neighbor is not None:
+                    _ps.apply_reinforce(db, dg, self.agent_id, scope, now)
+                    return int(dg.neighbor.id)
                 cur = db.execute(
                     """
                     INSERT INTO memories (
@@ -397,6 +412,8 @@ class Brain:
                     from agentmemory import procedural as _procedural
 
                     _procedural.ensure_procedure_for_memory(db, memory_id=mid, agent_id=self.agent_id)
+                db.commit()
+                _ps.after_insert(db, mid, dg, self.agent_id, scope, now)
             db.commit()
             if _VEC_AVAILABLE:
                 try:

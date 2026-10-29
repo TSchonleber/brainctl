@@ -125,8 +125,10 @@ def test_multi_thread_remember_and_search(db_file):
     def worker(worker_id: int) -> None:
         try:
             for i in range(per_thread):
+                # force=True: this is a thread-safety test, so keep the
+                # pattern-separation gate (2.9.1) from folding rows together.
                 brain.remember(
-                    f"thread {worker_id} memory {i}", category="lesson"
+                    f"thread {worker_id} memory {i}", category="lesson", force=True
                 )
                 results = brain.search(f"thread {worker_id}")
                 assert isinstance(results, list)

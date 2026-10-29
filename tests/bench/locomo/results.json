@@ -31,7 +31,7 @@
           "mrr": 0.6191
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 11,
           "hit@1": 0.0909,
           "hit@5": 0.3636,
@@ -44,7 +44,7 @@
           "mrr": 0.2083
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 32,
           "hit@1": 0.0625,
           "hit@5": 0.375,
@@ -57,7 +57,7 @@
           "mrr": 0.1746
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 70,
           "hit@1": 0.3571,
           "hit@5": 0.5429,
@@ -115,7 +115,7 @@
           "mrr": 0.7182
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 44,
           "hit@1": 0.2727,
           "hit@5": 0.5,
@@ -128,7 +128,7 @@
           "mrr": 0.3907
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 11,
           "hit@1": 0.0909,
           "hit@5": 0.6364,
@@ -186,7 +186,7 @@
           "mrr": 0.5674
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 31,
           "hit@1": 0.2903,
           "hit@5": 0.5161,
@@ -199,7 +199,7 @@
           "mrr": 0.4023
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 8,
           "hit@1": 0.0,
           "hit@5": 0.125,
@@ -212,7 +212,7 @@
           "mrr": 0.025
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 86,
           "hit@1": 0.4186,
           "hit@5": 0.6395,
@@ -257,7 +257,7 @@
       "mrr": 0.4278,
       "by_category": {
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 11,
           "hit@1": 0.0909,
           "hit@5": 0.1818,
@@ -270,7 +270,7 @@
           "mrr": 0.1136
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 37,
           "hit@1": 0.2703,
           "hit@5": 0.4595,
@@ -296,7 +296,7 @@
           "mrr": 0.5198
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 111,
           "hit@1": 0.3604,
           "hit@5": 0.5856,
@@ -341,7 +341,7 @@
       "mrr": 0.4654,
       "by_category": {
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 31,
           "hit@1": 0.0645,
           "hit@5": 0.3548,
@@ -354,7 +354,7 @@
           "mrr": 0.1985
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 14,
           "hit@1": 0.4286,
           "hit@5": 0.5,
@@ -380,7 +380,7 @@
           "mrr": 0.634
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 107,
           "hit@1": 0.3645,
           "hit@5": 0.6542,
@@ -438,7 +438,7 @@
           "mrr": 0.2855
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 30,
           "hit@1": 0.1,
           "hit@5": 0.2667,
@@ -451,7 +451,7 @@
           "mrr": 0.1808
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 7,
           "hit@1": 0.0,
           "hit@5": 0.1429,
@@ -464,7 +464,7 @@
           "mrr": 0.0446
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 62,
           "hit@1": 0.371,
           "hit@5": 0.6935,
@@ -509,7 +509,7 @@
       "mrr": 0.4224,
       "by_category": {
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 13,
           "hit@1": 0.2308,
           "hit@5": 0.4615,
@@ -535,7 +535,7 @@
           "mrr": 0.4153
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 20,
           "hit@1": 0.15,
           "hit@5": 0.3,
@@ -548,7 +548,7 @@
           "mrr": 0.2298
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 83,
           "hit@1": 0.3614,
           "hit@5": 0.5663,
@@ -606,7 +606,7 @@
           "mrr": 0.506
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 21,
           "hit@1": 0.1905,
           "hit@5": 0.5238,
@@ -619,7 +619,7 @@
           "mrr": 0.352
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 10,
           "hit@1": 0.4,
           "hit@5": 0.5,
@@ -632,7 +632,7 @@
           "mrr": 0.46
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 118,
           "hit@1": 0.4153,
           "hit@5": 0.6017,
@@ -677,7 +677,7 @@
       "mrr": 0.4322,
       "by_category": {
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 37,
           "hit@1": 0.2432,
           "hit@5": 0.5135,
@@ -703,7 +703,7 @@
           "mrr": 0.4399
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 13,
           "hit@1": 0.0769,
           "hit@5": 0.2308,
@@ -716,7 +716,7 @@
           "mrr": 0.1258
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 73,
           "hit@1": 0.3425,
           "hit@5": 0.6301,
@@ -774,7 +774,7 @@
           "mrr": 0.4031
         },
         "1": {
-          "label": "single-hop",
+          "label": "multi-hop",
           "count": 32,
           "hit@1": 0.125,
           "hit@5": 0.4375,
@@ -787,7 +787,7 @@
           "mrr": 0.277
         },
         "3": {
-          "label": "multi-hop",
+          "label": "open-domain",
           "count": 5,
           "hit@1": 0.0,
           "hit@5": 0.0,
@@ -800,7 +800,7 @@
           "mrr": 0.0333
         },
         "4": {
-          "label": "open-domain",
+          "label": "single-hop",
           "count": 87,
           "hit@1": 0.4023,
           "hit@5": 0.5632,
@@ -856,7 +856,7 @@
         "mrr": 0.5103
       },
       "3": {
-        "label": "multi-hop",
+        "label": "open-domain",
         "count": 92,
         "hit@1": 0.1739,
         "hit@5": 0.3152,
@@ -869,7 +869,7 @@
         "mrr": 0.2323
       },
       "1": {
-        "label": "single-hop",
+        "label": "multi-hop",
         "count": 282,
         "hit@1": 0.1667,
         "hit@5": 0.4291,
@@ -882,7 +882,7 @@
         "mrr": 0.2821
       },
       "4": {
-        "label": "open-domain",
+        "label": "single-hop",
         "count": 841,
         "hit@1": 0.3734,
         "hit@5": 0.6017,

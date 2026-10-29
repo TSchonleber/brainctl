@@ -10,15 +10,18 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+from agentmemory.paths import get_db_path
 from typing import Optional
 
-DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+# Resolved per call so BRAINCTL_DB / BRAIN_DB / BRAINCTL_HOME are honoured.
+DB_PATH = get_db_path()
 
 VALID_OUTCOMES = {"success", "blocked", "escalated", "cancelled"}
 
 
 def _get_db(db_path: str = None) -> sqlite3.Connection:
-    path = db_path or str(DB_PATH)
+    path = db_path or str(get_db_path())
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")

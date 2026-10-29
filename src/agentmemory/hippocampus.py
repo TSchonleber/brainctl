@@ -3359,11 +3359,7 @@ def search_memories(
     if not no_recency and _vec_loaded(conn):
         try:
             # Import here to avoid circular deps and keep hippocampus self-contained
-            import importlib.util, os
-            _sr_path = os.path.join(os.path.dirname(__file__), "salience_routing.py")
-            spec = importlib.util.spec_from_file_location("salience_routing", _sr_path)
-            sr = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(sr)
+            from agentmemory.lib import salience_routing as sr
             results = sr.route_memories_hybrid(
                 conn, query, top_k=limit, vec_available=True, min_salience=0.0
             )

@@ -1,4 +1,4 @@
-"""Tests for the entity_lookup keyword rule in bin/intent_classifier.py
+"""Tests for the entity_lookup keyword rule in agentmemory/lib/intent_classifier.py
 (2.2.3 Item 3 — audit memory 1675).
 
 Covers Rule 9b: keyword-driven entity_lookup that mirrors the inline
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-# bin/intent_classifier.py is not a package. Other tests may have already
+# Load the module file directly. Other tests may have already
 # imported a different copy via `agentmemory._impl` (which does `from
 # intent_classifier import ...` — that resolves through cwd-relative sys.path
 # and can pick up an installed-package or main-repo copy ahead of the
@@ -22,7 +22,7 @@ import pytest
 # so we always test the version in the current branch, not whatever happens
 # to be cached in sys.modules.
 _BIN_IC = (
-    Path(__file__).resolve().parent.parent / "bin" / "intent_classifier.py"
+    Path(__file__).resolve().parent.parent / "src" / "agentmemory" / "lib" / "intent_classifier.py"
 )
 _spec = importlib.util.spec_from_file_location(
     "intent_classifier_worktree_2_2_3", str(_BIN_IC)

@@ -21,11 +21,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agentmemory.paths import get_db_path
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DB = Path.home() / "agentmemory" / "db" / "brain.db"
+_DEFAULT_DB = get_db_path()
 
 _INTERFERENCE_STRENGTH = 0.2   # graph interference weight
 _DECOHERENCE_RATE = 0.05       # per-hop decay

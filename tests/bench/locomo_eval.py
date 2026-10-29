@@ -13,9 +13,9 @@ its CLI flags (``--convo``, ``--backend``, etc.) are documented in
 new, baseline-comparable entry point exercised by ``tests/bench/run.py``
 under ``--bench locomo``.
 
-Categories (LOCOMO paper inference):
-  1 single-hop   2 temporal    3 multi-hop
-  4 open-domain  5 adversarial
+Categories (snap-research/locomo task_eval convention):
+  1 multi-hop    2 temporal    3 open-domain
+  4 single-hop   5 adversarial
 """
 
 from __future__ import annotations
@@ -49,10 +49,10 @@ from tests.bench.external_runner import (  # noqa: E402
 
 
 CATEGORY_LABELS = {
-    1: "single-hop",
+    1: "multi-hop",
     2: "temporal",
-    3: "multi-hop",
-    4: "open-domain",
+    3: "open-domain",
+    4: "single-hop",
     5: "adversarial",
 }
 

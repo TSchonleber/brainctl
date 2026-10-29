@@ -199,11 +199,15 @@ except ImportError as _e:
 
 # Query intent classification — route queries to appropriate tables
 try:
-    sys.path.insert(0, str(Path.home() / "agentmemory" / "bin"))
-    from intent_classifier import classify_intent as _classify_intent
+    from agentmemory.lib.intent_classifier import classify_intent as _classify_intent
     _INTENT_AVAILABLE = True
 except Exception:
-    _INTENT_AVAILABLE = False
+    try:
+        sys.path.insert(0, str(Path.home() / "agentmemory" / "bin"))
+        from intent_classifier import classify_intent as _classify_intent
+        _INTENT_AVAILABLE = True
+    except Exception:
+        _INTENT_AVAILABLE = False
 
 # Built-in lightweight intent classifier fallback
 class _BuiltinIntentResult:
@@ -939,12 +943,14 @@ def tool_memory_add(agent_id: str, content: str, category: str, scope: str = "gl
         do_index = 1
 
     created_at = _now_ts()
+    # Seed beta = alpha_floor too, matching cmd_memory_add (Bug 10): a
+    # supersede starts at a symmetric Beta(N, N) prior, not Beta(N, 1).
     cur = db.execute(
         "INSERT INTO memories (agent_id, category, scope, content, confidence, tags, memory_type, "
-        "supersedes_id, alpha, trust_score, write_tier, indexed, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "supersedes_id, alpha, beta, trust_score, write_tier, indexed, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent_id, category, scope, content, confidence, tags_json, memory_type,
-         supersedes_id, float(alpha_floor), source_trust, write_tier, do_index,
+         supersedes_id, float(alpha_floor), float(alpha_floor), source_trust, write_tier, do_index,
          created_at, created_at)
     )
     mid = cur.lastrowid

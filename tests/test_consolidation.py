@@ -54,10 +54,12 @@ class TestDecay:
 
 class TestDedup:
     def test_exact_duplicate_content(self):
+        # 2.9.1: Brain.remember runs DG pattern separation, so an exact
+        # duplicate reinforces the existing memory instead of inserting.
         brain = _init_test_db()
         mid1 = brain.remember("The sky is blue", category="lesson")
         mid2 = brain.remember("The sky is blue", category="lesson")
-        assert mid1 != mid2
+        assert mid1 == mid2
 
     def test_different_categories_not_deduped(self):
         brain = _init_test_db()

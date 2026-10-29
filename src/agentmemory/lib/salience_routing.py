@@ -316,7 +316,8 @@ def load_vec_extension(conn: sqlite3.Connection) -> bool:
 def get_db_with_vec(db_path: Optional[Path] = None) -> tuple[sqlite3.Connection, bool]:
     """Open brain.db with sqlite-vec if available. Returns (conn, vec_loaded)."""
     if db_path is None:
-        db_path = Path.home() / "agentmemory" / "db" / "brain.db"
+        from agentmemory.paths import get_db_path
+        db_path = get_db_path()
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")

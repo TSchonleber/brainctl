@@ -18,6 +18,22 @@
       "recall_at_5": 0.6413
     },
     "multi-hop": {
+      "count": 282,
+      "hit_at_1": 0.2269,
+      "hit_at_10": 0.6064,
+      "hit_at_20": 0.6915,
+      "hit_at_5": 0.4645,
+      "mrr": 0.3392,
+      "ndcg_at_1": 0.2269,
+      "ndcg_at_10": 0.2692,
+      "ndcg_at_20": 0.3034,
+      "ndcg_at_5": 0.2319,
+      "recall_at_1": 0.0854,
+      "recall_at_10": 0.3419,
+      "recall_at_20": 0.4397,
+      "recall_at_5": 0.2518
+    },
+    "open-domain": {
       "count": 92,
       "hit_at_1": 0.1522,
       "hit_at_10": 0.413,
@@ -33,7 +49,7 @@
       "recall_at_20": 0.3435,
       "recall_at_5": 0.2567
     },
-    "open-domain": {
+    "single-hop": {
       "count": 841,
       "hit_at_1": 0.4067,
       "hit_at_10": 0.7182,
@@ -48,22 +64,6 @@
       "recall_at_10": 0.7021,
       "recall_at_20": 0.7634,
       "recall_at_5": 0.634
-    },
-    "single-hop": {
-      "count": 282,
-      "hit_at_1": 0.2269,
-      "hit_at_10": 0.6064,
-      "hit_at_20": 0.6915,
-      "hit_at_5": 0.4645,
-      "mrr": 0.3392,
-      "ndcg_at_1": 0.2269,
-      "ndcg_at_10": 0.2692,
-      "ndcg_at_20": 0.3034,
-      "ndcg_at_5": 0.2319,
-      "recall_at_1": 0.0854,
-      "recall_at_10": 0.3419,
-      "recall_at_20": 0.4397,
-      "recall_at_5": 0.2518
     },
     "temporal": {
       "count": 321,
