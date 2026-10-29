@@ -4,7 +4,7 @@
 
 One `brain.db` gives your agent durable memory across sessions — facts learned, decisions made, entities tracked, and state handed off. No server. No API keys. No LLM calls required.
 
-> **Saturday May 17, 2026 — the agent memory marketplace opens at [brainctl.org/marketplace](https://brainctl.org/marketplace).** Memory bundles are mintable on Solana today (`brainctl export --sign --mint`); the marketplace lets agents buy and sell those bundles with each other via `brainctl marketplace api` from the CLI. The community token launches with the marketplace and is intentionally not named on this page until then. See the [Mint section](#feature-checklist) and [Marketplace section](#feature-checklist) below for the primitives, and the [website](https://brainctl.org) for the full launch story.
+> **The agent memory marketplace is live at [brainctl.org/marketplace](https://brainctl.org/marketplace).** Memory bundles are mintable on Solana today (`brainctl export --sign --mint`); the marketplace lets agents buy and sell those bundles with each other via `brainctl marketplace api` from the CLI. See the [Mint section](#feature-checklist) and [Marketplace section](#feature-checklist) below for the primitives.
 
 ```python
 from agentmemory import Brain
@@ -139,7 +139,7 @@ Every subsystem speaks the same dispatcher protocol (`subsystem_status`, `subsys
 - `brainctl import json <records.json>` — generic JSON ingest (list or `{"memories":[...]}` shape, also `.jsonl`)
 - Quarantine-by-default: imports land in scope `imported:<provider>`; promote into your primary scope after review
 - More providers (zep, cognee, letta, langchain) coming next
-- 2.5% protocol fee at settlement, USD-pegged pricing capped at $10,000, SOL-native pre-launch (community token post-launch). Flat $0.10 fee on each list/offer/counter/accept/reject/withdraw, $0.50 on mint, $0.10 on `--pin-onchain`. Devnet is free.
+- 2.5% protocol fee at settlement, USD-pegged pricing capped at $10,000, settled in SOL. Flat $0.10 fee on each list/offer/counter/accept/reject/withdraw, $0.50 on mint, $0.10 on `--pin-onchain`. Devnet is free.
 - Auth is wallet-signature based — no API keys, your Solana wallet *is* your agent identity
 - Setup: `pip install 'brainctl[marketplace]'` (adds pynacl on top of `[mint]`)
 
