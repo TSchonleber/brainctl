@@ -69,14 +69,17 @@ from datetime import datetime, timezone
 
 
 def _resolve_migrations_dir() -> Path:
-    """Locate db/migrations/ in dev checkout AND PyInstaller bundle layouts.
+    """Locate the migration SQL files for every install layout.
 
-    Dev / pip-editable install: SQL files live at <repo>/db/migrations/.
+    The files ship inside the package at ``agentmemory/db/migrations/``
+    (``[tool.setuptools.package-data]`` in pyproject.toml), so a regular
+    wheel install, an editable install and a source checkout all resolve
+    them next to this module. ``db/migrations`` at the repo root is a
+    symlink to the same directory, kept for tooling and docs.
+
     PyInstaller onefile bundle (brainctl-mcp sidecar): files are extracted
     to ``sys._MEIPASS/db/migrations/`` via the ``datas=`` entry in
-    build/pyinstaller/brainctl_mcp.spec. Without the _MEIPASS branch the
-    runner falls back to a non-existent path under the bundle's temp
-    extraction root and silently reports zero pending migrations.
+    build/pyinstaller/brainctl_mcp.spec.
     """
     import sys as _sys
     meipass = getattr(_sys, "_MEIPASS", None)
@@ -84,7 +87,7 @@ def _resolve_migrations_dir() -> Path:
         bundled = Path(meipass) / "db" / "migrations"
         if bundled.exists():
             return bundled
-    return Path(__file__).parent.parent.parent / "db" / "migrations"
+    return Path(__file__).resolve().parent / "db" / "migrations"
 
 
 MIGRATIONS_DIR = _resolve_migrations_dir()
@@ -145,6 +148,14 @@ def _get_migrations() -> list[tuple[int, str, Path]]:
     Bypass via env var ``BRAINCTL_ALLOW_DUPLICATE_MIGRATIONS=1`` only if
     you're auditing an old branch; on main this should never trigger.
     """
+    if not MIGRATIONS_DIR.is_dir():
+        # A missing directory used to glob to an empty list, so `migrate`
+        # reported "Already up to date." and a fresh `init` recorded no
+        # migrations at all. Fail loudly instead.
+        raise FileNotFoundError(
+            f"brainctl migrations directory not found: {MIGRATIONS_DIR}. "
+            "The installed package is incomplete; reinstall brainctl."
+        )
     migrations = []
     for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
         m = re.match(r'^(\d+)_(.+)\.sql$', f.name)
@@ -431,6 +442,22 @@ def status(db_path: str) -> dict:
     }
 
 
+def _untracked_with_memories(conn: sqlite3.Connection, applied: set[int]) -> bool:
+    """True when no migration is recorded but the database already holds memories.
+
+    Replaying every migration over such a database re-runs table rebuilds
+    on live data (052 recreates ``memories`` without the columns added
+    after it, e.g. 087's ``valid_from`` / ``valid_to``). A fresh ``init``
+    has an empty tracker too, but no memories yet, so it is not affected.
+    """
+    if applied:
+        return False
+    try:
+        return conn.execute("SELECT 1 FROM memories LIMIT 1").fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
+
+
 def run(
     db_path: str,
     dry_run: bool = False,
@@ -454,6 +481,28 @@ def run(
             "dry_run": dry_run,
             "backup": None,
             "message": "Already up to date.",
+        }
+
+    if not dry_run and _untracked_with_memories(conn, applied_set):
+        conn.close()
+        return {
+            "ok": False,
+            "applied": 0,
+            "dry_run": dry_run,
+            "backup": None,
+            "migrations": [],
+            "errors": [{
+                "version": pending[0][0],
+                "name": "untracked database",
+                "error": (
+                    "schema_versions is empty but the database already has "
+                    "memories, so replaying every migration could rebuild "
+                    "tables over live data. Run `brainctl migrate "
+                    "--status-verbose`, then `brainctl migrate "
+                    "--mark-applied-up-to N`, then `brainctl migrate`."
+                ),
+            }],
+            "idempotent_notes": [],
         }
 
     applied = []

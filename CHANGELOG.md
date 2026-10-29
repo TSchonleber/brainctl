@@ -75,6 +75,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   key-token-separated write is no longer rejected by the A-MAC / W(m)
   near-duplicate branches (scores and tier routing are unchanged).
 
+### Fixed
+
+- **Migrations now ship in the wheel.** The SQL files moved from the repo-root
+  `db/migrations/` (outside the `src/` package tree, so never packaged) to
+  `src/agentmemory/db/migrations/`, covered by `package-data`; the repo-root
+  path is now a symlink, like `db/init_schema.sql`. On a regular
+  (non-editable) install `brainctl migrate` found no migrations and reported
+  "Already up to date.", and `brainctl init` recorded none. A missing
+  migrations directory now raises instead of reading as zero pending, and
+  `migrate` refuses to replay every migration over a database that already
+  holds memories but has an empty `schema_versions` (the state such installs
+  left behind); it points to `--status-verbose` and `--mark-applied-up-to`.
+
 ## [2.8.1] — 2026-10-23 — *hotfix: MCP install crash + search index loss*
 
 ### Fixed

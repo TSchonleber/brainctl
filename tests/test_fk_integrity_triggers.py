@@ -448,7 +448,8 @@ def test_migration_048_idempotent(tmp_path):
 
     migration_path = (
         Path(__file__).resolve().parent.parent
-        / "db" / "migrations" / "048_fk_integrity_fts_retire_trigger.sql"
+        / "src" / "agentmemory" / "db" / "migrations"
+        / "048_fk_integrity_fts_retire_trigger.sql"
     )
     assert migration_path.exists(), f"migration not found at {migration_path}"
 
@@ -513,7 +514,8 @@ def test_migration_048_converges_legacy_single_trigger(tmp_path):
     # Apply migration 048.
     migration_path = (
         Path(__file__).resolve().parent.parent
-        / "db" / "migrations" / "048_fk_integrity_fts_retire_trigger.sql"
+        / "src" / "agentmemory" / "db" / "migrations"
+        / "048_fk_integrity_fts_retire_trigger.sql"
     )
     conn.executescript(migration_path.read_text())
     conn.commit()

@@ -29,7 +29,8 @@ a = Analysis(
     datas=[
         (str(project_root / "src" / "agentmemory" / "db" / "init_schema.sql"),
          "agentmemory/db"),
-        (str(project_root / "db" / "migrations"), "db/migrations"),
+        (str(project_root / "src" / "agentmemory" / "db" / "migrations"),
+         "db/migrations"),
     ],
     hiddenimports=[
         "sqlite3",

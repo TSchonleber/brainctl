@@ -190,4 +190,4 @@ Documentation = "https://github.com/TSchonleber/brainctl/blob/main/docs/AGENT_ON
 where = ["src"]
 
 [tool.setuptools.package-data]
-agentmemory = ["db/*.sql"]
+agentmemory = ["db/*.sql", "db/migrations/*.sql"]
