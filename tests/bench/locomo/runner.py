@@ -108,12 +108,12 @@ def _build_cmd_search_fn(db_path: Path):
     search_fn.errors = {}
     return search_fn
 
-# LOCOMO QA category labels (inferred from paper/repo conventions).
+# LOCOMO QA category labels (snap-research/locomo task_eval convention).
 CATEGORY_LABELS = {
-    1: "single-hop",
+    1: "multi-hop",
     2: "temporal",
-    3: "multi-hop",
-    4: "open-domain",
+    3: "open-domain",
+    4: "single-hop",
     5: "adversarial",
 }
 

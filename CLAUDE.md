@@ -3,7 +3,7 @@
 ## What This Is
 Unified agent memory system. SQLite-backed (brain.db) with FTS5, vector embeddings (sqlite-vec + Ollama nomic-embed-text), knowledge graph, affect tracking, belief collapse mechanics, and AGM conflict resolution.
 
-Published as `brainctl` on PyPI (v2.2.1+, current 2.9.0).
+Published as `brainctl` on PyPI (v2.2.1+, current 2.9.1).
 
 ## Key Paths
 - **DB:** `db/brain.db` (WAL mode, foreign keys ON, 59 user-facing tables, 84 numbered migrations, `002`–`085` with no gaps, plus the unnumbered V2-4 file `db/migrations/quantum_schema_migration_sqlite.sql`). The runner only picks up files matching `^\d+_.+\.sql$`, so `brainctl migrate` never applies the quantum file; its quantum columns (`confidence_phase`, `hilbert_projection`, `coherence_syndrome`, `decoherence_rate`, `is_superposed`, `belief_density_matrix`, `coherence_score`, ...) and `belief_collapse_events` ship in `init_schema.sql` instead. Slot 050 is `050_thalamus.sql`.
@@ -77,7 +77,7 @@ in `docs/TOOL_MIGRATION_V2.md`.
 - Tables: memories, events, entities, decisions, context, knowledge_edges, affect_log, access_log, agent_state, agent_beliefs
 - FTS5 indexes on memories, events, entities
 - Vector embeddings via sqlite-vec extension
-- Hybrid retrieval: FTS5 + vector via Reciprocal Rank Fusion, routed through a regex intent classifier (`bin/intent_classifier.py`) that normalises 10 intent labels onto 6 rerank profiles inside `cmd_search`
+- Hybrid retrieval: FTS5 + vector via Reciprocal Rank Fusion, routed through a regex intent classifier (`src/agentmemory/lib/intent_classifier.py`) that normalises 10 intent labels onto 6 rerank profiles inside `cmd_search`
 - Retrieval regression-gated by `tests/bench/` (P@1 / P@5 / Recall@5 / MRR / nDCG@5; >2% drop fails CI)
 - W(m) worthiness gate on memory writes (surprise scoring + semantic dedup)
 - PII recency gate (Proactive Interference Index) on supersedes

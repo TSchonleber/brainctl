@@ -38,20 +38,29 @@ from agentmemory.paths import get_backups_dir, get_blobs_dir, get_brain_home, ge
 
 logger = logging.getLogger(__name__)
 
-# Adaptive salience routing
+# Adaptive salience routing. Ships in-tree under agentmemory.lib so pip
+# installs get it; the legacy ~/agentmemory/bin drop is a fallback only.
 try:
-    sys.path.insert(0, str(Path.home() / "agentmemory" / "bin"))
-    import salience_routing as _sal
+    from agentmemory.lib import salience_routing as _sal
     _SAL_AVAILABLE = True
 except Exception:
-    _SAL_AVAILABLE = False
+    try:
+        sys.path.insert(0, str(Path.home() / "agentmemory" / "bin"))
+        import salience_routing as _sal
+        _SAL_AVAILABLE = True
+    except Exception:
+        _SAL_AVAILABLE = False
 
-# Query intent classification
+# Query intent classification (in-tree first, legacy bin/ fallback)
 try:
-    from intent_classifier import classify_intent as _classify_intent
+    from agentmemory.lib.intent_classifier import classify_intent as _classify_intent
     _INTENT_AVAILABLE = True
 except Exception:
-    _INTENT_AVAILABLE = False
+    try:
+        from intent_classifier import classify_intent as _classify_intent
+        _INTENT_AVAILABLE = True
+    except Exception:
+        _INTENT_AVAILABLE = False
 
 # Built-in lightweight intent classifier fallback
 class _BuiltinIntentResult:
@@ -91,13 +100,17 @@ def _builtin_classify_intent(query):
                                  'Standard search results',
                                  ['memories', 'procedures', 'events', 'context'])
 
-# Quantum amplitude scorer
+# Quantum amplitude scorer (in-tree first, legacy ~/bin/lib fallback)
 try:
-    sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-    from quantum_retrieval import quantum_rerank as _quantum_rerank
+    from agentmemory.lib.quantum_retrieval import quantum_rerank as _quantum_rerank
     _QUANTUM_AVAILABLE = True
 except Exception:
-    _QUANTUM_AVAILABLE = False
+    try:
+        sys.path.insert(0, str(Path.home() / "bin" / "lib"))
+        from quantum_retrieval import quantum_rerank as _quantum_rerank
+        _QUANTUM_AVAILABLE = True
+    except Exception:
+        _QUANTUM_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -3053,11 +3066,12 @@ def cmd_memory_add(args):
     worthiness_components = {}
     try:
         if blob and not force_write:
-            import importlib.util as _ilu
-            _wdpath = str(Path.home() / "agentmemory" / "bin" / "lib" / "write_decision.py")
-            _spec = _ilu.spec_from_file_location("write_decision", _wdpath)
-            _wd = _ilu.module_from_spec(_spec)
-            _spec.loader.exec_module(_wd)
+            # Legacy ~/agentmemory/bin/lib override first, then the in-tree
+            # copy, so the gate also runs on a plain pip install.
+            from agentmemory._gates import load_write_decision_module
+            _wd = load_write_decision_module()
+            if _wd is None:
+                raise ImportError("write_decision module not found")
 
             db_vec_gate = _try_get_db_with_vec()
             if db_vec_gate:
@@ -13844,8 +13858,7 @@ def cmd_health(args):
 
     # ── 9. Outcome calibration ─────────────────────────────────────
     try:
-        sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-        from outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k
+        from agentmemory.lib.outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k
         _outcome_lift = compute_memory_lift(period_days=window_days)
         _outcome_brier = compute_brier_score(agent_id="all", period_days=window_days)
         _outcome_p5 = compute_precision_at_k(agent_id="all", k=5, period_days=window_days)
@@ -18352,8 +18365,7 @@ def build_parser():
 
 def cmd_outcome_annotate(args):
     import os
-    sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-    from outcome_eval import annotate_task_retrieval
+    from agentmemory.lib.outcome_eval import annotate_task_retrieval
     agent_id = args.agent_id or os.environ.get("AGENT_ID", "unknown")
     n = annotate_task_retrieval(args.task_id, agent_id, args.outcome)
     json_out({"ok": True, "task_id": args.task_id, "outcome": args.outcome, "agent_id": agent_id, "rows_annotated": n})
@@ -18361,8 +18373,7 @@ def cmd_outcome_annotate(args):
 
 def cmd_outcome_report(args):
     import os
-    sys.path.insert(0, str(Path.home() / "bin" / "lib"))
-    from outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k, run_calibration_pass
+    from agentmemory.lib.outcome_eval import compute_memory_lift, compute_brier_score, compute_precision_at_k, run_calibration_pass
     agent_id = args.agent_id or os.environ.get("AGENT_ID", "unknown")
     period = args.period
 

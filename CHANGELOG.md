@@ -5,6 +5,73 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.9.1] — 2026-10-29 — *audit fixes*
+
+### Fixed
+
+- **Conflict resolution crashed on every call.** `agentmemory.lib.belief_revision`
+  (behind `brainctl resolve-conflict` and the MCP `resolve_conflict` tool) read
+  and wrote `belief_conflicts.requires_hermes_intervention`, a column the schema
+  has never had (it is `requires_supervisor_intervention`), so listing,
+  escalating and resolving all raised `no such column`.
+- **Dream REM bridge discovery crashed when it found a bridge.**
+  `dream.run_rem_phase` inserted `source` and `updated_at` into
+  `knowledge_edges`, which has neither. The `rem_bridge` edge now records the
+  dreaming agent in `agent_id` and its weight is clamped to the table's
+  0–1 check.
+- **MCP supersede seeded the wrong confidence prior.** `memory_add` with
+  `supersedes_id` set `alpha = alpha_floor` but left `beta` at 1, giving the
+  new memory a Beta(N, 1) prior that favoured it over a high-PII incumbent.
+  It now seeds the symmetric Beta(N, N) prior the CLI path has used since 2.2.0.
+- **The Python API skipped write-time pattern separation.**
+  `Brain.remember` was a bare `INSERT`: no DG pattern separation, no CA3
+  reinforcement of near-identical memories (`recalled_count`, `alpha`,
+  confidence), no `distinct_from` links. It now runs the same
+  `agentmemory.lib.pattern_separation` decision as `brainctl memory add` and
+  the MCP tool, returning the reinforced memory's id on a duplicate. New
+  keyword-only `force=True` skips the check. Behaviour change: a repeated
+  identical `remember()` in the same agent / scope / category no longer
+  creates a second row. `Brain` still has no supersede entry point, so the
+  PII gate does not apply to it.
+- **Modules that only loaded from hard-coded home paths now ship in the
+  package.** On a pip install these never ran:
+  - `intent_classifier` and `salience_routing` lived in the repo's `bin/`
+    and were imported from `~/agentmemory/bin`; both moved to
+    `agentmemory.lib`, so `brainctl search` intent routing and adaptive
+    salience (and `hippocampus` hybrid recall, whose loader pointed at a
+    file that didn't exist) now work everywhere. The legacy path is kept
+    as a fallback.
+  - The CLI W(m) worthiness gate loaded `write_decision.py` only from
+    `~/agentmemory/bin/lib` and silently skipped itself otherwise; it now
+    uses the shared loader (legacy override first, then the in-tree copy),
+    like the MCP path.
+  - `brainctl search --quantum` and `brainctl outcome annotate|report` (and
+    the outcome block of `brainctl health`) imported only from `~/bin/lib`;
+    they now use the in-tree modules.
+  - `belief_revision`, `outcome_eval`, `quantum_retrieval` and
+    `salience_routing` defaulted to `~/agentmemory/db/brain.db`; they now
+    honour `BRAINCTL_DB` / `BRAIN_DB` / `BRAINCTL_HOME`.
+- **LoCoMo bench mislabelled three of five categories.** The harness
+  (`tests/bench/locomo_eval.py`, `tests/bench/locomo/runner.py`) mapped
+  1/3/4 to single-hop/multi-hop/open-domain; the snap-research/locomo eval
+  convention is 1 multi-hop, 2 temporal, 3 open-domain, 4 single-hop,
+  5 adversarial. **No number changes**: scoring is per integer category and
+  only the labels move. The committed baselines
+  `tests/bench/baselines/locomo.json` and `locomo_pre_fix_2026_04_18.json`
+  had their `by_category` keys renamed to match (values untouched, so the
+  `--check-strict` slice gate keeps comparing like with like), along with the
+  `label` fields in `tests/bench/locomo/results.json` and the LoCoMo tables in
+  `README.md` and `tests/bench/locomo/README.md`. Older reports
+  (`docs/BENCHMARK_REPORT_2026_04_19.md`, `docs/COMPARISON.md`,
+  `tests/bench/COMPETITOR_RESULTS.md`, `tests/bench/EXTERNAL_BENCHMARKS.md`,
+  `benchmarks/snapshots/`, `tests/bench/competitor_runs/results/`) still use
+  the old labels: read their "single-hop" as multi-hop, "multi-hop" as
+  open-domain and "open-domain" as single-hop.
+
+Benchmarks on this release: search-quality, LoCoMo (overall and every
+category) and the dedup / temporal / abstention suites are unchanged from
+2.9.0.
+
 ## [2.9.0] — 2026-10-29 — *familiarity gate, interference control, migrations in the wheel*
 
 ### Added

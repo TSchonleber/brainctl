@@ -13,11 +13,14 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path.home() / "agentmemory" / "db" / "brain.db"
+from agentmemory.paths import get_db_path
+
+# Resolved per call so BRAINCTL_DB / BRAIN_DB / BRAINCTL_HOME are honoured.
+DB_PATH = get_db_path()
 
 
 def _get_db(db_path: str | None = None) -> sqlite3.Connection:
-    path = db_path or str(DB_PATH)
+    path = db_path or str(get_db_path())
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
@@ -104,7 +107,7 @@ def list_conflicts(db_path: str | None = None) -> list[dict]:
         """
         SELECT bc.id, bc.topic, bc.conflict_type, bc.severity,
                bc.agent_a_id, bc.agent_b_id, bc.belief_a, bc.belief_b,
-               bc.detected_at, bc.requires_hermes_intervention
+               bc.detected_at, bc.requires_supervisor_intervention
         FROM belief_conflicts bc
         WHERE bc.resolved_at IS NULL
         ORDER BY bc.severity DESC, bc.detected_at ASC
@@ -158,7 +161,7 @@ def resolve_conflict(
         """
         SELECT id, topic, conflict_type, severity,
                agent_a_id, agent_b_id, belief_a, belief_b,
-               requires_hermes_intervention
+               requires_supervisor_intervention
         FROM belief_conflicts
         WHERE id = ? AND resolved_at IS NULL
         """,
@@ -239,7 +242,7 @@ def resolve_conflict(
         }
         if not dry_run:
             conn.execute(
-                "UPDATE belief_conflicts SET requires_hermes_intervention=1 WHERE id=?",
+                "UPDATE belief_conflicts SET requires_supervisor_intervention=1 WHERE id=?",
                 (conflict_id,)
             )
             conn.commit()
@@ -264,7 +267,7 @@ def resolve_conflict(
         }
         if not dry_run:
             conn.execute(
-                "UPDATE belief_conflicts SET requires_hermes_intervention=1 WHERE id=?",
+                "UPDATE belief_conflicts SET requires_supervisor_intervention=1 WHERE id=?",
                 (conflict_id,)
             )
             conn.commit()

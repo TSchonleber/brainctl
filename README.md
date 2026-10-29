@@ -297,7 +297,7 @@ ship in the tree:
 
 **LOCOMO** (1,982 questions, 5 categories, 10 conversations):
 
-| metric | overall | adversarial | temporal | open-domain | single-hop | multi-hop |
+| metric | overall | adversarial | temporal | single-hop | multi-hop | open-domain |
 |--------|---------|-------------|----------|-------------|------------|-----------|
 | hit@1  | 0.341 | 0.377 | 0.405 | 0.373 | 0.167 | 0.174 |
 | hit@5  | 0.572 | 0.603 | 0.648 | 0.602 | 0.429 | 0.315 |
@@ -311,16 +311,16 @@ ship in the tree:
 | hit@5 | 0.6120 | 0.9117 | 0.9132 |
 | hit@10 | 0.6892 | 0.9606 | 0.9601 |
 | MRR | 0.4731 | 0.7749 | 0.7920 |
-| single-hop hit@5 | 0.4645 | 0.8688 | 0.8546 |
-| multi-hop hit@5 | 0.3696 | 0.6522 | 0.6739 |
+| multi-hop hit@5 | 0.4645 | 0.8688 | 0.8546 |
+| open-domain hit@5 | 0.3696 | 0.6522 | 0.6739 |
 | temporal hit@5 | 0.6604 | 0.8972 | 0.8972 |
 
 Interpretation: hybrid leads session on hit@1, hit@5, MRR, and
-multi-hop hit@5, ties temporal hit@5, and slightly trails on
-single-hop hit@5.
+open-domain hit@5, ties temporal hit@5, and slightly trails on
+multi-hop hit@5.
 
 The Brain.search baseline remains weaker on hop-heavy categories
-(single-hop/multi-hop hit@1 0.167 / 0.174). Root cause: recency and
+(multi-hop/open-domain hit@1 0.167 / 0.174). Root cause: recency and
 salience rerankers bias toward recent memories; LOCOMO uses uniform
 synthetic timestamps with gold evidence concentrated in early sessions,
 so reranking can fight lexical evidence. A `--benchmark` preset that

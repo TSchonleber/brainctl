@@ -431,9 +431,9 @@ def run_rem_phase(
             db.execute(
                 "INSERT INTO knowledge_edges "
                 "(source_table, source_id, target_table, target_id, relation_type, "
-                "weight, source, created_at, updated_at) "
-                "VALUES ('memories', ?, 'memories', ?, 'rem_bridge', ?, 'rem_phase', ?, ?)",
-                (a, b, round(best_sim, 4), now, now),
+                "weight, agent_id, created_at) "
+                "VALUES ('memories', ?, 'memories', ?, 'rem_bridge', ?, ?, ?)",
+                (a, b, min(round(best_sim, 4), 1.0), agent_id, now),
             )
             bridges_created += 1
 

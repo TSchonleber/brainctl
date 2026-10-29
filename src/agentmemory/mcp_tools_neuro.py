@@ -553,7 +553,7 @@ def tool_weights(
 ) -> dict:
     """Show current adaptive retrieval weights and the store stats that drove them."""
     try:
-        import salience_routing as _sal  # type: ignore[import]
+        from agentmemory.lib import salience_routing as _sal
     except ImportError:
         return {"ok": False, "error": "salience_routing module not available"}
     try:

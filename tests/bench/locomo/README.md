@@ -35,10 +35,10 @@ OVERALL        5882  1982  0.3406  0.5716  0.6584  0.7351 0.5225 0.6039 0.4447
 
 By category (overall, weighted)
 cat             count   hit@1   hit@5  hit@10  hit@20    r@5   r@10    mrr
-single-hop        282  0.1667  0.4291  0.5426  0.6596 0.2039 0.2910 0.2821
+multi-hop         282  0.1667  0.4291  0.5426  0.6596 0.2039 0.2910 0.2821
 temporal          321  0.4050  0.6480  0.7228  0.7757 0.6150 0.6862 0.5103
-multi-hop          92  0.1739  0.3152  0.3696  0.4348 0.2207 0.2739 0.2323
-open-domain       841  0.3734  0.6017  0.6885  0.7598 0.5878 0.6728 0.4791
+open-domain        92  0.1739  0.3152  0.3696  0.4348 0.2207 0.2739 0.2323
+single-hop        841  0.3734  0.6017  0.6885  0.7598 0.5878 0.6728 0.4791
 adversarial       446  0.3767  0.6031  0.6884  0.7691 0.5964 0.6805 0.4794
 ```
 
@@ -108,9 +108,9 @@ recency/salience would be worth adding.
 - No vector-only or vector+FTS RRF run yet — sqlite-vec extension needs
   to be loaded and the bench DB embedded with nomic-embed before that's
   meaningful. Still free (Ollama local), worth doing next.
-- Category label map is inferred (`1 single-hop, 2 temporal, 3 multi-hop,
-  4 open-domain, 5 adversarial`); verify against the LOCOMO paper before
-  quoting externally.
+- Category label map follows the snap-research/locomo eval code (`1 multi-hop,
+  2 temporal, 3 open-domain, 4 single-hop, 5 adversarial`). Releases before
+  2.9.1 swapped 1, 3 and 4.
 - End-to-end QA accuracy (the metric the published Mem0/Zep/LangMem
   numbers use) requires plugging a generator + judge LLM into the QA loop.
   Skipped here for cost; the retrieval ceiling we measure is an upper
