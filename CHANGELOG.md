@@ -68,6 +68,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the old labels: read their "single-hop" as multi-hop, "multi-hop" as
   open-domain and "open-domain" as single-hop.
 
+- **Pattern-separation write gate was slow on long memories.** Every
+  write re-tokenised its own content once per neighbour and re-tokenised
+  the same neighbours write after write. `token_set` is now cached, which
+  makes the gate about 5x faster on long (~1,500-word) memories. This
+  matters now that `Brain.remember` runs the gate; the CLI and MCP paths
+  speed up the same way.
+
 Benchmarks on this release: search-quality, LoCoMo (overall and every
 category) and the dedup / temporal / abstention suites are unchanged from
 2.9.0.

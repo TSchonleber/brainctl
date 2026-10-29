@@ -40,12 +40,13 @@ decision" and the write proceeds exactly as it did before this module.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import re
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # Thresholds (named so they can be tuned against tests/bench --suite dedup)
@@ -163,8 +164,11 @@ def normalize(text: str) -> str:
     return " ".join(t.norm for t in _tokens(text))
 
 
-def token_set(text: str) -> Set[str]:
-    return {t.norm for t in _tokens(text)}
+@functools.lru_cache(maxsize=1024)
+def token_set(text: str) -> FrozenSet[str]:
+    # Cached: one write compares its content against up to ~15 neighbours,
+    # and a bulk ingest re-reads the same neighbours write after write.
+    return frozenset(t.norm for t in _tokens(text))
 
 
 def jaccard(a: str, b: str) -> float:
