@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-10-29 — *familiarity gate, interference control, migrations in the wheel*
+
 ### Added
 
 - **Memory-quality bench suites** (`tests/bench/memory_quality.py`):
