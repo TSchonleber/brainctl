@@ -14,7 +14,23 @@ if str(SRC) not in sys.path:
 
 PROD_DB = Path(__file__).resolve().parent.parent / "db" / "brain.db"
 
-from agentmemory.brain import Brain
+# Never let the suite touch the developer's real brain. Agents that share
+# brainctl export BRAINCTL_DB / BRAINCTL_AGENT_ID into every shell they
+# spawn, and several modules resolve DB_PATH at import time, so a bare
+# `pytest` from such a shell wrote test fixtures into the live brain.db.
+# Point every path at a throwaway home before anything is imported.
+import tempfile  # noqa: E402
+
+_TEST_HOME = Path(tempfile.mkdtemp(prefix="brainctl-test-home-"))
+for _var in ("BRAINCTL_DB", "BRAIN_DB", "BRAINCTL_AGENT_ID",
+             "BRAINCTL_BLOBS_DIR", "BRAINCTL_BACKUPS_DIR"):
+    os.environ.pop(_var, None)
+os.environ["BRAINCTL_HOME"] = str(_TEST_HOME)
+
+from agentmemory.brain import Brain  # noqa: E402
+
+# Tests that use the module-default DB path expect a migrated brain there.
+Brain(db_path=str(_TEST_HOME / "db" / "brain.db")).close()
 
 
 # --- Auto-restore monkey-patched module-level helpers --------------------

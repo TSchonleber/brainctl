@@ -55,10 +55,14 @@ def save_settings(path: Path, data: dict) -> None:
 def build_command(script: Path) -> str:
     """Return the shell command Claude Code should run for a hook.
 
-    We use `python3 <script>` rather than making the scripts executable,
+    We use `<python> <script>` rather than making the scripts executable,
     so the plugin works even when the file permission bits are stripped
-    (e.g. after `pip install` or zip extraction)."""
-    return f"python3 {script}"
+    (e.g. after `pip install` or zip extraction). The interpreter is the
+    one running this installer, so hooks import the same brainctl install
+    (e.g. a `uv tool` venv) instead of whatever bare `python3` resolves to
+    on PATH — on stock macOS that is 3.9 with no brainctl, and the hooks
+    would silently no-op."""
+    return f"{sys.executable} {script}"
 
 
 def install_hooks(data: dict) -> tuple[dict, list[str]]:

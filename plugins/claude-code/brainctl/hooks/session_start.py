@@ -29,6 +29,26 @@ def format_context(snap: dict) -> str:
         "- Do not rely on the automatic SessionEnd hook for meaningful continuity; it can only synthesize shallow tool-call summaries.",
     ]
 
+    identity = snap.get("identity") or {}
+    if identity.get("self"):
+        lines.append("")
+        lines.append(f"**Who you are (`{snap.get('agent_id', '?')}`):**")
+        for m in identity["self"][:5]:
+            lines.append(f"- {(m.get('content') or '').strip().splitlines()[0][:240]}")
+    if identity.get("user"):
+        lines.append("")
+        lines.append("**About the user (newest first):**")
+        for m in identity["user"][:8]:
+            lines.append(f"- [{m.get('category', '?')}] {(m.get('content') or '').strip().splitlines()[0][:240]}")
+
+    peers = snap.get("peers") or []
+    if peers:
+        lines.append("")
+        lines.append("**Other agents' latest handoffs:**")
+        for p in peers:
+            goal = (p.get("goal") or "").strip().splitlines()[0][:160] if p.get("goal") else ""
+            lines.append(f"- `{p.get('agent_id')}` ({(p.get('created_at') or '')[:10]}): {goal}")
+
     handoff = snap.get("handoff")
     if handoff:
         lines.append("")

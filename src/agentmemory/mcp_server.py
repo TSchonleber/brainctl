@@ -3457,8 +3457,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             f"tool {name!r} is not in BRAINCTL_ALLOWED_TOOLS — "
             f"either add it to the env var or remove the call"
         )
-    # Inject agent_id from arguments or default
-    agent_id = arguments.pop("agent_id", "mcp-client")
+    # Inject agent_id from arguments, else the server's configured identity.
+    # BRAINCTL_AGENT_ID is set per client in its MCP server config (e.g.
+    # "claude", "grok") so that several agents sharing one brain.db keep
+    # distinct attribution even when the model omits agent_id on a call.
+    agent_id = (
+        arguments.pop("agent_id", None)
+        or os.environ.get("BRAINCTL_AGENT_ID")
+        or "mcp-client"
+    )
 
     dispatch = {
         "memory_add": tool_memory_add,

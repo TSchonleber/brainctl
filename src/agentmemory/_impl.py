@@ -9264,21 +9264,36 @@ def _graph_shortest_path(db, src_table, src_id, dst_table, dst_id, max_hops=6):
 # ---------------------------------------------------------------------------
 
 def cmd_backup(args):
-    db = get_db()
-    db.close()  # ensure WAL checkpoint
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = BACKUPS_DIR / f"brain_{ts}.db"
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(DB_PATH, backup_path)
+    # SQLite's online backup API, not a file copy: brain.db runs in WAL mode
+    # and several agents may be writing, so copying the main file alone can
+    # miss committed pages still in the -wal or capture a torn page. Write to
+    # a temp name and rename so a sync client (iCloud, Drive) never uploads a
+    # half-written snapshot.
+    tmp_path = backup_path.with_suffix(".db.partial")
+    src = sqlite3.connect(str(DB_PATH))
+    dst = sqlite3.connect(str(tmp_path))
+    try:
+        src.backup(dst)
+        # Standalone snapshot: no -wal/-shm siblings for a sync client to
+        # upload half of.
+        dst.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        dst.close()
+        src.close()
+    tmp_path.replace(backup_path)
 
-    # Also export to SQL for iCloud-safe backup
+    # Also export to SQL for iCloud-safe backup. Dump the snapshot, not the
+    # live DB, so the .db and .sql describe the same instant.
     sql_path = BACKUPS_DIR / f"brain_{ts}.sql"
     import subprocess
     # stdout=open(...) without a context manager leaks the fd if the
     # subprocess raises (audit I30). Use `with` so the file is closed
     # on CalledProcessError / KeyboardInterrupt / any other exit path.
     with open(str(sql_path), "w") as _out:
-        subprocess.run(["sqlite3", str(DB_PATH), ".dump"], stdout=_out, check=True)
+        subprocess.run(["sqlite3", str(backup_path), ".dump"], stdout=_out, check=True)
 
     # Prune old backups (keep last 30)
     backups = sorted(BACKUPS_DIR.glob("brain_*.db"), reverse=True)
